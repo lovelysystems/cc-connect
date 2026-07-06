@@ -18,56 +18,41 @@ const (
 	defaultLeeway       = 5 * time.Minute
 )
 
-func aadJWKSURL(tenant string) string {
-	return fmt.Sprintf("https://login.microsoftonline.com/%s/discovery/v2.0/keys", tenant)
-}
-
-// aadIssuers returns the AAD issuer strings accepted for a tenant, matching the
-// SDK's ISSUERS list (sts.windows.net v1 and login.microsoftonline.com v2).
-func aadIssuers(tenant string) []string {
-	return []string{
-		fmt.Sprintf("https://sts.windows.net/%s/", tenant),
-		fmt.Sprintf("https://login.microsoftonline.com/%s/v2.0", tenant),
-	}
-}
-
-// inboundValidator verifies Bot Framework activity JWTs. It selects the signing
-// keys by issuer (Bot Framework vs the configured AAD tenant) and enforces
-// RS256, audience == app ID, issuer trust, and expiry with leeway.
+// inboundValidator verifies Bot Framework activity JWTs. It accepts only the Bot
+// Framework channel issuer and enforces RS256, audience == app ID, and expiry
+// with leeway.
+//
+// This connector is a Teams *messaging* bot: real user activities always arrive
+// signed by the Bot Framework channel (iss = api.botframework.com). We do NOT
+// accept tokens issued directly by the tenant's AAD (sts.windows.net /
+// login.microsoftonline.com) — that path exists in the SDK for agent-to-agent /
+// skill invocation, which this connector does not offer. Restricting to the
+// channel issuer keeps the activity `From` trustworthy (the channel sets it),
+// so allow_from and the serviceURL binding rest on a signed identity rather than
+// caller-supplied body fields. Restore an AAD path here if this bot is ever used
+// as a skill target.
 type inboundValidator struct {
-	appID    string
-	tenantID string
-	leeway   time.Duration
+	appID  string
+	leeway time.Duration
 
-	bfKeys  jwt.Keyfunc // Bot Framework JWKS
-	aadKeys jwt.Keyfunc // AAD tenant JWKS (nil when no tenant configured)
+	bfKeys jwt.Keyfunc // Bot Framework JWKS
 }
 
-// newInboundValidator wires JWKS-backed keyfuncs with rotation caching. The AAD
-// keyfunc is only created when a tenant is configured.
+// newInboundValidator wires the Bot Framework JWKS keyfunc with rotation caching.
 func newInboundValidator(cfg config) (*inboundValidator, error) {
 	bf, err := keyfunc.NewDefaultCtx(context.Background(), []string{jwksBotFrameworkURL})
 	if err != nil {
 		return nil, fmt.Errorf("teams: bot framework JWKS: %w", err)
 	}
-	v := &inboundValidator{
-		appID:    cfg.appID,
-		tenantID: cfg.tenantID,
-		leeway:   defaultLeeway,
-		bfKeys:   bf.Keyfunc,
-	}
-	if cfg.tenantID != "" {
-		aad, err := keyfunc.NewDefaultCtx(context.Background(), []string{aadJWKSURL(cfg.tenantID)})
-		if err != nil {
-			return nil, fmt.Errorf("teams: AAD JWKS: %w", err)
-		}
-		v.aadKeys = aad.Keyfunc
-	}
-	return v, nil
+	return &inboundValidator{
+		appID:  cfg.appID,
+		leeway: defaultLeeway,
+		bfKeys: bf.Keyfunc,
+	}, nil
 }
 
-// keyFor selects the verification key by the token's issuer, rejecting any
-// issuer the connector does not trust before a signature check is attempted.
+// keyFor returns the verification key only for the Bot Framework channel issuer,
+// rejecting any other issuer before a signature check is attempted.
 func (v *inboundValidator) keyFor(token *jwt.Token) (any, error) {
 	iss, err := token.Claims.GetIssuer()
 	if err != nil {
@@ -75,13 +60,6 @@ func (v *inboundValidator) keyFor(token *jwt.Token) (any, error) {
 	}
 	if iss == issuerBotFramework {
 		return v.bfKeys(token)
-	}
-	if v.aadKeys != nil {
-		for _, trusted := range aadIssuers(v.tenantID) {
-			if iss == trusted {
-				return v.aadKeys(token)
-			}
-		}
 	}
 	return nil, fmt.Errorf("teams: untrusted issuer %q", iss)
 }

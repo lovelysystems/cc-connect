@@ -38,10 +38,9 @@ func (s *testSigner) sign(t *testing.T, claims jwt.MapClaims) string {
 
 func validatorWith(s *testSigner) *inboundValidator {
 	return &inboundValidator{
-		appID:   "app-123",
-		leeway:  defaultLeeway,
-		bfKeys:  s.keyfunc,
-		aadKeys: s.keyfunc,
+		appID:  "app-123",
+		leeway: defaultLeeway,
+		bfKeys: s.keyfunc,
 	}
 }
 
@@ -115,24 +114,20 @@ func TestValidate_RejectsNonRS256(t *testing.T) {
 	}
 }
 
-func TestValidate_AcceptsAADIssuerWhenTenantSet(t *testing.T) {
+func TestValidate_RejectsAADIssuer(t *testing.T) {
 	s := newTestSigner(t)
 	v := validatorWith(s)
-	v.tenantID = "tenant-xyz"
-	c := baseClaims()
-	c["iss"] = "https://login.microsoftonline.com/tenant-xyz/v2.0"
-	if _, err := v.validate(s.sign(t, c)); err != nil {
-		t.Fatalf("expected AAD-issued token to pass when tenant matches, got %v", err)
-	}
-}
-
-func TestValidate_RejectsAADIssuerWrongTenant(t *testing.T) {
-	s := newTestSigner(t)
-	v := validatorWith(s)
-	v.tenantID = "tenant-xyz"
-	c := baseClaims()
-	c["iss"] = "https://login.microsoftonline.com/other-tenant/v2.0"
-	if _, err := v.validate(s.sign(t, c)); err == nil {
-		t.Fatal("expected rejection for AAD token from a different tenant")
+	// AAD-issued tokens (skill / agent-to-agent path) are not accepted by this
+	// messaging connector — only the Bot Framework channel issuer is trusted,
+	// even when the signature would otherwise verify.
+	for _, iss := range []string{
+		"https://login.microsoftonline.com/tenant-xyz/v2.0",
+		"https://sts.windows.net/tenant-xyz/",
+	} {
+		c := baseClaims()
+		c["iss"] = iss
+		if _, err := v.validate(s.sign(t, c)); err == nil {
+			t.Fatalf("expected rejection for AAD issuer %q", iss)
+		}
 	}
 }

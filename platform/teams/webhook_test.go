@@ -9,7 +9,11 @@ import (
 )
 
 func testPlatform(s *testSigner) *Platform {
-	return &Platform{cfg: config{appID: "app-123"}, validator: validatorWith(s)}
+	return &Platform{
+		cfg:         config{appID: "app-123"},
+		validator:   validatorWith(s),
+		dispatchSem: make(chan struct{}, maxConcurrentDispatch),
+	}
 }
 
 func TestHandleActivity_ValidTokenAccepted(t *testing.T) {
@@ -25,6 +29,25 @@ func TestHandleActivity_ValidTokenAccepted(t *testing.T) {
 	// The turn is dispatched asynchronously; the webhook acks 202 immediately.
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", rec.Code)
+	}
+}
+
+func TestHandleActivity_ShedsWhenSaturated(t *testing.T) {
+	s := newTestSigner(t)
+	p := testPlatform(s)
+	// Saturate the dispatch pool so the next activity has no slot.
+	for i := 0; i < maxConcurrentDispatch; i++ {
+		p.dispatchSem <- struct{}{}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+s.sign(t, baseClaims()))
+	rec := httptest.NewRecorder()
+
+	p.handleActivity(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 when the dispatch pool is saturated", rec.Code)
 	}
 }
 

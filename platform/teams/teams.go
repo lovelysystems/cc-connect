@@ -21,15 +21,23 @@ func init() {
 	core.RegisterPlatform("teams", New)
 }
 
+// maxConcurrentDispatch caps in-flight agent turns spawned from the webhook. The
+// handler acks fast and processes on a goroutine (Bot Framework retry avoidance),
+// so without a cap a flood of authenticated activities would spawn unbounded
+// concurrent turns. At capacity the webhook sheds with 503 and the Bot Connector
+// retries — mirroring the M365 Agents SDK's bounded background queue.
+const maxConcurrentDispatch = 16
+
 // Platform is the cc-connect Teams connector.
 type Platform struct {
 	cfg     config
 	handler core.MessageHandler
 
-	validator *inboundValidator
-	engaged   *engagement
-	conn      sender
-	server    *http.Server
+	validator   *inboundValidator
+	engaged     *engagement
+	conn        sender
+	server      *http.Server
+	dispatchSem chan struct{} // bounds concurrent async dispatch goroutines
 }
 
 // sender abstracts the Bot Connector calls for testability.
@@ -55,8 +63,9 @@ func New(opts map[string]any) (core.Platform, error) {
 	}
 	core.CheckAllowFrom("teams", cfg.allowFrom)
 	return &Platform{
-		cfg:     cfg,
-		engaged: newEngagement(engagementPath(cfg.dataDir, cfg.project)),
+		cfg:         cfg,
+		engaged:     newEngagement(engagementPath(cfg.dataDir, cfg.project)),
+		dispatchSem: make(chan struct{}, maxConcurrentDispatch),
 	}, nil
 }
 

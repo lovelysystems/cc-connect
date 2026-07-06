@@ -43,10 +43,21 @@ func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ack first, process the turn asynchronously. The card-only connector never
-	// returns Invoke/ExpectReplies responses, so nothing needs a synchronous body.
-	w.WriteHeader(http.StatusAccepted)
-	go p.dispatch(claims, body)
+	// Ack first, process the turn asynchronously (the card-only connector never
+	// returns Invoke/ExpectReplies responses, so nothing needs a synchronous body).
+	// A bounded semaphore caps concurrent turns; at capacity we shed with 503 so
+	// the Bot Connector retries rather than letting turns spawn unbounded.
+	select {
+	case p.dispatchSem <- struct{}{}:
+		go func() {
+			defer func() { <-p.dispatchSem }()
+			p.dispatch(claims, body)
+		}()
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		slog.Warn("teams: dispatch pool saturated; shedding activity")
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}
 }
 
 // dispatch parses an activity, enforces serviceURL binding + authorization +
