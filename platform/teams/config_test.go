@@ -118,6 +118,51 @@ func TestParseConfig_CardUpdateIntervalMS(t *testing.T) {
 	}
 }
 
+func TestParseConfig_ServiceURLAllowlist(t *testing.T) {
+	// absent -> nil (allow any)
+	c, _ := parseConfig(validOpts())
+	if c.serviceURLAllowlist != nil {
+		t.Errorf("absent service_url_allowlist -> %v, want nil", c.serviceURLAllowlist)
+	}
+	// comma-separated, trimmed, empties dropped
+	opts := validOpts()
+	opts["service_url_allowlist"] = " smba.trafficmanager.net , , smba.infra.gcc.teams.microsoft.com "
+	c, err := parseConfig(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"smba.trafficmanager.net", "smba.infra.gcc.teams.microsoft.com"}
+	if len(c.serviceURLAllowlist) != len(want) {
+		t.Fatalf("allowlist = %v, want %v", c.serviceURLAllowlist, want)
+	}
+	for i, h := range want {
+		if c.serviceURLAllowlist[i] != h {
+			t.Errorf("allowlist[%d] = %q, want %q", i, c.serviceURLAllowlist[i], h)
+		}
+	}
+}
+
+func TestServiceURLAllowed(t *testing.T) {
+	list := []string{"smba.trafficmanager.net"}
+	cases := []struct {
+		name      string
+		url       string
+		allowlist []string
+		want      bool
+	}{
+		{"empty allowlist allows any", "https://evil.example/x", nil, true},
+		{"host matches (regional path)", "https://smba.trafficmanager.net/amer/v3/", list, true},
+		{"host match is case-insensitive", "https://SMBA.TrafficManager.net/emea/", list, true},
+		{"foreign host rejected", "https://attacker.example/v3/", list, false},
+		{"unparseable url rejected when allowlist set", "://nope", list, false},
+	}
+	for _, tc := range cases {
+		if got := serviceURLAllowed(tc.url, tc.allowlist); got != tc.want {
+			t.Errorf("%s: serviceURLAllowed(%q) = %v, want %v", tc.name, tc.url, got, tc.want)
+		}
+	}
+}
+
 func TestNew_RegistersAsPlatform(t *testing.T) {
 	p, err := New(validOpts())
 	if err != nil {

@@ -86,6 +86,30 @@ message — Teams does not allow @mentioning a bot there.
 | `allow_from` | no | `""` | Comma-separated AAD object IDs allowed to use the bot; `*` or empty = all users in the tenant |
 | `session_scope` | no | `thread` | `thread` (one session per reply thread), `channel` (one shared session across the channel), `user` (one session per user within a thread) |
 | `card_update_interval_ms` | no | `1500` | Streaming-card edit throttle in ms; Teams rate-limits edits to ~1/s |
+| `service_url_allowlist` | no | `""` | Comma-separated hosts the bot may send replies to. Empty = any JWT-validated host (default). Set it to pin the bot to your cloud's Bot Connector host(s) as defense-in-depth. See "serviceURL allowlist" below |
+
+## serviceURL allowlist
+
+The bot sends its replies (carrying its Bot Connector bearer token) to the
+`serviceUrl` from each inbound activity. That URL is already bound to a
+JWT-validated request, so by default any authenticated `serviceUrl` is trusted —
+the same model as the Bot Framework / M365 Agents SDK.
+
+For defense-in-depth (or a compliance lockdown), set `service_url_allowlist` to
+the Bot Connector host(s) your tenant's cloud uses; the bot then drops any
+activity whose `serviceUrl` host is not listed. Matching is on **host** (so
+regional paths like `/amer/`, `/emea/` are fine). Current Microsoft hosts for
+reference (verify against Azure docs — this list can change):
+
+| Cloud | Host |
+|-------|------|
+| Public | `smba.trafficmanager.net` |
+| GCC | `smba.infra.gcc.teams.microsoft.com` |
+| GCC High | `smba.infra.gov.teams.microsoft.us` |
+| DoD | `smba.infra.dod.teams.microsoft.us` |
+
+Leave it empty unless you have a reason to pin — a too-narrow list silently drops
+legitimate traffic.
 
 ## Connection type
 

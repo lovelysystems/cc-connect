@@ -14,7 +14,11 @@ import (
 const maxBodyBytes = 1 << 20 // 1 MiB
 
 // handleActivity is the Bot Connector webhook entry point. It authenticates the
-// request before reading the body, then hands the activity to the engine.
+// request and reads the body synchronously, then acks 202 and runs the agent turn
+// on a background goroutine. Bot Framework expects a fast ack (~15s) and retries
+// on timeout; a slow turn (e.g. a cold agent start) under a synchronous ack would
+// trigger a retry and a duplicate dispatch. Acking before dispatch matches the
+// M365 Agents SDK, which queues activities to a background worker and returns 202.
 func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -38,9 +42,11 @@ func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	p.dispatch(claims, body)
 
-	w.WriteHeader(http.StatusOK)
+	// Ack first, process the turn asynchronously. The card-only connector never
+	// returns Invoke/ExpectReplies responses, so nothing needs a synchronous body.
+	w.WriteHeader(http.StatusAccepted)
+	go p.dispatch(claims, body)
 }
 
 // dispatch parses an activity, enforces serviceURL binding + authorization +
@@ -62,6 +68,12 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	// (and the bearer token they carry) to an attacker-controlled host.
 	if !serviceURLClaimMatches(claims, a.ServiceURL) {
 		slog.Warn("teams: serviceUrl claim mismatch; dropping activity")
+		return
+	}
+	// Optional host allowlist: reject a serviceURL outside the configured hosts
+	// before any outbound POST carries the bot's bearer token to it. Off by default.
+	if !serviceURLAllowed(a.ServiceURL, p.cfg.serviceURLAllowlist) {
+		slog.Warn("teams: serviceUrl host not in allowlist; dropping activity", "service_url", a.ServiceURL)
 		return
 	}
 

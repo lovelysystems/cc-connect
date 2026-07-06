@@ -314,6 +314,29 @@ func TestDispatch_AllowListBlocks(t *testing.T) {
 	}
 }
 
+// TestDispatch_ServiceURLAllowlist covers the optional host allowlist: an activity
+// whose serviceURL host is not on the list is dropped before any outbound call.
+func TestDispatch_ServiceURLAllowlist(t *testing.T) {
+	// messageActivity sets serviceURL "https://smba.example/" (host smba.example).
+	allowed := teamsPlatform("thread")
+	allowed.cfg.serviceURLAllowlist = []string{"smba.example"}
+	h, got := collector()
+	allowed.handler = h
+	allowed.dispatch(nil, messageActivity("conv-A", "user-1", "hi bot", true))
+	if len(*got) != 1 {
+		t.Fatalf("allowlisted serviceURL host should be handled, got %d", len(*got))
+	}
+
+	blocked := teamsPlatform("thread")
+	blocked.cfg.serviceURLAllowlist = []string{"smba.trafficmanager.net"}
+	h2, got2 := collector()
+	blocked.handler = h2
+	blocked.dispatch(nil, messageActivity("conv-B", "user-1", "hi bot", true))
+	if len(*got2) != 0 {
+		t.Fatalf("serviceURL host off the allowlist must be dropped, got %d", len(*got2))
+	}
+}
+
 // TestSessionKey_ScopeVariants covers AE8: the three scopes produce distinct
 // keys, and channel scope collapses sibling threads to the channel root.
 func TestSessionKey_ScopeVariants(t *testing.T) {

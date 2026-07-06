@@ -3,6 +3,7 @@ package teams
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 )
 
@@ -35,6 +36,12 @@ type config struct {
 	allowFrom    string
 	sessionScope string // "thread" (default) | "channel" | "user"
 
+	// serviceURLAllowlist restricts the outbound Bot Connector serviceURL to these
+	// hosts (defense-in-depth against a forged serviceURL exfiltrating the bot
+	// token). Empty (default) = allow any JWT-validated serviceURL, matching the
+	// Bot Framework / M365 Agents SDK, which trust the authenticated inbound host.
+	serviceURLAllowlist []string
+
 	cardUpdateIntervalMS int // card edit throttle (ms); smaller = finer chunks (floor ~1s)
 
 	// dataDir and project are injected by cc-connect (cc_data_dir / cc_project)
@@ -47,15 +54,16 @@ type config struct {
 // parseConfig extracts and validates the Teams config from the platform opts map.
 func parseConfig(opts map[string]any) (config, error) {
 	c := config{
-		appID:        strings.TrimSpace(stringOpt(opts, "app_id")),
-		appPassword:  stringOpt(opts, "app_password"),
-		tenantID:     strings.TrimSpace(stringOpt(opts, "tenant_id")),
-		webhookPort:  strings.TrimSpace(stringOpt(opts, "webhook_port")),
-		webhookPath:  strings.TrimSpace(stringOpt(opts, "webhook_path")),
-		allowFrom:    stringOpt(opts, "allow_from"),
-		sessionScope: normalizeSessionScope(opts["session_scope"]),
-		dataDir:      stringOpt(opts, "cc_data_dir"),
-		project:      stringOpt(opts, "cc_project"),
+		appID:               strings.TrimSpace(stringOpt(opts, "app_id")),
+		appPassword:         stringOpt(opts, "app_password"),
+		tenantID:            strings.TrimSpace(stringOpt(opts, "tenant_id")),
+		webhookPort:         strings.TrimSpace(stringOpt(opts, "webhook_port")),
+		webhookPath:         strings.TrimSpace(stringOpt(opts, "webhook_path")),
+		allowFrom:           stringOpt(opts, "allow_from"),
+		sessionScope:        normalizeSessionScope(opts["session_scope"]),
+		serviceURLAllowlist: splitCSV(stringOpt(opts, "service_url_allowlist")),
+		dataDir:             stringOpt(opts, "cc_data_dir"),
+		project:             stringOpt(opts, "cc_project"),
 	}
 	c.cardUpdateIntervalMS = intOpt(opts, "card_update_interval_ms", defaultCardUpdateIntervalMS)
 	if c.cardUpdateIntervalMS <= 0 {
@@ -87,6 +95,38 @@ func parseConfig(opts map[string]any) (config, error) {
 func stringOpt(opts map[string]any, key string) string {
 	s, _ := opts[key].(string)
 	return s
+}
+
+// splitCSV splits a comma-separated option into trimmed, non-empty entries,
+// returning nil when the option is empty.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// serviceURLAllowed reports whether the activity serviceURL's host is permitted.
+// An empty allowlist permits any host (the serviceURL is already bound to a
+// JWT-validated request); otherwise the parsed host must match an entry
+// case-insensitively. An unparseable URL with a non-empty allowlist is rejected.
+func serviceURLAllowed(rawURL string, allowlist []string) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	for _, h := range allowlist {
+		if strings.EqualFold(u.Host, h) {
+			return true
+		}
+	}
+	return false
 }
 
 // intOpt reads an integer option, returning def when absent or the wrong type.

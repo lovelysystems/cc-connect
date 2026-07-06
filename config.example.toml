@@ -1203,6 +1203,9 @@ app_secret = "your-feishu-app-secret"
 # allow_from = "*"                                  # "*"/empty = all users in the tenant; or comma-separated AAD object IDs / "*"/留空=租户内所有人，或逗号分隔的 AAD 用户 ID
 # session_scope = "thread"                          # "thread" (default) | "channel" | "user"
 # card_update_interval_ms = 1500                    # streaming card edit throttle (ms; Teams limits edits ~1/s)
+# service_url_allowlist = ""                         # optional defense-in-depth: comma-separated Bot Connector hosts the
+#                                                    # bot may reply to; empty = any JWT-validated host. e.g. public cloud:
+#                                                    # "smba.trafficmanager.net" (see docs/teams.md for gov-cloud hosts)
 
 # MAX messenger (uncomment to enable / 取消注释以启用)
 # 1. Create a bot via @MasterBot in MAX, get the access token

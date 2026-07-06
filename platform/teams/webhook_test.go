@@ -22,8 +22,9 @@ func TestHandleActivity_ValidTokenAccepted(t *testing.T) {
 
 	p.handleActivity(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	// The turn is dispatched asynchronously; the webhook acks 202 immediately.
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
 	}
 }
 
