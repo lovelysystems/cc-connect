@@ -137,7 +137,9 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 // Stop shuts down the webhook server.
 func (p *Platform) Stop() error {
 	if p.server != nil {
-		return p.server.Shutdown(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return p.server.Shutdown(ctx)
 	}
 	return nil
 }

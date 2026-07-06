@@ -399,8 +399,8 @@ func TestDispatch_SelfMessageIgnored(t *testing.T) {
 		ID:           "act-self",
 		Text:         "echo",
 		ServiceURL:   "https://smba.example/",
-		From:         channelAccount{ID: "bot-1"}, // the bot's own appID
-		Recipient:    channelAccount{ID: "bot-1"},
+		From:         channelAccount{ID: "28:bot-1"}, // a bot's channelAccount ID is the "28:<appId>" form
+		Recipient:    channelAccount{ID: "28:bot-1"},
 		Conversation: conversationAccount{ID: "conv-A"},
 	}
 	p.dispatch(nil, mustJSON(self))

@@ -7,7 +7,7 @@ import (
 )
 
 func cardCtx() replyContext {
-	return replyContext{serviceURL: "https://s/", conversationID: "c1", sessionKey: "c1"}
+	return replyContext{serviceURL: "https://s/", conversationID: "c1"}
 }
 
 func TestCreateStreamingCard_InvalidContextReturnsError(t *testing.T) {
@@ -15,7 +15,7 @@ func TestCreateStreamingCard_InvalidContextReturnsError(t *testing.T) {
 	p := &Platform{conn: fs, cfg: config{}}
 	// Missing serviceURL/conversationID -> engine treats the error as "no stream"
 	// and falls back to a plain reply. Nothing is posted.
-	card, err := p.CreateStreamingCard(context.Background(), replyContext{sessionKey: "c1"})
+	card, err := p.CreateStreamingCard(context.Background(), replyContext{})
 	if err == nil || card != nil {
 		t.Fatalf("invalid reply context must return (nil, error), got (%v, %v)", card, err)
 	}
@@ -43,7 +43,7 @@ func TestCreateStreamingCard_ChannelContextPostsCard(t *testing.T) {
 	fs := &fakeSender{id: "m1"}
 	p := &Platform{conn: fs, cfg: config{}}
 	// A channel reply-thread conversation id must stream identically to 1:1.
-	rc := replyContext{serviceURL: "https://s/", conversationID: "19:abc@thread.tacv2;messageid=1", sessionKey: "k"}
+	rc := replyContext{serviceURL: "https://s/", conversationID: "19:abc@thread.tacv2;messageid=1"}
 	card, err := p.CreateStreamingCard(context.Background(), rc)
 	if err != nil || card == nil {
 		t.Fatalf("channel context should create a card stream, got (%v, %v)", card, err)

@@ -93,7 +93,6 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		ReplyCtx: replyContext{
 			serviceURL:     a.ServiceURL,
 			conversationID: a.Conversation.ID,
-			sessionKey:     sessionKey,
 			activityID:     a.ID,
 			botAccount:     a.Recipient,
 			userAccount:    a.From,

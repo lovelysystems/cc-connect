@@ -19,11 +19,9 @@ import (
 type replyContext struct {
 	serviceURL     string
 	conversationID string
-	// sessionKey is the engine turn key, derived per session_scope (see sessionKey).
-	sessionKey  string
-	activityID  string         // the inbound activity id, used as replyToId
-	botAccount  channelAccount // the bot (inbound recipient) — outbound `from`
-	userAccount channelAccount // the user (inbound from) — outbound `recipient`
+	activityID     string         // the inbound activity id, used as the reply-to-activity target
+	botAccount     channelAccount // the bot (inbound recipient) — outbound `from`
+	userAccount    channelAccount // the user (inbound from) — outbound `recipient`
 }
 
 // engagement tracks which conversations the bot has joined. A bot @mention
@@ -167,8 +165,9 @@ func conversationFromSessionKey(key string) (string, error) {
 func (p *Platform) shouldHandle(a *activity, isCardAction bool) bool {
 	// Belt-and-suspenders: never act on the bot's own activity. Bot Framework does
 	// not redeliver a bot's outbound messages, but a multi-bot install or platform
-	// echo must not be able to self-trigger a loop.
-	if p.cfg.appID != "" && a.From.ID == p.cfg.appID {
+	// echo must not be able to self-trigger a loop. A bot's channelAccount ID is the
+	// "28:<appId>" form, not the bare app ID, so match on the suffix.
+	if p.cfg.appID != "" && strings.HasSuffix(a.From.ID, p.cfg.appID) {
 		return false
 	}
 	if isCardAction {

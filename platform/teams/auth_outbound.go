@@ -3,6 +3,7 @@ package teams
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -42,8 +43,13 @@ func newTokenSourceWithURL(cfg config, url string) *oauthTokenSource {
 		Scopes:       []string{connectorScope},
 		AuthStyle:    oauth2.AuthStyleInParams,
 	}
-	// clientcredentials.Config.TokenSource caches and refreshes internally.
-	return &oauthTokenSource{src: conf.TokenSource(context.Background())}
+	// Bound the token fetch with a timeout-bearing HTTP client — connector.do
+	// acquires the token before its own http.Client (with connectorTimeout) runs,
+	// so without this an unreachable login.microsoftonline.com would hang the turn
+	// goroutine indefinitely. clientcredentials.Config.TokenSource caches and
+	// refreshes internally.
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Timeout: connectorTimeout})
+	return &oauthTokenSource{src: conf.TokenSource(ctx)}
 }
 
 func (o *oauthTokenSource) token(ctx context.Context) (string, error) {

@@ -12,7 +12,6 @@ type activity struct {
 	ID           string              `json:"id"`
 	Text         string              `json:"text"`
 	ServiceURL   string              `json:"serviceUrl"`
-	ReplyToID    string              `json:"replyToId"`
 	From         channelAccount      `json:"from"`
 	Recipient    channelAccount      `json:"recipient"`
 	Conversation conversationAccount `json:"conversation"`
