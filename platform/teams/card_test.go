@@ -14,13 +14,13 @@ func firstTextBlock(card map[string]any) map[string]any {
 }
 
 func TestLoadingCard(t *testing.T) {
-	c := loadingCard("💭 Working…")
+	c := loadingCard("💭 Thinking…")
 	if c["type"] != "AdaptiveCard" || c["version"] != "1.5" {
 		t.Fatalf("not an AdaptiveCard 1.5: %v", c)
 	}
 	tb := firstTextBlock(c)
 	txt, _ := tb["text"].(string)
-	if tb["type"] != "TextBlock" || !strings.Contains(txt, "💭 Working…") {
+	if tb["type"] != "TextBlock" || !strings.Contains(txt, "💭 Thinking…") {
 		t.Errorf("loading text block = %v", tb)
 	}
 	// grayed + small + italic (markdown)
@@ -32,10 +32,15 @@ func TestLoadingCard(t *testing.T) {
 	}
 }
 
-func TestLoadingCard_EmptyFallsBackToDefault(t *testing.T) {
-	tb := firstTextBlock(loadingCard(""))
-	if txt, _ := tb["text"].(string); !strings.Contains(txt, defaultCardWorkingText) {
-		t.Errorf("empty text -> %v, want it to contain default %q", tb["text"], defaultCardWorkingText)
+func TestLoadingCard_EmptyRendersNoBody(t *testing.T) {
+	// Empty card_loading_text yields a label-less placeholder (no TextBlock),
+	// not a TextBlock containing an empty string.
+	c := loadingCard("")
+	if c["type"] != "AdaptiveCard" {
+		t.Fatalf("not an AdaptiveCard: %v", c)
+	}
+	if tb := firstTextBlock(c); tb != nil {
+		t.Errorf("empty text should render no body block, got %v", tb)
 	}
 }
 

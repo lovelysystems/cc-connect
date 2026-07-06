@@ -36,7 +36,7 @@ func (p *Platform) streamInterval() time.Duration {
 // createCardStream posts the loading Adaptive Card immediately and returns a
 // handle that edits it in place.
 func (p *Platform) createCardStream(ctx context.Context, rc replyContext) (core.StreamingCard, error) {
-	id, err := p.conn.send(ctx, rc, aiCardActivity(rc, loadingCard("")))
+	id, err := p.conn.send(ctx, rc, aiCardActivity(rc, loadingCard(p.cfg.cardLoadingText)))
 	if err != nil {
 		return nil, err
 	}

@@ -163,6 +163,24 @@ func TestServiceURLAllowed(t *testing.T) {
 	}
 }
 
+func TestParseConfig_CardLoadingText(t *testing.T) {
+	// absent -> empty (label-less card, no built-in default)
+	c, _ := parseConfig(validOpts())
+	if c.cardLoadingText != "" {
+		t.Errorf("absent card_loading_text -> %q, want empty", c.cardLoadingText)
+	}
+	// set -> used verbatim (trimmed)
+	opts := validOpts()
+	opts["card_loading_text"] = "  💭 Thinking…  "
+	c, err := parseConfig(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.cardLoadingText != "💭 Thinking…" {
+		t.Errorf("card_loading_text = %q, want trimmed value", c.cardLoadingText)
+	}
+}
+
 func TestNew_RegistersAsPlatform(t *testing.T) {
 	p, err := New(validOpts())
 	if err != nil {

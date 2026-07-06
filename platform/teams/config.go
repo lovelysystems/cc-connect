@@ -12,8 +12,7 @@ import (
 const (
 	defaultWebhookPort          = "3978"
 	defaultWebhookPath          = "/api/messages"
-	defaultCardWorkingText      = "💭 Working…" // "working" card label shown while the agent thinks
-	defaultCardUpdateIntervalMS = 1500         // card edit throttle; Teams rate-limits edits ~1/s
+	defaultCardUpdateIntervalMS = 1500 // card edit throttle; Teams rate-limits edits ~1/s
 )
 
 // config holds the resolved Teams platform settings parsed from the config.toml
@@ -42,6 +41,10 @@ type config struct {
 	// Bot Framework / M365 Agents SDK, which trust the authenticated inbound host.
 	serviceURLAllowlist []string
 
+	// cardLoadingText is the label on the placeholder card shown while the agent
+	// thinks. Empty (default) renders a label-less card — no built-in default.
+	cardLoadingText string
+
 	cardUpdateIntervalMS int // card edit throttle (ms); smaller = finer chunks (floor ~1s)
 
 	// dataDir and project are injected by cc-connect (cc_data_dir / cc_project)
@@ -62,6 +65,7 @@ func parseConfig(opts map[string]any) (config, error) {
 		allowFrom:           stringOpt(opts, "allow_from"),
 		sessionScope:        normalizeSessionScope(opts["session_scope"]),
 		serviceURLAllowlist: splitCSV(stringOpt(opts, "service_url_allowlist")),
+		cardLoadingText:     strings.TrimSpace(stringOpt(opts, "card_loading_text")),
 		dataDir:             stringOpt(opts, "cc_data_dir"),
 		project:             stringOpt(opts, "cc_project"),
 	}

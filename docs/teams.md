@@ -86,6 +86,7 @@ message — Teams does not allow @mentioning a bot there.
 | `allow_from` | no | `""` | Comma-separated AAD object IDs allowed to use the bot; `*` or empty = all users in the tenant |
 | `session_scope` | no | `thread` | `thread` (one session per reply thread), `channel` (one shared session across the channel), `user` (one session per user within a thread) |
 | `card_update_interval_ms` | no | `1500` | Streaming-card edit throttle in ms; Teams rate-limits edits to ~1/s |
+| `card_loading_text` | no | `""` | Label on the placeholder card shown while the agent works (e.g. `💭 Thinking…`); empty renders a label-less card |
 | `service_url_allowlist` | no | `""` | Comma-separated hosts the bot may send replies to. Empty = any JWT-validated host (default). Set it to pin the bot to your cloud's Bot Connector host(s) as defense-in-depth. See "serviceURL allowlist" below |
 
 ## serviceURL allowlist
