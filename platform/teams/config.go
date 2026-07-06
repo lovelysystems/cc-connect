@@ -1,0 +1,123 @@
+package teams
+
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+)
+
+// Default webhook bind values follow the Bot Framework convention so the Bot
+// Framework Emulator and Azure Bot "messaging endpoint" defaults line up.
+const (
+	defaultWebhookPort          = "3978"
+	defaultWebhookPath          = "/api/messages"
+	defaultCardWorkingText      = "💭 Working…" // "working" card label shown while the agent thinks
+	defaultCardUpdateIntervalMS = 1500         // card edit throttle; Teams rate-limits edits ~1/s
+)
+
+// config holds the resolved Teams platform settings parsed from the config.toml
+// `[[projects.platforms]]` options table.
+type config struct {
+	// appID is the Bot/Azure AD application (client) ID. The inbound JWT `aud`
+	// claim must equal it; the outbound client-credentials grant uses it.
+	appID string
+	// appPassword is the application client secret used for the outbound token.
+	appPassword string
+	// tenantID is the AAD tenant that owns the Azure Bot resource. It is required:
+	// the connector is single-tenant only. Azure deprecated multi-tenant bot
+	// creation after 2025-07-31, so every new bot is single-tenant; requiring the
+	// tenant also scopes who can reach the bot to that one organization.
+	tenantID string
+
+	webhookPort string
+	webhookPath string
+
+	allowFrom    string
+	sessionScope string // "thread" (default) | "channel" | "user"
+
+	cardUpdateIntervalMS int // card edit throttle (ms); smaller = finer chunks (floor ~1s)
+
+	// dataDir and project are injected by cc-connect (cc_data_dir / cc_project)
+	// and locate the on-disk engagement store. Empty => engagement stays
+	// in-memory only (e.g. tests / standalone construction).
+	dataDir string
+	project string
+}
+
+// parseConfig extracts and validates the Teams config from the platform opts map.
+func parseConfig(opts map[string]any) (config, error) {
+	c := config{
+		appID:        strings.TrimSpace(stringOpt(opts, "app_id")),
+		appPassword:  stringOpt(opts, "app_password"),
+		tenantID:     strings.TrimSpace(stringOpt(opts, "tenant_id")),
+		webhookPort:  strings.TrimSpace(stringOpt(opts, "webhook_port")),
+		webhookPath:  strings.TrimSpace(stringOpt(opts, "webhook_path")),
+		allowFrom:    stringOpt(opts, "allow_from"),
+		sessionScope: normalizeSessionScope(opts["session_scope"]),
+		dataDir:      stringOpt(opts, "cc_data_dir"),
+		project:      stringOpt(opts, "cc_project"),
+	}
+	c.cardUpdateIntervalMS = intOpt(opts, "card_update_interval_ms", defaultCardUpdateIntervalMS)
+	if c.cardUpdateIntervalMS <= 0 {
+		c.cardUpdateIntervalMS = defaultCardUpdateIntervalMS
+	}
+
+	if c.appID == "" {
+		return config{}, fmt.Errorf("teams: app_id is required")
+	}
+	if c.appPassword == "" {
+		return config{}, fmt.Errorf("teams: app_password is required")
+	}
+	if c.tenantID == "" {
+		return config{}, fmt.Errorf("teams: tenant_id is required (the connector is single-tenant; multi-tenant bots are deprecated by Azure)")
+	}
+
+	if c.webhookPort == "" {
+		c.webhookPort = defaultWebhookPort
+	}
+	if c.webhookPath == "" {
+		c.webhookPath = defaultWebhookPath
+	}
+	if !strings.HasPrefix(c.webhookPath, "/") {
+		c.webhookPath = "/" + c.webhookPath
+	}
+	return c, nil
+}
+
+func stringOpt(opts map[string]any, key string) string {
+	s, _ := opts[key].(string)
+	return s
+}
+
+// intOpt reads an integer option, returning def when absent or the wrong type.
+// TOML/JSON decoders surface numbers as int64 or float64, so accept both.
+func intOpt(opts map[string]any, key string, def int) int {
+	switch n := opts[key].(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return def
+	}
+}
+
+// normalizeSessionScope resolves session_scope to one of "thread" | "channel" |
+// "user", defaulting to "thread" (Teams is thread-centric) and warning on unknown
+// values.
+func normalizeSessionScope(raw any) string {
+	s, _ := raw.(string)
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "thread":
+		return "thread"
+	case "channel":
+		return "channel"
+	case "user":
+		return "user"
+	default:
+		slog.Warn("teams: unknown session_scope, falling back to thread", "session_scope", s)
+		return "thread"
+	}
+}
