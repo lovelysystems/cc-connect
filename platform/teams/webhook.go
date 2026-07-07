@@ -102,8 +102,9 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	isCardAction := action != ""
 	content := a.cleanText()
 	// Inbound media is 1:1 only; a channel/group attachment is ignored (R5). A
-	// message carrying attachments still dispatches even with empty text (R3).
-	hasMedia := a.isPersonal() && len(a.Attachments) > 0
+	// message carrying a handled attachment still dispatches even with empty text
+	// (R3); an unhandled-only attachment must not force an empty-content turn.
+	hasMedia := a.isPersonal() && a.hasProcessableAttachment()
 	if content == "" && !isCardAction && !hasMedia {
 		return // empty message with no card action and no attachment
 	}
@@ -175,7 +176,10 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 		case att.isFileDownload():
 			info, ok := att.downloadInfo()
 			if !ok || info.DownloadURL == "" {
-				continue // malformed file attachment; nothing to fetch
+				// Malformed file attachment: count as failed so the user is
+				// notified rather than left with a silently dropped turn.
+				failed++
+				continue
 			}
 			// downloadUrl is pre-authenticated: fetch WITHOUT the bot token.
 			data, outcome := p.conn.fetch(ctx, info.DownloadURL, false, max)

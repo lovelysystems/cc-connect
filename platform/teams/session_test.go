@@ -488,6 +488,39 @@ func TestDispatch_NoticeOnOversizeDownload(t *testing.T) {
 	}
 }
 
+func TestDispatch_MalformedFileAttachmentNotifies(t *testing.T) {
+	// A file-download attachment with an empty downloadUrl can't be fetched. It
+	// must be counted as a failure (notice sent), not silently dropped into an
+	// empty turn.
+	p, got, fs := personalPlatform(fetchResult{outcome: fetchOK})
+	bad := inboundAttachment{ContentType: fileDownloadInfoContentType, Name: "x.docx", Content: []byte(`{"downloadUrl":""}`)}
+	p.dispatch(nil, personalActivity("", bad))
+
+	if len(fs.fetchedURLs) != 0 {
+		t.Errorf("an empty downloadUrl must not be fetched, got %v", fs.fetchedURLs)
+	}
+	if len(fs.replied) != 1 {
+		t.Fatalf("a malformed file attachment should send a notice, replied=%d", len(fs.replied))
+	}
+	if len(*got) != 1 || len((*got)[0].Files) != 0 {
+		t.Errorf("no file should be attached for a malformed attachment")
+	}
+}
+
+func TestDispatch_UnhandledOnlyAttachmentNotDispatched(t *testing.T) {
+	// A 1:1 message with empty text whose only attachment is neither a file
+	// download nor an image (e.g. a link preview) must NOT dispatch an empty turn.
+	p, got, fs := personalPlatform(fetchResult{outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "application/vnd.microsoft.card.thumbnail"}))
+
+	if len(*got) != 0 {
+		t.Fatalf("empty-text message with only an unhandled attachment must be dropped, got %d", len(*got))
+	}
+	if len(fs.fetchedURLs) != 0 {
+		t.Errorf("no download should be attempted for an unhandled attachment, got %v", fs.fetchedURLs)
+	}
+}
+
 func TestDispatch_NoNoticeOnSuccess(t *testing.T) {
 	p, got, fs := personalPlatform(fetchResult{data: []byte("OK"), outcome: fetchOK})
 	p.dispatch(nil, personalActivity("", fileDL("a.docx", "https://files.example/dl")))

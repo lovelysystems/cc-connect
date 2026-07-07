@@ -73,6 +73,20 @@ func (a *activity) isPersonal() bool {
 	return strings.EqualFold(a.Conversation.ConversationType, "personal")
 }
 
+// hasProcessableAttachment reports whether the activity carries at least one
+// attachment this connector actually handles (a file download or an inline
+// image). Keying the dispatch gate on this — rather than a raw attachment count —
+// avoids dispatching an empty-content turn for a message whose only attachment is
+// an unhandled type (e.g. a link preview) with no text.
+func (a *activity) hasProcessableAttachment() bool {
+	for _, att := range a.Attachments {
+		if att.isFileDownload() || att.isImage() {
+			return true
+		}
+	}
+	return false
+}
+
 type channelAccount struct {
 	ID          string `json:"id"`
 	AADObjectID string `json:"aadObjectId"`
