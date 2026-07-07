@@ -189,6 +189,59 @@ func TestQuiet_Default_OnlyLastToolSurfaces(t *testing.T) {
 	}
 }
 
+// TestQuiet_StreamingCard_LiveFramesDropPreToolLeadIn verifies the live
+// card frames (streamCard.Update), not just the finalized card: in quiet
+// mode the intermediate update after a second tool_use must show only the
+// current post-tool segment, never the earlier pre-tool lead-ins. Without
+// the fix the card accumulated every lead-in as it streamed and only
+// collapsed at finalize.
+func TestQuiet_StreamingCard_LiveFramesDropPreToolLeadIn(t *testing.T) {
+	card := &recordingStreamCard{}
+	p := &recordingStreamCardPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "teams"},
+		card:               card,
+	}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{Mode: "quiet", ThinkingMessages: false, ToolMessages: false, PrependPreToolText: false})
+	e.SetReplyFooterEnabled(false)
+
+	sessionKey := "teams:quiet-live"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	sess := newControllableSession("s-quiet-live")
+	state := &interactiveState{agentSession: sess, platform: p, replyCtx: "ctx-quiet-live"}
+	e.interactiveStates[sessionKey] = state
+
+	for _, ev := range []Event{
+		{Type: EventText, Content: "First lead-in."},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "ls"},
+		{Type: EventText, Content: "Second lead-in."},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "pwd"},
+		{Type: EventText, Content: "Final answer."},
+		{Type: EventResult, Content: "Final answer.", Done: true},
+	} {
+		sess.events <- ev
+	}
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-quiet-live", time.Now(), nil, nil, state.replyCtx)
+
+	updates := card.updateBodies()
+	if len(updates) == 0 {
+		t.Fatal("expected at least one live card update")
+	}
+	// The last live frame (rendered for "Final answer.") must contain only
+	// the post-last-tool segment — no earlier lead-ins.
+	last := updates[len(updates)-1]
+	if !strings.Contains(last, "Final answer.") {
+		t.Errorf("last live frame missing the post-tool answer: %q", last)
+	}
+	if strings.Contains(last, "First lead-in") || strings.Contains(last, "Second lead-in") {
+		t.Errorf("live card frame accumulated a pre-tool lead-in: %q", last)
+	}
+	// And the finalized card stays clean too (mirrors the live frame).
+	if strings.Contains(card.finalContent(), "lead-in") {
+		t.Errorf("finalized card leaked a lead-in: %q", card.finalContent())
+	}
+}
+
 // TestCompact_NotAffectedByQuietFix guards the other display modes
 // against the new quiet-mode slicing. The bug only exists in quiet
 // mode; compact and full mode must continue to deliver the full

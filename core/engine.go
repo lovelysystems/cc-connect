@@ -5233,7 +5233,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						} else {
 							cardAnswerText.WriteString(content)
 						}
-						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+						// In quiet mode the final card shows only the text after the
+						// last tool_use (#1302). Mirror that in the live frames so the
+						// card replaces rather than accumulates each pre-tool "lead-in"
+						// as it streams. cardAnswerText still accrues the full text for
+						// the silent-reply finalize path.
+						liveBody := cardAnswerText.String()
+						if e.display.Mode == "quiet" && !e.display.PrependPreToolText {
+							liveBody = strings.Join(textParts[postLastToolStart:], "")
+						}
+						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, liveBody))
 					}
 					handledByStreamCard = true
 				}
