@@ -1207,6 +1207,8 @@ app_secret = "your-feishu-app-secret"
 # service_url_allowlist = ""                         # optional defense-in-depth: comma-separated Bot Connector hosts the
 #                                                    # bot may reply to; empty = any JWT-validated host. e.g. public cloud:
 #                                                    # "smba.trafficmanager.net" (see docs/teams.md for gov-cloud hosts)
+# max_attachment_bytes = 20971520                    # cap per inbound 1:1 file/image download (default 20 MiB); larger = skipped with a notice
+#                                                    # 1:1 file receive also needs supportsFiles:true in the Teams app manifest (see docs/teams.md)
 
 # MAX messenger (uncomment to enable / 取消注释以启用)
 # 1. Create a bot via @MasterBot in MAX, get the access token

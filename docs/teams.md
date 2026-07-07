@@ -88,6 +88,7 @@ message — Teams does not allow @mentioning a bot there.
 | `card_update_interval_ms` | no | `1500` | Streaming-card edit throttle in ms; Teams rate-limits edits to ~1/s |
 | `card_loading_text` | no | `""` | Label on the placeholder card shown while the agent works (e.g. `💭 Thinking…`); empty renders a label-less card |
 | `service_url_allowlist` | no | `""` | Comma-separated hosts the bot may send replies to. Empty = any JWT-validated host (default). Set it to pin the bot to your cloud's Bot Connector host(s) as defense-in-depth. See "serviceURL allowlist" below |
+| `max_attachment_bytes` | no | `20971520` (20 MiB) | Cap per inbound 1:1 file/image download. A larger attachment is skipped with a notice rather than buffered. See "Receiving files and images" below |
 
 ## serviceURL allowlist
 
@@ -112,6 +113,36 @@ reference (verify against Azure docs — this list can change):
 Leave it empty unless you have a reason to pin — a too-narrow list silently drops
 legitimate traffic.
 
+## Receiving files and images
+
+In a **1:1 (personal) chat**, a file or image the user attaches to the bot is
+downloaded by the connector and handed to the agent (a file becomes a saved file
+the agent can read; an image is passed as an image attachment). Text and an
+attachment sent together arrive on the same turn.
+
+**Manifest prerequisite:** for the bot to receive files in 1:1, the Teams app
+manifest must declare:
+
+```json
+"bots": [
+  { "botId": "<your-app-id>", "supportsFiles": true, "scopes": ["personal"] }
+]
+```
+
+Without `supportsFiles: true`, Teams does not deliver file attachments to the bot
+— no connector setting substitutes for it.
+
+**Size limit:** each download is capped by `max_attachment_bytes` (default
+20 MiB). An oversized attachment, or one whose download fails, is skipped and the
+user gets a brief notice; the turn still proceeds with any text and other
+attachments.
+
+**Not supported:**
+- **Channel / group attachments.** Files posted in a channel or group chat live
+  in SharePoint and require Microsoft Graph + tenant admin consent; attachments
+  outside a 1:1 chat are ignored, not partially handled.
+- **Outbound media** (the bot *sending* files/images) is not implemented.
+
 ## Connection type
 
 Webhook (Bot Framework) — **a public HTTPS URL is required**. This is inherent
@@ -124,6 +155,7 @@ which POSTs to your endpoint.
   toggle, and the native `streamType` 1:1 animation are deferred to follow-ups.
 - Permission prompts render as plain text with numbered options (reply with a
   number or `yes`); interactive Adaptive Card buttons are deferred.
-- No inbound images/files/audio.
+- Inbound files and images are supported in **1:1 chats only** (see "Receiving
+  files and images"); channel/group attachments and inbound audio are not.
 - No cron/timer → Teams proactive messages (a conversation-reference store is
   needed to send without an incoming activity).
