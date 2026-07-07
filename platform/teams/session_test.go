@@ -337,6 +337,130 @@ func TestDispatch_ServiceURLAllowlist(t *testing.T) {
 	}
 }
 
+// fileDL builds a FileDownloadInfo attachment with the given name + downloadUrl.
+func fileDL(name, downloadURL string) inboundAttachment {
+	content, _ := json.Marshal(fileDownloadInfo{DownloadURL: downloadURL, FileType: "docx"})
+	return inboundAttachment{ContentType: fileDownloadInfoContentType, Name: name, Content: content}
+}
+
+// personalActivity builds a 1:1 message with optional attachments.
+func personalActivity(text string, atts ...inboundAttachment) []byte {
+	return mustJSON(activity{
+		Type:         "message",
+		ID:           "act-1",
+		Text:         text,
+		ServiceURL:   "https://smba.example/",
+		From:         channelAccount{ID: "user-1", Name: "User"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "dm-1", ConversationType: "personal"},
+		Attachments:  atts,
+	})
+}
+
+func personalPlatform(fetch fetchResult) (*Platform, *[]*core.Message, *fakeSender) {
+	p := teamsPlatform("user")
+	fs := &fakeSender{fetchDefault: fetch}
+	p.conn = fs
+	h, got := collector()
+	p.handler = h
+	return p, got, fs
+}
+
+func TestDispatch_PersonalFileAttachmentDelivered(t *testing.T) {
+	p, got, fs := personalPlatform(fetchResult{data: []byte("DOCX-BYTES"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", fileDL("report.docx", "https://files.example/dl")))
+
+	if len(*got) != 1 {
+		t.Fatalf("file-only 1:1 message must still dispatch, got %d", len(*got))
+	}
+	m := (*got)[0]
+	if len(m.Files) != 1 || len(m.Images) != 0 {
+		t.Fatalf("want 1 file, 0 images; got files=%d images=%d", len(m.Files), len(m.Images))
+	}
+	f := m.Files[0]
+	if f.FileName != "report.docx" || string(f.Data) != "DOCX-BYTES" || f.MimeType == "" {
+		t.Errorf("file attachment = %+v", f)
+	}
+	// A pre-authed file downloadUrl must NOT carry the bot token.
+	if len(fs.fetchwithToken) != 1 || fs.fetchwithToken[0] {
+		t.Errorf("file download must not attach the bot token, withToken=%v", fs.fetchwithToken)
+	}
+}
+
+func TestDispatch_PersonalImageDelivered(t *testing.T) {
+	p, got, fs := personalPlatform(fetchResult{data: []byte("PNG"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/png", ContentURL: "https://smba.example/v3/attachments/x"}))
+
+	if len(*got) != 1 {
+		t.Fatalf("image 1:1 message must dispatch, got %d", len(*got))
+	}
+	m := (*got)[0]
+	if len(m.Images) != 1 || len(m.Files) != 0 {
+		t.Fatalf("want 1 image, 0 files; got images=%d files=%d", len(m.Images), len(m.Files))
+	}
+	if m.Images[0].MimeType != "image/png" || string(m.Images[0].Data) != "PNG" {
+		t.Errorf("image attachment = %+v", m.Images[0])
+	}
+	// contentUrl host == serviceURL host -> the bot token is attached.
+	if len(fs.fetchwithToken) != 1 || !fs.fetchwithToken[0] {
+		t.Errorf("same-host image should carry the bot token, withToken=%v", fs.fetchwithToken)
+	}
+}
+
+func TestDispatch_ForeignHostImageOmitsToken(t *testing.T) {
+	p, _, fs := personalPlatform(fetchResult{data: []byte("PNG"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/jpeg", ContentURL: "https://cdn.foreign.example/img.jpg"}))
+	if len(fs.fetchwithToken) != 1 || fs.fetchwithToken[0] {
+		t.Errorf("a foreign-host image URL must NOT receive the bot token, withToken=%v", fs.fetchwithToken)
+	}
+}
+
+func TestDispatch_TextAndAttachmentSameTurn(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{data: []byte("X"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("review this", fileDL("a.docx", "https://files.example/dl")))
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages", len(*got))
+	}
+	m := (*got)[0]
+	if m.Content != "review this" || len(m.Files) != 1 {
+		t.Errorf("text+attachment should share one turn: content=%q files=%d", m.Content, len(m.Files))
+	}
+}
+
+func TestDispatch_ChannelAttachmentIgnored(t *testing.T) {
+	p := teamsPlatform("thread")
+	fs := &fakeSender{fetchDefault: fetchResult{data: []byte("X"), outcome: fetchOK}}
+	p.conn = fs
+	h, got := collector()
+	p.handler = h
+
+	// Channel message that @mentions the bot (so it passes the engagement gate)
+	// and carries a file attachment. The attachment must be ignored (no Graph),
+	// and the text path proceeds unchanged.
+	a := activity{
+		Type:         "message",
+		ID:           "act-1",
+		Text:         "<at>bot</at> look",
+		ServiceURL:   "https://smba.example/",
+		From:         channelAccount{ID: "user-1"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "conv-A", ConversationType: "channel"},
+		Entities:     []entity{{Type: "mention", Text: "<at>bot</at>", Mentioned: channelAccount{ID: "bot-1"}}},
+		Attachments:  []inboundAttachment{fileDL("secret.docx", "https://files.example/dl")},
+	}
+	p.dispatch(nil, mustJSON(a))
+
+	if len(*got) != 1 {
+		t.Fatalf("channel text should still dispatch, got %d", len(*got))
+	}
+	if len((*got)[0].Files) != 0 || len((*got)[0].Images) != 0 {
+		t.Errorf("channel attachment must be ignored, got files=%d images=%d", len((*got)[0].Files), len((*got)[0].Images))
+	}
+	if len(fs.fetchedURLs) != 0 {
+		t.Errorf("channel attachment must not trigger a download, fetched=%v", fs.fetchedURLs)
+	}
+}
+
 // TestSessionKey_ScopeVariants covers AE8: the three scopes produce distinct
 // keys, and channel scope collapses sibling threads to the channel root.
 func TestSessionKey_ScopeVariants(t *testing.T) {

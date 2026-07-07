@@ -1,9 +1,14 @@
 package teams
 
 import (
+	"context"
+	"encoding/base64"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -91,8 +96,11 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	action := a.cardAction()
 	isCardAction := action != ""
 	content := a.cleanText()
-	if content == "" && !isCardAction {
-		return // empty message with no card action
+	// Inbound media is 1:1 only; a channel/group attachment is ignored (R5). A
+	// message carrying attachments still dispatches even with empty text (R3).
+	hasMedia := a.isPersonal() && len(a.Attachments) > 0
+	if content == "" && !isCardAction && !hasMedia {
+		return // empty message with no card action and no attachment
 	}
 	// Authorize before touching engagement so an unauthorized @mention cannot
 	// flip a conversation into the engaged set.
@@ -105,6 +113,13 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	}
 
 	sessionKey := p.sessionKey(a)
+	rc := replyContext{
+		serviceURL:     a.ServiceURL,
+		conversationID: a.Conversation.ID,
+		activityID:     a.ID,
+		botAccount:     a.Recipient,
+		userAccount:    a.From,
+	}
 	msg := &core.Message{
 		SessionKey: sessionKey,
 		Platform:   "teams",
@@ -113,21 +128,139 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		UserID:     userID(a),
 		UserName:   a.From.Name,
 		ChatName:   a.Conversation.Name,
-		ReplyCtx: replyContext{
-			serviceURL:     a.ServiceURL,
-			conversationID: a.Conversation.ID,
-			activityID:     a.ID,
-			botAccount:     a.Recipient,
-			userAccount:    a.From,
-		},
+		ReplyCtx:   rc,
 	}
 	if isCardAction {
 		msg.Content = action
 		msg.IsPermissionResponse = true
 	} else {
 		msg.Content = content
+		if hasMedia {
+			images, files, failed := p.downloadInboundMedia(a)
+			msg.Images = images
+			msg.Files = files
+			if failed > 0 {
+				slog.Warn("teams: some inbound attachments were skipped", "count", failed)
+			}
+		}
 	}
 	p.handler(p, msg)
+}
+
+// downloadInboundMedia downloads a 1:1 activity's file and image attachments,
+// returning them as core attachments plus a count of downloads that were too
+// large or failed (surfaced to the user by the caller). It runs on the async
+// dispatch goroutine, so the blocking HTTP here never delays the webhook ack.
+func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachment, files []core.FileAttachment, failed int) {
+	if p.conn == nil {
+		return nil, nil, 0
+	}
+	ctx := context.Background()
+	max := p.cfg.maxAttachmentBytes
+	if max <= 0 {
+		max = defaultMaxAttachmentBytes
+	}
+	for _, att := range a.Attachments {
+		switch {
+		case att.isFileDownload():
+			info, ok := att.downloadInfo()
+			if !ok || info.DownloadURL == "" {
+				continue // malformed file attachment; nothing to fetch
+			}
+			// downloadUrl is pre-authenticated: fetch WITHOUT the bot token.
+			data, outcome := p.conn.fetch(ctx, info.DownloadURL, false, max)
+			if outcome != fetchOK {
+				failed++
+				continue
+			}
+			files = append(files, core.FileAttachment{
+				MimeType: mimeForFile(att.Name, info.FileType),
+				Data:     data,
+				FileName: att.Name,
+			})
+		case att.isImage():
+			data, outcome := p.fetchImage(ctx, att, a.ServiceURL, max)
+			if outcome != fetchOK {
+				failed++
+				continue
+			}
+			images = append(images, core.ImageAttachment{
+				MimeType: att.ContentType,
+				Data:     data,
+				FileName: att.Name,
+			})
+		}
+	}
+	return images, files, failed
+}
+
+// fetchImage retrieves an inline image attachment. A data: URI is decoded in
+// place; otherwise the contentUrl is fetched, attaching the bot bearer token
+// only when the URL is on the same host as the JWT-validated serviceURL (the Bot
+// Connector attachment endpoint). This keeps the token from ever reaching a
+// foreign host embedded in a forged contentUrl.
+func (p *Platform) fetchImage(ctx context.Context, att inboundAttachment, serviceURL string, maxBytes int64) ([]byte, fetchOutcome) {
+	if strings.HasPrefix(att.ContentURL, "data:") {
+		if data, ok := decodeDataURI(att.ContentURL, maxBytes); ok {
+			return data, fetchOK
+		}
+		return nil, fetchFailed
+	}
+	if att.ContentURL == "" {
+		return nil, fetchFailed
+	}
+	return p.conn.fetch(ctx, att.ContentURL, sameHost(att.ContentURL, serviceURL), maxBytes)
+}
+
+// decodeDataURI decodes a base64 data: URI, enforcing the same size cap as a
+// network download. Only base64 payloads are supported (Teams inline images).
+func decodeDataURI(uri string, maxBytes int64) ([]byte, bool) {
+	comma := strings.IndexByte(uri, ',')
+	if comma < 0 {
+		return nil, false
+	}
+	meta, payload := uri[:comma], uri[comma+1:]
+	if !strings.Contains(meta, "base64") {
+		return nil, false
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, false
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, false
+	}
+	return data, true
+}
+
+// sameHost reports whether two URLs share a host (case-insensitive). Used to gate
+// whether the bot bearer token may accompany an image download.
+func sameHost(a, b string) bool {
+	ua, err := url.Parse(a)
+	if err != nil || ua.Host == "" {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Host, ub.Host)
+}
+
+// mimeForFile derives a MIME type from a downloaded file's name or the
+// FileDownloadInfo fileType extension, falling back to a generic binary type.
+func mimeForFile(name, fileType string) string {
+	if ext := filepath.Ext(name); ext != "" {
+		if mt := mime.TypeByExtension(ext); mt != "" {
+			return mt
+		}
+	}
+	if fileType != "" {
+		if mt := mime.TypeByExtension("." + strings.TrimPrefix(fileType, ".")); mt != "" {
+			return mt
+		}
+	}
+	return "application/octet-stream"
 }
 
 // serviceURLClaimMatches reports whether the token's serviceurl claim matches
