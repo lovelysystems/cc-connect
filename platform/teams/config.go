@@ -12,7 +12,8 @@ import (
 const (
 	defaultWebhookPort          = "3978"
 	defaultWebhookPath          = "/api/messages"
-	defaultCardUpdateIntervalMS = 1500 // card edit throttle; Teams rate-limits edits ~1/s
+	defaultCardUpdateIntervalMS = 1500     // card edit throttle; Teams rate-limits edits ~1/s
+	defaultMaxAttachmentBytes   = 20 << 20 // 20 MiB cap per inbound attachment download
 )
 
 // config holds the resolved Teams platform settings parsed from the config.toml
@@ -47,6 +48,11 @@ type config struct {
 
 	cardUpdateIntervalMS int // card edit throttle (ms); smaller = finer chunks (floor ~1s)
 
+	// maxAttachmentBytes caps each inbound 1:1 attachment download. A payload
+	// larger than this is skipped (with a user notice) rather than truncated or
+	// buffered unbounded. Defaults to defaultMaxAttachmentBytes.
+	maxAttachmentBytes int64
+
 	// dataDir and project are injected by cc-connect (cc_data_dir / cc_project)
 	// and locate the on-disk engagement store. Empty => engagement stays
 	// in-memory only (e.g. tests / standalone construction).
@@ -72,6 +78,10 @@ func parseConfig(opts map[string]any) (config, error) {
 	c.cardUpdateIntervalMS = intOpt(opts, "card_update_interval_ms", defaultCardUpdateIntervalMS)
 	if c.cardUpdateIntervalMS <= 0 {
 		c.cardUpdateIntervalMS = defaultCardUpdateIntervalMS
+	}
+	c.maxAttachmentBytes = int64(intOpt(opts, "max_attachment_bytes", defaultMaxAttachmentBytes))
+	if c.maxAttachmentBytes <= 0 {
+		c.maxAttachmentBytes = defaultMaxAttachmentBytes
 	}
 
 	if c.appID == "" {

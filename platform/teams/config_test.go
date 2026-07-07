@@ -181,6 +181,33 @@ func TestParseConfig_CardLoadingText(t *testing.T) {
 	}
 }
 
+func TestParseConfig_MaxAttachmentBytes(t *testing.T) {
+	// absent -> default
+	c, _ := parseConfig(validOpts())
+	if c.maxAttachmentBytes != defaultMaxAttachmentBytes {
+		t.Errorf("absent max_attachment_bytes -> %d, want default %d", c.maxAttachmentBytes, defaultMaxAttachmentBytes)
+	}
+	// override + non-positive fallback
+	cases := map[any]int64{
+		int64(5 << 20): 5 << 20,
+		1048576:        1048576,
+		0:              defaultMaxAttachmentBytes,
+		-1:             defaultMaxAttachmentBytes,
+		"nope":         defaultMaxAttachmentBytes,
+	}
+	for in, want := range cases {
+		opts := validOpts()
+		opts["max_attachment_bytes"] = in
+		c, err := parseConfig(opts)
+		if err != nil {
+			t.Fatalf("max_attachment_bytes %v: unexpected error: %v", in, err)
+		}
+		if c.maxAttachmentBytes != want {
+			t.Errorf("max_attachment_bytes %v -> %d, want %d", in, c.maxAttachmentBytes, want)
+		}
+	}
+}
+
 func TestNew_RegistersAsPlatform(t *testing.T) {
 	p, err := New(validOpts())
 	if err != nil {

@@ -128,6 +128,53 @@ func (c *connector) sendTo(ctx context.Context, url string, a outboundActivity) 
 	return rr.ID, nil
 }
 
+// fetchOutcome classifies an attachment download so the caller can tell a usable
+// payload apart from an oversize or failed one (the latter two drive a user notice).
+type fetchOutcome int
+
+const (
+	fetchOK       fetchOutcome = iota // download succeeded within the size cap
+	fetchOversize                     // payload exceeded maxBytes; skipped
+	fetchFailed                       // request/transport/status error; skipped
+)
+
+// fetch GETs rawURL and returns its bytes bounded by maxBytes. A bearer token is
+// attached only when withToken is true (file downloadUrls are pre-authenticated
+// and must NOT carry the token; images on the Bot Connector host require it). A
+// payload larger than maxBytes is reported as fetchOversize rather than truncated,
+// and any transport/status error as fetchFailed — neither is fatal to the turn.
+func (c *connector) fetch(ctx context.Context, rawURL string, withToken bool, maxBytes int64) ([]byte, fetchOutcome) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fetchFailed
+	}
+	if withToken {
+		token, err := c.tokens.token(ctx)
+		if err != nil {
+			return nil, fetchFailed
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fetchFailed
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fetchFailed
+	}
+	// Read one byte past the cap so a payload exactly at the limit still succeeds
+	// while anything larger is detected as oversize.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, fetchFailed
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fetchOversize
+	}
+	return data, fetchOK
+}
+
 func (c *connector) do(ctx context.Context, method, url string, a outboundActivity) ([]byte, error) {
 	payload, err := json.Marshal(a)
 	if err != nil {

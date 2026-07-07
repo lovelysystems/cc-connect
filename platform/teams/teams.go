@@ -45,6 +45,7 @@ type sender interface {
 	send(ctx context.Context, rc replyContext, a outboundActivity) (string, error)
 	replyTo(ctx context.Context, rc replyContext, activityID string, a outboundActivity) error
 	update(ctx context.Context, rc replyContext, activityID string, a outboundActivity) error
+	fetch(ctx context.Context, url string, withToken bool, maxBytes int64) ([]byte, fetchOutcome)
 }
 
 // Optional-interface assertions: the engine type-switches on these to drive

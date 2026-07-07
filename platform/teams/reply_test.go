@@ -14,6 +14,26 @@ type fakeSender struct {
 	updatedIDs  []string
 	replied     []outboundActivity
 	repliedToID []string
+
+	// fetch behavior: keyed by requested URL, falling back to fetchDefault.
+	fetchByURL     map[string]fetchResult
+	fetchDefault   fetchResult
+	fetchedURLs    []string
+	fetchwithToken []bool
+}
+
+type fetchResult struct {
+	data    []byte
+	outcome fetchOutcome
+}
+
+func (f *fakeSender) fetch(_ context.Context, url string, withToken bool, _ int64) ([]byte, fetchOutcome) {
+	f.fetchedURLs = append(f.fetchedURLs, url)
+	f.fetchwithToken = append(f.fetchwithToken, withToken)
+	if r, ok := f.fetchByURL[url]; ok {
+		return r.data, r.outcome
+	}
+	return f.fetchDefault.data, f.fetchDefault.outcome
 }
 
 func (f *fakeSender) send(_ context.Context, rc replyContext, a outboundActivity) (string, error) {

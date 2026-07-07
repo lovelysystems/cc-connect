@@ -168,6 +168,108 @@ func TestNewMessageActivity_OmitsAttachmentsWhenNone(t *testing.T) {
 	}
 }
 
+func TestConnectorFetch_SmallPayloadSucceeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("hello-bytes"))
+	}))
+	defer srv.Close()
+
+	c := newConnector(&staticTokens{value: "t"})
+	data, outcome := c.fetch(context.Background(), srv.URL, false, 1024)
+	if outcome != fetchOK {
+		t.Fatalf("outcome = %v, want fetchOK", outcome)
+	}
+	if string(data) != "hello-bytes" {
+		t.Errorf("data = %q", data)
+	}
+}
+
+func TestConnectorFetch_OversizeRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, 100))
+	}))
+	defer srv.Close()
+
+	c := newConnector(&staticTokens{value: "t"})
+	data, outcome := c.fetch(context.Background(), srv.URL, false, 10)
+	if outcome != fetchOversize {
+		t.Fatalf("outcome = %v, want fetchOversize", outcome)
+	}
+	if data != nil {
+		t.Errorf("oversize download should return no data, got %d bytes", len(data))
+	}
+}
+
+func TestConnectorFetch_ExactCapSucceeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, 10))
+	}))
+	defer srv.Close()
+
+	c := newConnector(&staticTokens{value: "t"})
+	data, outcome := c.fetch(context.Background(), srv.URL, false, 10)
+	if outcome != fetchOK || len(data) != 10 {
+		t.Fatalf("payload exactly at the cap should succeed: outcome=%v len=%d", outcome, len(data))
+	}
+}
+
+func TestConnectorFetch_HTTPErrorReturnsFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := newConnector(&staticTokens{value: "t"})
+	if _, outcome := c.fetch(context.Background(), srv.URL, false, 1024); outcome != fetchFailed {
+		t.Fatalf("outcome = %v, want fetchFailed on 404", outcome)
+	}
+}
+
+func TestConnectorFetch_TransportErrorReturnsFailed(t *testing.T) {
+	c := newConnector(&staticTokens{value: "t"})
+	// Unroutable/closed endpoint -> transport error, not a panic.
+	if _, outcome := c.fetch(context.Background(), "http://127.0.0.1:0/nope", false, 1024); outcome != fetchFailed {
+		t.Fatalf("outcome = %v, want fetchFailed on transport error", outcome)
+	}
+}
+
+func TestConnectorFetch_AttachesBearerOnlyWhenRequested(t *testing.T) {
+	var withAuth, withoutAuth string
+	srvWith := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		withAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer srvWith.Close()
+	srvWithout := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		withoutAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer srvWithout.Close()
+
+	c := newConnector(&staticTokens{value: "tok-img"})
+	c.fetch(context.Background(), srvWith.URL, true, 1024)
+	c.fetch(context.Background(), srvWithout.URL, false, 1024)
+
+	if withAuth != "Bearer tok-img" {
+		t.Errorf("withToken=true should send bearer, got %q", withAuth)
+	}
+	if withoutAuth != "" {
+		t.Errorf("withToken=false must not send the bot token to the URL, got %q", withoutAuth)
+	}
+}
+
+func TestConnectorFetch_TokenErrorReturnsFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer srv.Close()
+
+	c := newConnector(failTokens{})
+	if _, outcome := c.fetch(context.Background(), srv.URL, true, 1024); outcome != fetchFailed {
+		t.Fatalf("outcome = %v, want fetchFailed when the token cannot be acquired", outcome)
+	}
+}
+
 func TestTokenSource_CachesAndReuses(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
