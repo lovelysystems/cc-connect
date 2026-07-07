@@ -1,6 +1,9 @@
 package teams
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestCleanText_StripsMention(t *testing.T) {
 	a := &activity{
@@ -77,6 +80,99 @@ func TestCardAction(t *testing.T) {
 	none := &activity{}
 	if got := none.cardAction(); got != "" {
 		t.Fatalf("cardAction = %q, want empty", got)
+	}
+}
+
+func TestActivityAttachments_ParseFileDownloadInfo(t *testing.T) {
+	body := []byte(`{
+		"type":"message",
+		"conversation":{"conversationType":"personal"},
+		"attachments":[{
+			"contentType":"application/vnd.microsoft.teams.file.download.info",
+			"name":"report.docx",
+			"content":{"downloadUrl":"https://onedrive.example/pre-authed","fileType":"docx","uniqueId":"u-1"}
+		}]
+	}`)
+	a, err := parseActivity(body)
+	if err != nil {
+		t.Fatalf("parseActivity: %v", err)
+	}
+	if len(a.Attachments) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(a.Attachments))
+	}
+	att := a.Attachments[0]
+	if !att.isFileDownload() {
+		t.Error("expected isFileDownload true")
+	}
+	if att.Name != "report.docx" {
+		t.Errorf("name = %q", att.Name)
+	}
+	info, ok := att.downloadInfo()
+	if !ok {
+		t.Fatal("downloadInfo not parsed")
+	}
+	if info.DownloadURL != "https://onedrive.example/pre-authed" || info.FileType != "docx" {
+		t.Errorf("downloadInfo = %+v", info)
+	}
+}
+
+func TestActivityAttachments_ParseImage(t *testing.T) {
+	body := []byte(`{
+		"type":"message",
+		"attachments":[{"contentType":"image/png","contentUrl":"https://smba.example/v3/attachments/x"}]
+	}`)
+	a, err := parseActivity(body)
+	if err != nil {
+		t.Fatalf("parseActivity: %v", err)
+	}
+	att := a.Attachments[0]
+	if !att.isImage() {
+		t.Error("expected isImage true for image/png")
+	}
+	if att.isFileDownload() {
+		t.Error("image must not classify as file download")
+	}
+	if att.ContentURL != "https://smba.example/v3/attachments/x" {
+		t.Errorf("contentUrl = %q", att.ContentURL)
+	}
+	if _, ok := att.downloadInfo(); ok {
+		t.Error("downloadInfo must be false for a non-file attachment")
+	}
+}
+
+func TestActivityAttachments_NoneWhenAbsent(t *testing.T) {
+	a, err := parseActivity([]byte(`{"type":"message","text":"hi"}`))
+	if err != nil {
+		t.Fatalf("parseActivity: %v", err)
+	}
+	if len(a.Attachments) != 0 {
+		t.Errorf("attachments = %d, want 0", len(a.Attachments))
+	}
+}
+
+func TestActivityAttachments_CorruptFileContentSkips(t *testing.T) {
+	att := inboundAttachment{
+		ContentType: fileDownloadInfoContentType,
+		Content:     json.RawMessage(`not-json`),
+	}
+	if _, ok := att.downloadInfo(); ok {
+		t.Error("corrupt file content should not parse")
+	}
+}
+
+func TestActivity_IsPersonal(t *testing.T) {
+	cases := map[string]bool{
+		"personal":  true,
+		"Personal":  true,
+		"channel":   false,
+		"groupChat": false,
+		"":          false,
+	}
+	for convType, want := range cases {
+		a := &activity{Conversation: conversationAccount{ConversationType: convType}}
+		if got := a.isPersonal(); got != want {
+			t.Errorf("isPersonal(%q) = %v, want %v", convType, got, want)
+		}
 	}
 }
 

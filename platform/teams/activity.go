@@ -16,7 +16,61 @@ type activity struct {
 	Recipient    channelAccount      `json:"recipient"`
 	Conversation conversationAccount `json:"conversation"`
 	Entities     []entity            `json:"entities"`
+	Attachments  []inboundAttachment `json:"attachments"`
 	Value        json.RawMessage     `json:"value"`
+}
+
+// fileDownloadInfoContentType is the attachment contentType Teams uses for a file
+// a user sends the bot in a 1:1 chat. Its `content` is a fileDownloadInfo.
+const fileDownloadInfoContentType = "application/vnd.microsoft.teams.file.download.info"
+
+// inboundAttachment is an attachment on an *inbound* activity. It is distinct
+// from the outbound `attachment` card type (connector.go): inbound payloads are
+// kept as raw JSON so typed contents like FileDownloadInfo can be decoded lazily.
+type inboundAttachment struct {
+	ContentType string          `json:"contentType"`
+	ContentURL  string          `json:"contentUrl"`
+	Content     json.RawMessage `json:"content"`
+	Name        string          `json:"name"`
+}
+
+// fileDownloadInfo is the `content` of a FileDownloadInfo attachment. downloadUrl
+// is a pre-authenticated link (no bearer token required); fileType is the file
+// extension without a dot (e.g. "docx").
+type fileDownloadInfo struct {
+	DownloadURL string `json:"downloadUrl"`
+	FileType    string `json:"fileType"`
+	UniqueID    string `json:"uniqueId"`
+}
+
+// isFileDownload reports whether the attachment is a 1:1 FileDownloadInfo.
+func (att inboundAttachment) isFileDownload() bool {
+	return strings.EqualFold(att.ContentType, fileDownloadInfoContentType)
+}
+
+// downloadInfo decodes a FileDownloadInfo attachment's content. The bool is false
+// when the attachment is not a file download or its content is unparseable.
+func (att inboundAttachment) downloadInfo() (fileDownloadInfo, bool) {
+	if !att.isFileDownload() || len(att.Content) == 0 {
+		return fileDownloadInfo{}, false
+	}
+	var info fileDownloadInfo
+	if err := json.Unmarshal(att.Content, &info); err != nil {
+		return fileDownloadInfo{}, false
+	}
+	return info, true
+}
+
+// isImage reports whether the attachment is an inline image (contentType image/*).
+func (att inboundAttachment) isImage() bool {
+	return strings.HasPrefix(strings.ToLower(att.ContentType), "image/")
+}
+
+// isPersonal reports whether the activity is a 1:1 (personal) chat. Attachment
+// handling is gated to this context: channel/group files require Microsoft Graph
+// and are out of scope.
+func (a *activity) isPersonal() bool {
+	return strings.EqualFold(a.Conversation.ConversationType, "personal")
 }
 
 type channelAccount struct {
