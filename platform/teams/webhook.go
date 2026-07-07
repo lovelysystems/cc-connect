@@ -18,6 +18,11 @@ import (
 // maxBodyBytes caps the activity payload read from the connector.
 const maxBodyBytes = 1 << 20 // 1 MiB
 
+// attachmentFailureNotice is sent to the user when an inbound attachment can't be
+// delivered (too large or its download failed), instead of dropping it silently.
+// A user-facing i18n key is a possible follow-up; kept a literal for now.
+const attachmentFailureNotice = "⚠️ I couldn't read one of your attachments — it may be too large or unavailable."
+
 // handleActivity is the Bot Connector webhook entry point. It authenticates the
 // request and reads the body synchronously, then acks 202 and runs the agent turn
 // on a background goroutine. Bot Framework expects a fast ack (~15s) and retries
@@ -140,7 +145,12 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 			msg.Images = images
 			msg.Files = files
 			if failed > 0 {
+				// Tell the user rather than silently dropping the attachment; the
+				// turn still proceeds with whatever text/attachments succeeded.
 				slog.Warn("teams: some inbound attachments were skipped", "count", failed)
+				if err := p.Reply(context.Background(), rc, attachmentFailureNotice); err != nil {
+					slog.Warn("teams: failed to send attachment notice", "error", err)
+				}
 			}
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -458,6 +459,43 @@ func TestDispatch_ChannelAttachmentIgnored(t *testing.T) {
 	}
 	if len(fs.fetchedURLs) != 0 {
 		t.Errorf("channel attachment must not trigger a download, fetched=%v", fs.fetchedURLs)
+	}
+}
+
+func TestDispatch_NoticeOnFailedDownload(t *testing.T) {
+	p, got, fs := personalPlatform(fetchResult{outcome: fetchFailed})
+	p.dispatch(nil, personalActivity("review this", fileDL("a.docx", "https://files.example/dl")))
+
+	if len(*got) != 1 {
+		t.Fatalf("turn should still dispatch its text, got %d", len(*got))
+	}
+	if (*got)[0].Content != "review this" {
+		t.Errorf("text should survive a failed attachment, content=%q", (*got)[0].Content)
+	}
+	if len((*got)[0].Files) != 0 {
+		t.Errorf("failed download must not attach a file, got %d", len((*got)[0].Files))
+	}
+	if len(fs.replied) != 1 || !strings.Contains(fs.replied[0].Text, "couldn't read") {
+		t.Errorf("a failed download should send a user notice, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_NoticeOnOversizeDownload(t *testing.T) {
+	p, _, fs := personalPlatform(fetchResult{outcome: fetchOversize})
+	p.dispatch(nil, personalActivity("", fileDL("big.docx", "https://files.example/dl")))
+	if len(fs.replied) != 1 {
+		t.Fatalf("an oversize download should send a user notice, replied=%d", len(fs.replied))
+	}
+}
+
+func TestDispatch_NoNoticeOnSuccess(t *testing.T) {
+	p, got, fs := personalPlatform(fetchResult{data: []byte("OK"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", fileDL("a.docx", "https://files.example/dl")))
+	if len((*got)[0].Files) != 1 {
+		t.Fatalf("successful download should attach the file")
+	}
+	if len(fs.replied) != 0 {
+		t.Errorf("a successful download must not send a notice, replied=%+v", fs.replied)
 	}
 }
 
