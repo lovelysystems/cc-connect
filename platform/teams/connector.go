@@ -29,11 +29,16 @@ type outboundActivity struct {
 	Entities     []map[string]any     `json:"entities,omitempty"`
 }
 
-// attachment carries a card payload; for Adaptive Cards ContentType is
-// "application/vnd.microsoft.card.adaptive" and Content is the card object.
+// attachment carries either a card payload or an inline media payload. For
+// Adaptive Cards ContentType is "application/vnd.microsoft.card.adaptive" and
+// Content is the card object. For an inline image ContentType is the image mime
+// (e.g. "image/png"), ContentUrl is a "data:<mime>;base64,<...>" URI, and Name
+// is the filename — the Bot Framework inline-attachment shape.
 type attachment struct {
 	ContentType string `json:"contentType"`
-	Content     any    `json:"content"`
+	Content     any    `json:"content,omitempty"`
+	ContentUrl  string `json:"contentUrl,omitempty"`
+	Name        string `json:"name,omitempty"`
 }
 
 // newMessageActivity builds a message activity with the conversation-reference

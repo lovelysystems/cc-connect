@@ -293,3 +293,40 @@ func TestTokenSource_CachesAndReuses(t *testing.T) {
 		t.Errorf("token endpoint hit %d times, want 1 (cached)", got)
 	}
 }
+
+func TestAttachmentMarshal_MediaEmitsContentUrlName(t *testing.T) {
+	b, err := json.Marshal(attachment{ContentType: "image/png", ContentUrl: "data:image/png;base64,AAAA", Name: "chart.png"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["contentUrl"] != "data:image/png;base64,AAAA" || m["name"] != "chart.png" {
+		t.Errorf("media attachment missing contentUrl/name: %s", b)
+	}
+	if _, ok := m["content"]; ok {
+		t.Errorf("media attachment should omit content key: %s", b)
+	}
+}
+
+func TestAttachmentMarshal_CardOmitsMediaKeys(t *testing.T) {
+	b, err := json.Marshal(attachment{ContentType: adaptiveCardContentType, Content: map[string]any{"type": "AdaptiveCard"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["content"]; !ok {
+		t.Errorf("card attachment must keep content key: %s", b)
+	}
+	if _, ok := m["contentUrl"]; ok {
+		t.Errorf("card attachment should omit contentUrl: %s", b)
+	}
+	if _, ok := m["name"]; ok {
+		t.Errorf("card attachment should omit name: %s", b)
+	}
+}
