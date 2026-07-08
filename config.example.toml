@@ -1188,8 +1188,8 @@ app_secret = "your-feishu-app-secret"
 # Replies stream as an Adaptive Card. See docs/teams.md for the full setup. / 完整配置见 docs/teams.md。
 # Single-tenant only (tenant_id required) — multi-tenant bot creation is deprecated by Azure.
 # 仅支持单租户（必须填 tenant_id）——Azure 已弃用多租户机器人创建。
-# allow_from = "*" (default) permits anyone in your tenant; set an AAD-object-ID allowlist
-# to restrict to specific users. / allow_from = "*"（默认）允许本租户任何人；填 AAD 用户 ID 可限定到特定用户。
+# Omitting allow_from (or "*") permits anyone in your tenant; set an AAD-object-ID allowlist
+# to restrict to specific users. / 留空 allow_from（或填 "*"）允许本租户任何人；填 AAD 用户 ID 可限定到特定用户。
 
 # [[projects.platforms]]
 # type = "teams"

@@ -12,8 +12,9 @@ requires a publicly reachable URL.
 - The connector validates each request's JWT, then forwards the message to the
   cc-connect engine.
 - Replies are sent back through the Bot Connector REST API and stream as an
-  **Adaptive Card**: a "working" card is posted immediately, edited in place as
-  the answer grows, and finalized with the native "AI generated" label. The card
+  **Adaptive Card**: a "working" card is posted immediately, then edited in place
+  as the answer grows. Every card — the working card included — carries the native
+  "AI generated" label, so it is present from the first render. The card
   renders uniformly in channels, group chats, and 1:1 (unlike the native
   `streamType` protocol, which is one-on-one only).
 
