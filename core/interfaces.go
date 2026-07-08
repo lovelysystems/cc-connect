@@ -279,19 +279,11 @@ type AtMentionSender interface {
 }
 
 // ImageSender is an optional interface for platforms that support sending images.
-//
-// Delivery is external-only: images reach a platform solely via the send API
-// (cc-connect send / cron -> APIServer Unix socket -> SendToSessionWithOptions),
-// never through agent reply Events — Event carries no image/file field, so an
-// agent-generated image does not auto-flow to any platform. The send socket is
-// 0600 daemon-owned (api.go), so a project's run_as_user (unprivileged) agent
-// cannot open it: media delivery is unavailable under run_as_user, every platform.
 type ImageSender interface {
 	SendImage(ctx context.Context, replyCtx any, img ImageAttachment) error
 }
 
 // FileSender is an optional interface for platforms that support sending files.
-// Same external-only delivery model and run_as_user constraint as ImageSender.
 type FileSender interface {
 	SendFile(ctx context.Context, replyCtx any, file FileAttachment) error
 }
