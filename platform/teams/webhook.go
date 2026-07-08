@@ -235,6 +235,13 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 		max = defaultMaxAttachmentBytes
 	}
 	refs := p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+	// Bound per-message downloads: each ref is a 3-call Graph sequence + up to
+	// maxAttachmentBytes buffered. Extra refs are counted as failed so the user is
+	// notified rather than silently dropped.
+	if len(refs) > maxChannelFileRefs {
+		failed += len(refs) - maxChannelFileRefs
+		refs = refs[:maxChannelFileRefs]
+	}
 	for _, ref := range refs {
 		data, outcome := p.graph.downloadFile(ctx, ref.contentURL, max)
 		if outcome != fetchOK {

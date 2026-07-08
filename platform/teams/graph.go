@@ -5,10 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+// maxChannelFileRefs bounds how many file references the connector downloads from
+// a single channel message. Each ref costs a 3-call Graph sequence and buffers up
+// to maxAttachmentBytes, so an unbounded count would amplify Graph calls and
+// memory; a real message attaches only a handful of files.
+const maxChannelFileRefs = 10
 
 // graphBase is the Microsoft Graph v1.0 root.
 const graphBase = "https://graph.microsoft.com/v1.0"
@@ -75,14 +82,16 @@ func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID
 	if aadGroupID == "" || channelID == "" || msgID == "" {
 		return nil
 	}
+	// Escape every id path segment (they are opaque, never multi-segment) so a
+	// malformed/unexpected id can't restructure the Graph path.
 	var u string
 	if rootID != "" && rootID != msgID {
 		// Reply within a channel thread.
 		u = fmt.Sprintf("%s/teams/%s/channels/%s/messages/%s/replies/%s",
-			g.base, aadGroupID, url.PathEscape(channelID), rootID, msgID)
+			g.base, url.PathEscape(aadGroupID), url.PathEscape(channelID), url.PathEscape(rootID), url.PathEscape(msgID))
 	} else {
 		u = fmt.Sprintf("%s/teams/%s/channels/%s/messages/%s",
-			g.base, aadGroupID, url.PathEscape(channelID), msgID)
+			g.base, url.PathEscape(aadGroupID), url.PathEscape(channelID), url.PathEscape(msgID))
 	}
 	body, ok := g.get(ctx, u)
 	if !ok {
@@ -194,14 +203,20 @@ func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, bool) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := g.http.Do(req)
 	if err != nil {
+		slog.Warn("teams: graph GET transport error", "url", rawURL, "error", err)
 		return nil, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Surface the common misconfig (RSC ChannelMessage.Read.Group not consented,
+		// or the site not granted Sites.Selected → 403) so it isn't invisible.
+		// Graph URLs carry no secret (no token in the URL).
+		slog.Warn("teams: graph GET non-2xx", "status", resp.StatusCode, "url", rawURL)
 		return nil, false
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
+		slog.Warn("teams: graph GET read error", "url", rawURL, "error", err)
 		return nil, false
 	}
 	return body, true
@@ -231,14 +246,17 @@ func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes in
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := g.http.Do(req)
 	if err != nil {
+		slog.Warn("teams: graph content GET transport error", "url", rawURL, "error", err)
 		return nil, fetchFailed
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Warn("teams: graph content GET non-2xx", "status", resp.StatusCode, "url", rawURL)
 		return nil, fetchFailed
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
+		slog.Warn("teams: graph content GET read error", "url", rawURL, "error", err)
 		return nil, fetchFailed
 	}
 	if int64(len(data)) > maxBytes {

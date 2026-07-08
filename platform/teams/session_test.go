@@ -641,6 +641,63 @@ func TestDispatch_ChannelFileUnauthorizedNotice(t *testing.T) {
 	}
 }
 
+func TestDispatch_ChannelFileNonEngagedNoGraphCall(t *testing.T) {
+	fg := &fakeGraph{refs: []channelFileRef{{name: "x", contentURL: "u"}}, data: []byte("X"), outcome: fetchOK}
+	p, got, _ := channelFilePlatform(true, fg)
+	// A channel message with no @mention in a fresh (non-engaged) conversation is
+	// gated out by shouldHandle — the Graph read must not run (ordering pin: the
+	// engagement gate precedes the read).
+	a := activity{
+		Type:         "message",
+		ID:           "m2",
+		Text:         "just chatting",
+		ServiceURL:   "https://smba.example/",
+		From:         channelAccount{ID: "user-9"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "19:other@thread.tacv2;messageid=r2", ConversationType: "channel"},
+	}
+	a.ChannelData.Team.AADGroupID = "group-1"
+	a.ChannelData.Channel.ID = "19:other@thread.tacv2"
+	p.dispatch(nil, mustJSON(a))
+
+	if len(*got) != 0 {
+		t.Fatalf("non-engaged channel message must be dropped, got %d", len(*got))
+	}
+	if fg.readCalls != 0 {
+		t.Errorf("non-engaged message must not trigger a Graph read, got %d", fg.readCalls)
+	}
+}
+
+func TestDispatch_ChannelTextOnlyOneRead(t *testing.T) {
+	fg := &fakeGraph{refs: nil} // engaged message, no file
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("just text"))
+
+	if fg.readCalls != 1 {
+		t.Errorf("engaged channel turn should issue exactly one Graph read, got %d", fg.readCalls)
+	}
+	if len(*got) != 1 || len((*got)[0].Files) != 0 {
+		t.Errorf("text-only engaged turn should dispatch with zero files, got %+v", *got)
+	}
+}
+
+func TestDispatch_ChannelFileRefCap(t *testing.T) {
+	var refs []channelFileRef
+	for i := 0; i < maxChannelFileRefs+3; i++ {
+		refs = append(refs, channelFileRef{name: "f.docx", contentURL: "https://ex.sharepoint.com/sites/T/Shared Documents/f.docx"})
+	}
+	fg := &fakeGraph{refs: refs, data: []byte("D"), outcome: fetchOK}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("lots of files"))
+
+	if len((*got)[0].Files) != maxChannelFileRefs {
+		t.Errorf("files = %d, want capped at %d", len((*got)[0].Files), maxChannelFileRefs)
+	}
+	if len(fs.replied) != 1 {
+		t.Errorf("exceeding the per-message ref cap should notify the user, replied=%d", len(fs.replied))
+	}
+}
+
 // TestSessionKey_ScopeVariants covers AE8: the three scopes produce distinct
 // keys, and channel scope collapses sibling threads to the channel root.
 func TestSessionKey_ScopeVariants(t *testing.T) {
