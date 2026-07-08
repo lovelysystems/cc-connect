@@ -53,6 +53,13 @@ type config struct {
 	// buffered unbounded. Defaults to defaultMaxAttachmentBytes.
 	maxAttachmentBytes int64
 
+	// channelFilesEnabled opts into reading files a user attaches to the bot in a
+	// channel (via Microsoft Graph + Sites.Selected). Off by default: enabling it
+	// requires the RSC ChannelMessage.Read.Group manifest permission and per-site
+	// Sites.Selected admin grants (see docs/teams.md). Disabled = channel
+	// attachments are ignored, no Graph call.
+	channelFilesEnabled bool
+
 	// dataDir and project are injected by cc-connect (cc_data_dir / cc_project)
 	// and locate the on-disk engagement store. Empty => engagement stays
 	// in-memory only (e.g. tests / standalone construction).
@@ -83,6 +90,7 @@ func parseConfig(opts map[string]any) (config, error) {
 	if c.maxAttachmentBytes <= 0 {
 		c.maxAttachmentBytes = defaultMaxAttachmentBytes
 	}
+	c.channelFilesEnabled = boolOpt(opts, "channel_files_enabled", false)
 
 	if c.appID == "" {
 		return config{}, fmt.Errorf("teams: app_id is required")
@@ -109,6 +117,14 @@ func parseConfig(opts map[string]any) (config, error) {
 func stringOpt(opts map[string]any, key string) string {
 	s, _ := opts[key].(string)
 	return s
+}
+
+// boolOpt reads a boolean option, returning def when absent or the wrong type.
+func boolOpt(opts map[string]any, key string, def bool) bool {
+	if b, ok := opts[key].(bool); ok {
+		return b
+	}
+	return def
 }
 
 // splitCSV splits a comma-separated option into trimmed, non-empty entries,

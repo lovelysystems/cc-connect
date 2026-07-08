@@ -105,7 +105,13 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	// message carrying a handled attachment still dispatches even with empty text
 	// (R3); an unhandled-only attachment must not force an empty-content turn.
 	hasMedia := a.isPersonal() && a.hasProcessableAttachment()
-	if content == "" && !isCardAction && !hasMedia {
+	// A channel message might carry a file the activity doesn't reveal (the
+	// reference is stripped; it's discovered via a Graph read after the engagement
+	// gate). So don't drop an empty-text channel message when the feature is on —
+	// shouldHandle still gates engagement, and a fileless engaged turn is dropped
+	// downstream by the engine.
+	mightHaveChannelFile := p.cfg.channelFilesEnabled && !a.isPersonal()
+	if content == "" && !isCardAction && !hasMedia && !mightHaveChannelFile {
 		return // empty message with no card action and no attachment
 	}
 	// Authorize before touching engagement so an unauthorized @mention cannot
@@ -141,17 +147,22 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		msg.IsPermissionResponse = true
 	} else {
 		msg.Content = content
-		if hasMedia {
-			images, files, failed := p.downloadInboundMedia(a)
-			msg.Images = images
-			msg.Files = files
-			if failed > 0 {
-				// Tell the user rather than silently dropping the attachment; the
-				// turn still proceeds with whatever text/attachments succeeded.
-				slog.Warn("teams: some inbound attachments were skipped", "count", failed)
-				if err := p.Reply(context.Background(), rc, attachmentFailureNotice); err != nil {
-					slog.Warn("teams: failed to send attachment notice", "error", err)
-				}
+		var failed int
+		switch {
+		case hasMedia:
+			// 1:1: file/image references arrive in the activity.
+			msg.Images, msg.Files, failed = p.downloadInboundMedia(a)
+		case mightHaveChannelFile:
+			// Channel: the file reference is not in the activity — read the engaged
+			// message via Graph to discover it, then download under Sites.Selected.
+			msg.Files, failed = p.downloadChannelFiles(a)
+		}
+		if failed > 0 {
+			// Tell the user rather than silently dropping the attachment; the turn
+			// still proceeds with whatever text/attachments succeeded.
+			slog.Warn("teams: some inbound attachments were skipped", "count", failed)
+			if err := p.Reply(context.Background(), rc, attachmentFailureNotice); err != nil {
+				slog.Warn("teams: failed to send attachment notice", "error", err)
 			}
 		}
 	}
@@ -206,6 +217,37 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 		}
 	}
 	return images, files, failed
+}
+
+// downloadChannelFiles reads the engaged channel message via Graph to discover
+// file attachments (which the inbound activity strips) and downloads them under
+// Sites.Selected. Returns the files plus a count that failed or were too large.
+// Runs on the async dispatch goroutine, so the blocking Graph calls never delay
+// the webhook ack. The Graph read is one call per engaged channel message (free,
+// not metered); the download only fires when a file reference is present.
+func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachment, failed int) {
+	if p.graph == nil {
+		return nil, 0
+	}
+	ctx := context.Background()
+	max := p.cfg.maxAttachmentBytes
+	if max <= 0 {
+		max = defaultMaxAttachmentBytes
+	}
+	refs := p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+	for _, ref := range refs {
+		data, outcome := p.graph.downloadFile(ctx, ref.contentURL, max)
+		if outcome != fetchOK {
+			failed++
+			continue
+		}
+		files = append(files, core.FileAttachment{
+			MimeType: mimeForFile(ref.name, ""),
+			Data:     data,
+			FileName: ref.name,
+		})
+	}
+	return files, failed
 }
 
 // fetchImage retrieves an inline image attachment. A data: URI is decoded in
