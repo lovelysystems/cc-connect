@@ -138,11 +138,22 @@ Without `supportsFiles: true`, Teams does not deliver file attachments to the bo
 user gets a brief notice; the turn still proceeds with any text and other
 attachments.
 
+## Sending images
+
+When the agent produces an image (or a user runs `cc-connect send --image`), the
+bot sends it back **inline** as a base64 data-URI attachment, threaded to the
+originating message. It renders in 1:1 chats, group chats, and channels. Images
+above ~1 MiB are skipped with a brief text notice rather than failing the turn,
+because inline delivery is bounded by the Bot Connector's activity size limit.
+Sending **files** (non-image) is not supported — Teams requires a separate file
+consent / SharePoint flow.
+
 **Not supported:**
 - **Channel / group attachments.** Files posted in a channel or group chat live
   in SharePoint and require Microsoft Graph + tenant admin consent; attachments
   outside a 1:1 chat are ignored, not partially handled.
-- **Outbound media** (the bot *sending* files/images) is not implemented.
+- **Outbound files** (the bot *sending* non-image files) are not implemented.
+  Outbound **images** are supported (see "Sending images").
 
 ## Connection type
 
