@@ -32,12 +32,12 @@ type outboundActivity struct {
 // attachment carries either a card payload or an inline media payload. For
 // Adaptive Cards ContentType is "application/vnd.microsoft.card.adaptive" and
 // Content is the card object. For an inline image ContentType is the image mime
-// (e.g. "image/png"), ContentUrl is a "data:<mime>;base64,<...>" URI, and Name
+// (e.g. "image/png"), ContentURL is a "data:<mime>;base64,<...>" URI, and Name
 // is the filename — the Bot Framework inline-attachment shape.
 type attachment struct {
 	ContentType string `json:"contentType"`
 	Content     any    `json:"content,omitempty"`
-	ContentUrl  string `json:"contentUrl,omitempty"`
+	ContentURL  string `json:"contentUrl,omitempty"`
 	Name        string `json:"name,omitempty"`
 }
 

@@ -295,7 +295,7 @@ func TestTokenSource_CachesAndReuses(t *testing.T) {
 }
 
 func TestAttachmentMarshal_MediaEmitsContentUrlName(t *testing.T) {
-	b, err := json.Marshal(attachment{ContentType: "image/png", ContentUrl: "data:image/png;base64,AAAA", Name: "chart.png"})
+	b, err := json.Marshal(attachment{ContentType: "image/png", ContentURL: "data:image/png;base64,AAAA", Name: "chart.png"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

@@ -22,6 +22,6 @@ func imageActivity(rc replyContext, img core.ImageAttachment) outboundActivity {
 	}
 	dataURI := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(img.Data)
 	a := newActivity(rc, "message")
-	a.Attachments = []attachment{{ContentType: mime, ContentUrl: dataURI, Name: name}}
+	a.Attachments = []attachment{{ContentType: mime, ContentURL: dataURI, Name: name}}
 	return a
 }
