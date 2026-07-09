@@ -137,7 +137,7 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		ReplyCtx:   rc,
 	}
 	if isCardAction {
-		msg.Content = action
+		msg.Content = cardActionReply(action)
 		msg.IsPermissionResponse = true
 	} else {
 		msg.Content = content

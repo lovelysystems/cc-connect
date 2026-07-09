@@ -169,3 +169,22 @@ func (a *activity) cardAction() string {
 	}
 	return ""
 }
+
+// cardActionReply maps a card Action.Submit value to the message content the
+// engine's interactive-prompt resolvers expect. Permission actions become the
+// canonical keyword text — notably so "perm:allow_all" is not mis-read as a
+// one-time allow by the engine's substring/token matcher. AskUserQuestion
+// actions ("askq:q:o") and anything else pass through verbatim (the engine
+// parses the askq: prefix directly).
+func cardActionReply(action string) string {
+	switch action {
+	case "perm:allow":
+		return "allow"
+	case "perm:deny":
+		return "deny"
+	case "perm:allow_all":
+		return "allow all"
+	default:
+		return action
+	}
+}

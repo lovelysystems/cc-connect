@@ -626,3 +626,61 @@ func TestDispatch_SelfMessageIgnored(t *testing.T) {
 		t.Fatalf("bot self-message must be ignored, got %d", len(*got))
 	}
 }
+
+func TestDispatch_CardActionMapsToResolverInput(t *testing.T) {
+	for _, tc := range []struct{ action, want string }{
+		{"perm:allow", "allow"},
+		{"perm:deny", "deny"},
+		{"perm:allow_all", "allow all"}, // must NOT collapse to a one-time allow
+		{"askq:0:1", "askq:0:1"},        // AskUserQuestion answer forwarded verbatim
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			p := teamsPlatform("user")
+			h, got := collector()
+			p.handler = h
+			a := activity{
+				Type:         "message",
+				ID:           "act-1",
+				ServiceURL:   "https://smba.example/",
+				From:         channelAccount{ID: "user-1"},
+				Recipient:    channelAccount{ID: "bot-1"},
+				Conversation: conversationAccount{ID: "dm-1", ConversationType: "personal"},
+				Value:        json.RawMessage(`{"action":"` + tc.action + `"}`),
+			}
+			p.dispatch(nil, mustJSON(a))
+			if len(*got) != 1 {
+				t.Fatalf("card action should dispatch one message, got %d", len(*got))
+			}
+			m := (*got)[0]
+			if m.Content != tc.want {
+				t.Errorf("content = %q, want %q", m.Content, tc.want)
+			}
+			if !m.IsPermissionResponse {
+				t.Error("card action must set IsPermissionResponse")
+			}
+		})
+	}
+}
+
+func TestDispatch_MalformedCardValueFallsThroughToText(t *testing.T) {
+	p := teamsPlatform("user")
+	h, got := collector()
+	p.handler = h
+	a := activity{
+		Type:         "message",
+		ID:           "act-1",
+		Text:         "hello",
+		ServiceURL:   "https://smba.example/",
+		From:         channelAccount{ID: "user-1"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "dm-1", ConversationType: "personal"},
+		Value:        json.RawMessage(`{"foo":"bar"}`), // no action key -> not a card action
+	}
+	p.dispatch(nil, mustJSON(a))
+	if len(*got) != 1 {
+		t.Fatalf("text with a non-action value should dispatch as text, got %d", len(*got))
+	}
+	if m := (*got)[0]; m.Content != "hello" || m.IsPermissionResponse {
+		t.Errorf("expected plain text dispatch, got content=%q isPerm=%v", m.Content, m.IsPermissionResponse)
+	}
+}
