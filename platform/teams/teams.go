@@ -91,6 +91,7 @@ var (
 	_ core.FormattingInstructionProvider = (*Platform)(nil)
 	_ core.StreamingCardPlatform         = (*Platform)(nil)
 	_ core.ImageSender                   = (*Platform)(nil)
+	_ core.InlineButtonSender            = (*Platform)(nil)
 )
 
 // New builds a Teams platform from the config.toml options table.

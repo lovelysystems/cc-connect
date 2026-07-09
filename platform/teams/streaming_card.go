@@ -115,6 +115,26 @@ func (c *teamsStreamingCard) Finalize(ctx context.Context, content string) error
 	return nil
 }
 
+// promptUpdate PUTs the card with the answer so far plus a folded interactive
+// prompt and its Action.Submit buttons, bypassing the throttle (a prompt must
+// render at once). The buttons vanish on the next Update, which re-renders the
+// plain answer. No-op on a terminal card.
+func (c *teamsStreamingCard) promptUpdate(ctx context.Context, prompt string, buttons []cardButton) error {
+	c.mu.Lock()
+	if c.failed {
+		c.mu.Unlock()
+		return nil
+	}
+	answer := c.lastText
+	c.mu.Unlock()
+
+	body := prompt
+	if answer != "" {
+		body = answer + "\n\n" + prompt
+	}
+	return c.conn.update(ctx, c.rc, c.activityID, aiCardActivity(c.rc, promptCard(body, buttons)))
+}
+
 // Failed reports whether the card hit a terminal error.
 func (c *teamsStreamingCard) Failed() bool {
 	c.mu.Lock()
