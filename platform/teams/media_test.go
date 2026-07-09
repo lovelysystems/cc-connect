@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -103,7 +104,9 @@ func TestSendImage_OversizeSendsNoticeNotImage(t *testing.T) {
 }
 
 func TestSendImage_ConnectorTooLargeDegradesToNotice(t *testing.T) {
-	fs := &fakeSender{id: "m1", attachErr: errActivityTooLarge}
+	// Inject the WRAPPED form the connector actually returns (do() wraps with %w),
+	// so this exercises the errors.Is unwrap rather than a bare-equality match.
+	fs := &fakeSender{id: "m1", attachErr: fmt.Errorf("teams: connector returned 413: %w", errActivityTooLarge)}
 	p := &Platform{conn: fs}
 	rc := replyContext{serviceURL: "https://s/", conversationID: "c1", activityID: "a1"}
 
