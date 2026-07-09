@@ -170,7 +170,7 @@ func (c *connector) fetch(ctx context.Context, rawURL string, withToken bool, ma
 	if err != nil {
 		return nil, fetchFailed
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fetchFailed
 	}
@@ -206,7 +206,7 @@ func (c *connector) do(ctx context.Context, method, url string, a outboundActivi
 	if err != nil {
 		return nil, fmt.Errorf("teams: connector %s: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if resp.StatusCode == http.StatusRequestEntityTooLarge {
 		return nil, fmt.Errorf("teams: connector returned 413: %w", errActivityTooLarge)
