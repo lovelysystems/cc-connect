@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -38,6 +39,41 @@ type Platform struct {
 	conn        sender
 	server      *http.Server
 	dispatchSem chan struct{} // bounds concurrent async dispatch goroutines
+
+	// activeCards maps a conversation id to its live streaming card so an
+	// interactive prompt (permission / AskUserQuestion) can be folded into the
+	// card in place rather than posted as a separate message. Registered in
+	// CreateStreamingCard, cleared when the card finalizes.
+	activeCardsMu sync.Mutex
+	activeCards   map[string]*teamsStreamingCard
+}
+
+// registerCard records the live streaming card for a conversation.
+func (p *Platform) registerCard(conversationID string, c *teamsStreamingCard) {
+	p.activeCardsMu.Lock()
+	defer p.activeCardsMu.Unlock()
+	if p.activeCards == nil {
+		p.activeCards = make(map[string]*teamsStreamingCard)
+	}
+	p.activeCards[conversationID] = c
+}
+
+// clearCard drops the live streaming card for a conversation (idempotent).
+func (p *Platform) clearCard(conversationID string) {
+	p.activeCardsMu.Lock()
+	defer p.activeCardsMu.Unlock()
+	delete(p.activeCards, conversationID)
+}
+
+// activeCard returns the live, non-terminal streaming card for a conversation.
+func (p *Platform) activeCard(conversationID string) (*teamsStreamingCard, bool) {
+	p.activeCardsMu.Lock()
+	c, ok := p.activeCards[conversationID]
+	p.activeCardsMu.Unlock()
+	if !ok || c.Failed() {
+		return nil, false
+	}
+	return c, true
 }
 
 // sender abstracts the Bot Connector calls for testability.

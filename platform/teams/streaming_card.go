@@ -43,12 +43,15 @@ func (p *Platform) createCardStream(ctx context.Context, rc replyContext) (core.
 	if id == "" {
 		return nil, fmt.Errorf("teams: streaming card got no activity id")
 	}
-	return &teamsStreamingCard{
+	c := &teamsStreamingCard{
 		conn:       p.conn,
 		rc:         rc,
 		activityID: id,
 		interval:   p.streamInterval(),
-	}, nil
+		clear:      func() { p.clearCard(rc.conversationID) },
+	}
+	p.registerCard(rc.conversationID, c)
+	return c, nil
 }
 
 // teamsStreamingCard edits one Adaptive Card in place as the answer streams.
@@ -57,6 +60,8 @@ type teamsStreamingCard struct {
 	rc         replyContext
 	activityID string
 	interval   time.Duration
+
+	clear func() // deregisters this card from the platform's active-card map (set at creation)
 
 	mu       sync.Mutex
 	lastSent time.Time
@@ -97,6 +102,10 @@ func (c *teamsStreamingCard) Finalize(ctx context.Context, content string) error
 		return nil // already terminal — don't re-PUT (matches Slack/DingTalk)
 	}
 	c.mu.Unlock()
+	// Terminal either way: this card is no longer the conversation's active card.
+	if c.clear != nil {
+		defer c.clear()
+	}
 	if err := c.conn.update(ctx, c.rc, c.activityID, aiCardActivity(c.rc, answerCard(content))); err != nil {
 		c.mu.Lock()
 		c.failed = true
