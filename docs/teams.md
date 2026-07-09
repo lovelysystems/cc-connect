@@ -142,11 +142,12 @@ attachments.
 
 When the agent produces an image (or a user runs `cc-connect send --image`), the
 bot sends it back **inline** as a base64 data-URI attachment, threaded to the
-originating message. It renders in 1:1 chats, group chats, and channels. Images
-above ~1 MiB are skipped with a brief text notice rather than failing the turn,
-because inline delivery is bounded by the Bot Connector's activity size limit.
-Sending **files** (non-image) is not supported — Teams requires a separate file
-consent / SharePoint flow.
+originating message. It renders in 1:1 chats, group chats, and channels. If the
+Bot Connector rejects the image as too large (HTTP 413), the bot degrades to a
+brief text notice rather than failing the turn — so Teams' own size limit
+governs, not a fixed cap (a generous safety guard only rejects pathologically
+large images up front). Sending **files** (non-image) is not supported — Teams
+requires a separate file consent / SharePoint flow.
 
 **Not supported:**
 - **Channel / group attachments.** Files posted in a channel or group chat live
