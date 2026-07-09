@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -73,5 +74,44 @@ func TestCardActivity_WrapsAttachment(t *testing.T) {
 	}
 	if a.Attachments[0].ContentType != adaptiveCardContentType {
 		t.Errorf("contentType = %q", a.Attachments[0].ContentType)
+	}
+}
+
+func TestPromptCard_RendersActionSubmitButtons(t *testing.T) {
+	card := promptCard("**needs permission**", []cardButton{
+		{title: "Allow", action: "perm:allow"},
+		{title: "Deny", action: "perm:deny"},
+	})
+	actions, ok := card["actions"].([]map[string]any)
+	if !ok || len(actions) != 2 {
+		t.Fatalf("want 2 actions, got %v", card["actions"])
+	}
+	if actions[0]["type"] != "Action.Submit" || actions[0]["title"] != "Allow" {
+		t.Errorf("action[0] = %v", actions[0])
+	}
+	data0, _ := actions[0]["data"].(map[string]any)
+	if data0["action"] != "perm:allow" {
+		t.Errorf("action[0] data = %v", actions[0]["data"])
+	}
+}
+
+func TestPromptCard_NoButtonsOmitsActions(t *testing.T) {
+	card := promptCard("just text", nil)
+	if _, ok := card["actions"]; ok {
+		t.Errorf("a buttonless prompt card must omit the actions key: %v", card)
+	}
+}
+
+func TestPromptCard_ActionRoundTripsThroughCardAction(t *testing.T) {
+	card := promptCard("q", []cardButton{{title: "Option A", action: "askq:0:1"}})
+	actions := card["actions"].([]map[string]any)
+	data, err := json.Marshal(actions[0]["data"])
+	if err != nil {
+		t.Fatalf("marshal data: %v", err)
+	}
+	// The outbound button data must be readable by the inbound cardAction() parser.
+	a := &activity{Value: json.RawMessage(data)}
+	if got := a.cardAction(); got != "askq:0:1" {
+		t.Errorf("cardAction() = %q, want askq:0:1", got)
 	}
 }

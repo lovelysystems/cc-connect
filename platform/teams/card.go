@@ -41,6 +41,44 @@ func aiGeneratedEntity() map[string]any {
 	}
 }
 
+// cardButton is a labeled Action.Submit on a card. action is the value the
+// inbound cardAction() parser reads back (e.g. "perm:allow", "askq:0:1").
+type cardButton struct {
+	title  string
+	action string
+}
+
+// actionSet renders card buttons as an Adaptive Card actions array. Each entry
+// is an Action.Submit carrying {action:<value>} in its data, matching the key
+// cardAction() reads on the inbound submit.
+func actionSet(buttons []cardButton) []map[string]any {
+	if len(buttons) == 0 {
+		return nil
+	}
+	actions := make([]map[string]any, 0, len(buttons))
+	for _, b := range buttons {
+		actions = append(actions, map[string]any{
+			"type":  "Action.Submit",
+			"title": b.title,
+			"data":  map[string]any{"action": b.action},
+		})
+	}
+	return actions
+}
+
+// promptCard renders prompt text (Adaptive Card markdown) with a set of
+// Action.Submit buttons — used to fold a permission / AskUserQuestion prompt
+// into a card. With no buttons it degrades to a plain text card.
+func promptCard(markdown string, buttons []cardButton) map[string]any {
+	card := adaptiveCard([]map[string]any{
+		{"type": "TextBlock", "text": markdown, "wrap": true},
+	})
+	if a := actionSet(buttons); a != nil {
+		card["actions"] = a
+	}
+	return card
+}
+
 func adaptiveCard(body []map[string]any) map[string]any {
 	return map[string]any{
 		"type":    "AdaptiveCard",
