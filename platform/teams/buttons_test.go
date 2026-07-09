@@ -36,23 +36,29 @@ func cardActions(t *testing.T, a outboundActivity) []string {
 	return out
 }
 
-func TestSendWithButtons_FoldsIntoActiveCard(t *testing.T) {
+func TestSendWithButtons_StandaloneEvenWithActiveCard(t *testing.T) {
 	fs := &fakeSender{id: "m1"}
 	p := &Platform{conn: fs, cfg: config{}}
+	// Even with a live streaming card for this conversation, the prompt must be
+	// its own message (a card send), NOT folded into the streaming card via update.
 	if _, err := p.CreateStreamingCard(context.Background(), cardCtx()); err != nil {
 		t.Fatalf("CreateStreamingCard: %v", err)
 	}
+	updatesBefore := len(fs.updates)
 
-	if err := p.SendWithButtons(context.Background(), cardCtx(), "needs permission", permButtons); err != nil {
+	rc := replyContext{serviceURL: "https://s/", conversationID: "c1", activityID: "a1"}
+	if err := p.SendWithButtons(context.Background(), rc, "needs permission", permButtons); err != nil {
 		t.Fatalf("SendWithButtons: %v", err)
 	}
-	// Folded via the card's in-place edit (update), not a fresh send/replyTo.
-	if len(fs.updates) == 0 {
-		t.Fatalf("prompt should fold into the active card via update, got updates=%d replied=%d", len(fs.updates), len(fs.replied))
+	if len(fs.updates) != updatesBefore {
+		t.Fatalf("prompt must not fold into the streaming card via update; updates went %d -> %d", updatesBefore, len(fs.updates))
 	}
-	got := cardActions(t, fs.updates[len(fs.updates)-1])
+	if len(fs.replied) != 1 {
+		t.Fatalf("prompt should be its own threaded card message, got replied=%d", len(fs.replied))
+	}
+	got := cardActions(t, fs.replied[0])
 	if len(got) != 3 || got[0] != "perm:allow" || got[2] != "perm:allow_all" {
-		t.Errorf("folded card actions = %v", got)
+		t.Errorf("standalone card actions = %v", got)
 	}
 }
 

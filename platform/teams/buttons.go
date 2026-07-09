@@ -9,23 +9,18 @@ import (
 
 // SendWithButtons implements core.InlineButtonSender. The engine calls it for
 // interactive prompts (tool permission gates and single-select AskUserQuestion)
-// before falling back to plain text. When a streaming card is live for the
-// conversation, the prompt and its buttons are folded into that card in place;
-// otherwise a standalone Adaptive Card carrying the buttons is sent (threaded to
-// the originating activity like a text Reply). The button Data (e.g. "perm:allow",
-// "askq:0:1") rides in each Action.Submit so cardAction() resolves it inbound.
+// before falling back to plain text. The prompt is always its own standalone
+// Adaptive Card carrying the buttons, threaded to the originating activity like a
+// text Reply — never folded into the live streaming card, so a prompt is a
+// distinct, un-missable timeline message (matches every other platform). The
+// button Data (e.g. "perm:allow", "askq:0:1") rides in each Action.Submit so
+// cardAction() resolves it inbound.
 func (p *Platform) SendWithButtons(ctx context.Context, replyCtx any, content string, buttons [][]core.ButtonOption) error {
 	rc, ok := replyCtx.(replyContext)
 	if !ok {
 		return fmt.Errorf("teams: invalid reply context %T", replyCtx)
 	}
-	cbs := flattenButtons(buttons)
-
-	if card, ok := p.activeCard(rc.conversationID); ok {
-		return card.promptUpdate(ctx, content, cbs)
-	}
-
-	a := cardActivity(rc, promptCard(content, cbs))
+	a := cardActivity(rc, promptCard(content, flattenButtons(buttons)))
 	if rc.activityID != "" {
 		return p.conn.replyTo(ctx, rc, rc.activityID, a)
 	}
