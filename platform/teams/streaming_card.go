@@ -36,11 +36,6 @@ func (p *Platform) streamInterval() time.Duration {
 // createCardStream posts the loading Adaptive Card immediately and returns a
 // handle that edits it in place.
 func (p *Platform) createCardStream(ctx context.Context, rc replyContext) (core.StreamingCard, error) {
-	// Evict any stale card for this conversation up front: a prior turn that
-	// ended without Finalize (idle timeout, cancel, send error) leaves its entry
-	// registered, and it must not be folded into by this turn's prompts. A
-	// successful send below re-registers; a failed one leaves it cleared.
-	p.clearCard(rc.conversationID)
 	id, err := p.conn.send(ctx, rc, aiCardActivity(rc, loadingCard(p.cfg.cardLoadingText)))
 	if err != nil {
 		return nil, err
@@ -48,15 +43,12 @@ func (p *Platform) createCardStream(ctx context.Context, rc replyContext) (core.
 	if id == "" {
 		return nil, fmt.Errorf("teams: streaming card got no activity id")
 	}
-	c := &teamsStreamingCard{
+	return &teamsStreamingCard{
 		conn:       p.conn,
 		rc:         rc,
 		activityID: id,
 		interval:   p.streamInterval(),
-		clear:      func() { p.clearCard(rc.conversationID) },
-	}
-	p.registerCard(rc.conversationID, c)
-	return c, nil
+	}, nil
 }
 
 // teamsStreamingCard edits one Adaptive Card in place as the answer streams.
@@ -65,8 +57,6 @@ type teamsStreamingCard struct {
 	rc         replyContext
 	activityID string
 	interval   time.Duration
-
-	clear func() // deregisters this card from the platform's active-card map (set at creation)
 
 	mu       sync.Mutex
 	lastSent time.Time
@@ -107,10 +97,6 @@ func (c *teamsStreamingCard) Finalize(ctx context.Context, content string) error
 		return nil // already terminal — don't re-PUT (matches Slack/DingTalk)
 	}
 	c.mu.Unlock()
-	// Terminal either way: this card is no longer the conversation's active card.
-	if c.clear != nil {
-		defer c.clear()
-	}
 	if err := c.conn.update(ctx, c.rc, c.activityID, aiCardActivity(c.rc, answerCard(content))); err != nil {
 		c.mu.Lock()
 		c.failed = true
@@ -118,26 +104,6 @@ func (c *teamsStreamingCard) Finalize(ctx context.Context, content string) error
 		return err
 	}
 	return nil
-}
-
-// promptUpdate PUTs the card with the answer so far plus a folded interactive
-// prompt and its Action.Submit buttons, bypassing the throttle (a prompt must
-// render at once). The buttons vanish on the next Update, which re-renders the
-// plain answer. No-op on a terminal card.
-func (c *teamsStreamingCard) promptUpdate(ctx context.Context, prompt string, buttons []cardButton) error {
-	c.mu.Lock()
-	if c.failed {
-		c.mu.Unlock()
-		return nil
-	}
-	answer := c.lastText
-	c.mu.Unlock()
-
-	body := prompt
-	if answer != "" {
-		body = answer + "\n\n" + prompt
-	}
-	return c.conn.update(ctx, c.rc, c.activityID, aiCardActivity(c.rc, promptCard(body, buttons)))
 }
 
 // Failed reports whether the card hit a terminal error.
