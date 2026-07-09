@@ -10,6 +10,7 @@ type fakeSender struct {
 	rc          replyContext
 	id          string
 	err         error // injected error for send/replyTo/update
+	attachErr   error // if set, returned by send/replyTo only for an activity carrying a media attachment (ContentURL); lets a test fail an image send while a text notice succeeds
 	updates     []outboundActivity
 	updatedIDs  []string
 	replied     []outboundActivity
@@ -36,16 +37,30 @@ func (f *fakeSender) fetch(_ context.Context, url string, withToken bool, _ int6
 	return f.fetchDefault.data, f.fetchDefault.outcome
 }
 
+// errFor returns attachErr for a media-bearing activity (an attachment with a
+// ContentURL), else the generic injected err. Lets a test fail an image send
+// with a specific error while a following text reply (the notice) succeeds.
+func (f *fakeSender) errFor(a outboundActivity) error {
+	if f.attachErr != nil {
+		for _, att := range a.Attachments {
+			if att.ContentURL != "" {
+				return f.attachErr
+			}
+		}
+	}
+	return f.err
+}
+
 func (f *fakeSender) send(_ context.Context, rc replyContext, a outboundActivity) (string, error) {
 	f.last = a
 	f.rc = rc
-	return f.id, f.err
+	return f.id, f.errFor(a)
 }
 
 func (f *fakeSender) replyTo(_ context.Context, _ replyContext, activityID string, a outboundActivity) error {
 	f.replied = append(f.replied, a)
 	f.repliedToID = append(f.repliedToID, activityID)
-	return f.err
+	return f.errFor(a)
 }
 
 func (f *fakeSender) update(_ context.Context, _ replyContext, activityID string, a outboundActivity) error {

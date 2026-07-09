@@ -9,6 +9,7 @@ package teams
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -169,21 +170,23 @@ func (p *Platform) Send(ctx context.Context, replyCtx any, content string) error
 	return err
 }
 
-// maxOutboundImageBytes caps a single outbound image. Images ride inline as a
-// base64 data: URI, which inflates the payload ~33% and is bounded by the Bot
-// Connector's activity size limit; a conservative cap keeps a large image from
-// being rejected wholesale. Kept a constant (not config) until a deployment
-// needs to tune it. Oversize images degrade to a text notice, not a failed turn.
-const maxOutboundImageBytes = 1 << 20 // 1 MiB
+// maxOutboundImageBytes is a pathological-size safety guard, NOT the Teams
+// limit. The real ceiling is enforced by catching the Bot Connector's 413
+// (errActivityTooLarge) and degrading to a notice, so Teams — not a guessed
+// constant — decides what's too big. This generous bound only stops a runaway
+// image from being base64-encoded into memory and timing out the send; it
+// mirrors the inbound max_attachment_bytes default.
+const maxOutboundImageBytes = 20 << 20 // 20 MiB
 
-// oversizeImageNotice is sent in place of an image too large to deliver inline.
+// oversizeImageNotice is sent in place of an image Teams rejected as too large.
 // A user-facing i18n key is a possible follow-up; kept a literal for now,
 // mirroring attachmentFailureNotice on the inbound side.
 const oversizeImageNotice = "⚠️ I couldn't send an image — it's too large to deliver in Teams."
 
 // SendImage delivers an image as an inline attachment, threaded to the
-// originating activity like a text Reply. An image larger than the cap degrades
-// to a text notice so the turn is not lost.
+// originating activity like a text Reply. If the Bot Connector rejects it as too
+// large (413), or it exceeds the pathological-size guard, the image degrades to
+// a text notice so the turn is not lost.
 func (p *Platform) SendImage(ctx context.Context, replyCtx any, img core.ImageAttachment) error {
 	rc, ok := replyCtx.(replyContext)
 	if !ok {
@@ -193,11 +196,16 @@ func (p *Platform) SendImage(ctx context.Context, replyCtx any, img core.ImageAt
 		return p.Reply(ctx, rc, oversizeImageNotice)
 	}
 	a := imageActivity(rc, img)
+	var err error
 	if rc.activityID == "" {
-		_, err := p.conn.send(ctx, rc, a)
-		return err
+		_, err = p.conn.send(ctx, rc, a)
+	} else {
+		err = p.conn.replyTo(ctx, rc, rc.activityID, a)
 	}
-	return p.conn.replyTo(ctx, rc, rc.activityID, a)
+	if errors.Is(err, errActivityTooLarge) {
+		return p.Reply(ctx, rc, oversizeImageNotice)
+	}
+	return err
 }
 
 // ReconstructReplyCtx rebuilds a reply context from a session key. Only the

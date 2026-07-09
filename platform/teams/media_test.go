@@ -102,6 +102,24 @@ func TestSendImage_OversizeSendsNoticeNotImage(t *testing.T) {
 	}
 }
 
+func TestSendImage_ConnectorTooLargeDegradesToNotice(t *testing.T) {
+	fs := &fakeSender{id: "m1", attachErr: errActivityTooLarge}
+	p := &Platform{conn: fs}
+	rc := replyContext{serviceURL: "https://s/", conversationID: "c1", activityID: "a1"}
+
+	if err := p.SendImage(context.Background(), rc, core.ImageAttachment{Data: []byte{1, 2, 3}, MimeType: "image/png"}); err != nil {
+		t.Fatalf("a 413 from the connector should degrade to a notice, got %v", err)
+	}
+	// First reply is the image (rejected 413); the notice text follows.
+	if len(fs.replied) != 2 {
+		t.Fatalf("want image attempt + notice reply, got %d", len(fs.replied))
+	}
+	notice := fs.replied[1]
+	if notice.Text != oversizeImageNotice || len(notice.Attachments) != 0 {
+		t.Errorf("last reply should be the plain notice, got %+v", notice)
+	}
+}
+
 func TestSendImage_InvalidReplyCtx(t *testing.T) {
 	p := &Platform{conn: &fakeSender{}}
 	if err := p.SendImage(context.Background(), "not-a-reply-ctx", core.ImageAttachment{Data: []byte{1}}); err == nil {
