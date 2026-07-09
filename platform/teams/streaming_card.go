@@ -36,6 +36,11 @@ func (p *Platform) streamInterval() time.Duration {
 // createCardStream posts the loading Adaptive Card immediately and returns a
 // handle that edits it in place.
 func (p *Platform) createCardStream(ctx context.Context, rc replyContext) (core.StreamingCard, error) {
+	// Evict any stale card for this conversation up front: a prior turn that
+	// ended without Finalize (idle timeout, cancel, send error) leaves its entry
+	// registered, and it must not be folded into by this turn's prompts. A
+	// successful send below re-registers; a failed one leaves it cleared.
+	p.clearCard(rc.conversationID)
 	id, err := p.conn.send(ctx, rc, aiCardActivity(rc, loadingCard(p.cfg.cardLoadingText)))
 	if err != nil {
 		return nil, err

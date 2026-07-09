@@ -165,11 +165,11 @@ which POSTs to your endpoint.
 
 - Replies stream as an Adaptive Card only. Plain text streaming, a `reply_format`
   toggle, and the native `streamType` 1:1 animation are deferred to follow-ups.
-- Permission prompts and single-select AskUserQuestion prompts render as
-  **Adaptive Card buttons folded into the streaming card** (Allow / Deny /
-  Allow-all; one button per option). Replying with text (`allow`, `deny`, a
-  number) still works. multiSelect questions stay text-reply — buttons would
-  resolve on the first tap.
+- Permission prompts and AskUserQuestion prompts render as **Adaptive Card
+  buttons folded into the streaming card** (Allow / Deny / Allow-all; one button
+  per option). Replying with text (`allow`, `deny`, a number) still works.
+  multiSelect questions also render as buttons and resolve on the **first tap**
+  (no multi-pick) — reply with comma-separated numbers as text to pick several.
 - Inbound files and images are supported in **1:1 chats only** (see "Receiving
   files and images"); channel/group attachments and inbound audio are not.
 - No cron/timer → Teams proactive messages (a conversation-reference store is
