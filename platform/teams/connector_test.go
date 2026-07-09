@@ -3,6 +3,7 @@ package teams
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -328,5 +329,19 @@ func TestAttachmentMarshal_CardOmitsMediaKeys(t *testing.T) {
 	}
 	if _, ok := m["name"]; ok {
 		t.Errorf("card attachment should omit name: %s", b)
+	}
+}
+
+func TestConnectorSend_413MapsToActivityTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(`payload too large`))
+	}))
+	defer srv.Close()
+
+	c := newConnector(&staticTokens{value: "t"})
+	_, err := c.send(context.Background(), replyContext{serviceURL: srv.URL, conversationID: "c"}, outboundActivity{Type: "message"})
+	if !errors.Is(err, errActivityTooLarge) {
+		t.Fatalf("413 must map to errActivityTooLarge, got %v", err)
 	}
 }

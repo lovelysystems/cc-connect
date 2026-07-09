@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,11 @@ import (
 // connectorTimeout bounds outbound Bot Connector calls so a slow or
 // attacker-controlled serviceURL cannot hang a request goroutine indefinitely.
 const connectorTimeout = 30 * time.Second
+
+// errActivityTooLarge is returned when the Bot Connector rejects an activity as
+// too large (HTTP 413). It lets callers (SendImage) degrade to a user notice on
+// the real service limit rather than guessing a byte cap up front.
+var errActivityTooLarge = errors.New("teams: activity too large (413)")
 
 // outboundActivity is the JSON body POSTed/PUT to the Bot Connector. The
 // from/recipient/conversation envelope mirrors what the Bot Framework SDKs send
@@ -202,6 +208,9 @@ func (c *connector) do(ctx context.Context, method, url string, a outboundActivi
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		return nil, fmt.Errorf("teams: connector returned 413: %w", errActivityTooLarge)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("teams: connector returned %d", resp.StatusCode)
 	}
