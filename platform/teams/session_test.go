@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -529,6 +530,171 @@ func TestDispatch_NoNoticeOnSuccess(t *testing.T) {
 	}
 	if len(fs.replied) != 0 {
 		t.Errorf("a successful download must not send a notice, replied=%+v", fs.replied)
+	}
+}
+
+// fakeGraph is a stub graphReader for channel-file dispatch tests.
+type fakeGraph struct {
+	refs                                      []channelFileRef
+	data                                      []byte
+	outcome                                   fetchOutcome
+	readCalls                                 int
+	lastGroup, lastChannel, lastRoot, lastMsg string
+}
+
+func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) []channelFileRef {
+	f.readCalls++
+	f.lastGroup, f.lastChannel, f.lastRoot, f.lastMsg = group, channel, root, msg
+	return f.refs
+}
+
+func (f *fakeGraph) downloadFile(_ context.Context, _ string, _ int64) ([]byte, fetchOutcome) {
+	return f.data, f.outcome
+}
+
+// channelFileActivity builds an engaged (bot-mentioned) channel message with
+// channelData routing ids and a thread-root in the conversation id.
+func channelFileActivity(text string) []byte {
+	a := activity{
+		Type:         "message",
+		ID:           "msg-1",
+		Text:         "<at>bot</at> " + text,
+		ServiceURL:   "https://smba.example/",
+		From:         channelAccount{ID: "user-1"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "19:chan@thread.tacv2;messageid=root-9", ConversationType: "channel"},
+		Entities:     []entity{{Type: "mention", Text: "<at>bot</at>", Mentioned: channelAccount{ID: "bot-1"}}},
+	}
+	a.ChannelData.Team.AADGroupID = "group-1"
+	a.ChannelData.Channel.ID = "19:chan@thread.tacv2"
+	return mustJSON(a)
+}
+
+func channelFilePlatform(enabled bool, fg *fakeGraph) (*Platform, *[]*core.Message, *fakeSender) {
+	p := teamsPlatform("thread")
+	p.cfg.channelFilesEnabled = enabled
+	p.graph = fg
+	fs := &fakeSender{}
+	p.conn = fs
+	h, got := collector()
+	p.handler = h
+	return p, got, fs
+}
+
+func TestDispatch_ChannelFileDelivered(t *testing.T) {
+	fg := &fakeGraph{
+		refs:    []channelFileRef{{name: "report.docx", contentURL: "https://ex.sharepoint.com/sites/T/Shared Documents/report.docx"}},
+		data:    []byte("DOCX"),
+		outcome: fetchOK,
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("summarize this"))
+
+	if len(*got) != 1 {
+		t.Fatalf("engaged channel file message must dispatch, got %d", len(*got))
+	}
+	m := (*got)[0]
+	if m.Content != "summarize this" {
+		t.Errorf("content = %q, want mention stripped", m.Content)
+	}
+	if len(m.Files) != 1 || m.Files[0].FileName != "report.docx" || string(m.Files[0].Data) != "DOCX" {
+		t.Fatalf("file not delivered: %+v", m.Files)
+	}
+	// Graph read addressed the correct ids: aadGroupId (not thread id), channel,
+	// root (from ;messageid=), and this message.
+	if fg.readCalls != 1 || fg.lastGroup != "group-1" || fg.lastChannel != "19:chan@thread.tacv2" ||
+		fg.lastRoot != "root-9" || fg.lastMsg != "msg-1" {
+		t.Errorf("graph read args = group=%q chan=%q root=%q msg=%q (calls=%d)",
+			fg.lastGroup, fg.lastChannel, fg.lastRoot, fg.lastMsg, fg.readCalls)
+	}
+}
+
+func TestDispatch_ChannelFileDisabledNoGraphCall(t *testing.T) {
+	fg := &fakeGraph{refs: []channelFileRef{{name: "x", contentURL: "u"}}, data: []byte("X"), outcome: fetchOK}
+	p, got, _ := channelFilePlatform(false, fg) // feature OFF
+	p.dispatch(nil, channelFileActivity("hello"))
+
+	if fg.readCalls != 0 {
+		t.Errorf("feature disabled must not call Graph, got %d calls", fg.readCalls)
+	}
+	if len(*got) != 1 || len((*got)[0].Files) != 0 {
+		t.Errorf("feature off: text dispatched, no files; got %+v", *got)
+	}
+}
+
+func TestDispatch_ChannelFileUnauthorizedNotice(t *testing.T) {
+	fg := &fakeGraph{
+		refs:    []channelFileRef{{name: "secret.docx", contentURL: "https://ungranted.sharepoint.com/sites/X/Shared Documents/secret.docx"}},
+		outcome: fetchFailed, // ungranted site / download failed
+	}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("read it"))
+
+	if len(*got) != 1 || (*got)[0].Content != "read it" {
+		t.Fatalf("turn should still dispatch its text, got %+v", *got)
+	}
+	if len((*got)[0].Files) != 0 {
+		t.Errorf("failed download must attach no file")
+	}
+	if len(fs.replied) != 1 || !strings.Contains(fs.replied[0].Text, "couldn't read") {
+		t.Errorf("a failed channel download should send a notice, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_ChannelFileNonEngagedNoGraphCall(t *testing.T) {
+	fg := &fakeGraph{refs: []channelFileRef{{name: "x", contentURL: "u"}}, data: []byte("X"), outcome: fetchOK}
+	p, got, _ := channelFilePlatform(true, fg)
+	// A channel message with no @mention in a fresh (non-engaged) conversation is
+	// gated out by shouldHandle — the Graph read must not run (ordering pin: the
+	// engagement gate precedes the read).
+	a := activity{
+		Type:         "message",
+		ID:           "m2",
+		Text:         "just chatting",
+		ServiceURL:   "https://smba.example/",
+		From:         channelAccount{ID: "user-9"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "19:other@thread.tacv2;messageid=r2", ConversationType: "channel"},
+	}
+	a.ChannelData.Team.AADGroupID = "group-1"
+	a.ChannelData.Channel.ID = "19:other@thread.tacv2"
+	p.dispatch(nil, mustJSON(a))
+
+	if len(*got) != 0 {
+		t.Fatalf("non-engaged channel message must be dropped, got %d", len(*got))
+	}
+	if fg.readCalls != 0 {
+		t.Errorf("non-engaged message must not trigger a Graph read, got %d", fg.readCalls)
+	}
+}
+
+func TestDispatch_ChannelTextOnlyOneRead(t *testing.T) {
+	fg := &fakeGraph{refs: nil} // engaged message, no file
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("just text"))
+
+	if fg.readCalls != 1 {
+		t.Errorf("engaged channel turn should issue exactly one Graph read, got %d", fg.readCalls)
+	}
+	if len(*got) != 1 || len((*got)[0].Files) != 0 {
+		t.Errorf("text-only engaged turn should dispatch with zero files, got %+v", *got)
+	}
+}
+
+func TestDispatch_ChannelFileRefCap(t *testing.T) {
+	var refs []channelFileRef
+	for i := 0; i < maxChannelFileRefs+3; i++ {
+		refs = append(refs, channelFileRef{name: "f.docx", contentURL: "https://ex.sharepoint.com/sites/T/Shared Documents/f.docx"})
+	}
+	fg := &fakeGraph{refs: refs, data: []byte("D"), outcome: fetchOK}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("lots of files"))
+
+	if len((*got)[0].Files) != maxChannelFileRefs {
+		t.Errorf("files = %d, want capped at %d", len((*got)[0].Files), maxChannelFileRefs)
+	}
+	if len(fs.replied) != 1 {
+		t.Errorf("exceeding the per-message ref cap should notify the user, replied=%d", len(fs.replied))
 	}
 }
 
