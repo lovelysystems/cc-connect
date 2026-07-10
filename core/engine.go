@@ -312,6 +312,21 @@ type DisplayCfg struct {
 	ToolMessages     bool
 	HistoryMaxLen    *int // max runes for /history entries; nil = default, 0 = no truncation
 	HideAgentFooter  bool // strip model/token footer lines emitted as agent text
+	// PrependPreToolText is a quiet-mode-only knob (#1302). When Mode == "quiet"
+	// and this is false (the default), the engine slices the accumulated
+	// assistant text at the last tool_use boundary and only delivers the
+	// text block that follows. Set this to true to keep the pre-tool
+	// "lead-in" and restore the legacy "all text in one card" rendering.
+	// Ignored outside quiet mode.
+	PrependPreToolText bool
+}
+
+// quietDropsPreTool reports whether quiet mode should keep only the text
+// emitted after the last tool_use, dropping the pre-tool "lead-in" (#1302).
+// It gates the post-tool slice used for silent-hold detection, the live card
+// frames, and both the normal and silent finalized reply.
+func (d DisplayCfg) quietDropsPreTool() bool {
+	return d.Mode == "quiet" && !d.PrependPreToolText
 }
 
 // InstantReplyCfg controls the immediate confirmation reply sent when a message
@@ -4675,7 +4690,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 	var textParts []string
 	var segmentStart int // index into textParts: text before this has been sent/displayed
-	silentHold := false  // true while accumulated segment text could still resolve to a bare NO_REPLY marker
+	// postLastToolStart is the index in textParts where the text block emitted
+	// after the LAST tool_use begins. It stays 0 if no tool_use was observed.
+	// In quiet mode with PrependPreToolText=false (#1302), the EventResult
+	// handler uses textParts[postLastToolStart:] as the final reply so the
+	// user only sees the text emitted AFTER the last tool call, not the
+	// pre-tool "lead-in" (e.g. "Let me check that for you...").
+	postLastToolStart := 0
+	silentHold := false // true while accumulated segment text could still resolve to a bare NO_REPLY marker
 	toolCount := 0
 	waitStart := time.Now()
 	firstEventLogged := false
@@ -5040,13 +5062,23 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				break
 			}
 			// When tool messages are hidden, behavior depends on display mode:
-			//   quiet:   append separator to keep all text in one card
+			//   quiet:   append separator to keep all text in one card (legacy
+			//            behaviour when PrependPreToolText=true; when false, the
+			//            pre-tool slice is dropped at EventResult time — see #1302)
 			//   compact: freeze+detach to split text into separate cards
 			if !e.display.ToolMessages && len(textParts) > segmentStart {
 				if e.display.Mode == "quiet" {
 					if sp.canPreview() && sp.appendSeparator("\n\n") {
 						textParts = append(textParts, "\n\n")
 					}
+					// Mark the post-tool boundary (#1302): the next EventText
+					// chunk starts here. With PrependPreToolText=false (the
+					// default), EventResult slices textParts[postLastToolStart:]
+					// so the pre-tool "lead-in" is dropped from the final
+					// reply. The separator we just appended lives in the
+					// pre-tool segment and is dropped with it — fine, because
+					// nothing in the kept slice ever references it.
+					postLastToolStart = len(textParts)
 				} else {
 					if sp.canPreview() {
 						sp.freeze()
@@ -5195,7 +5227,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// paths share this single transition; couldBeSilentPrefix is
 				// monotonically decreasing as segments grow, so the transition
 				// is held → released at most once per segment.
-				peekSegment := strings.Join(textParts[segmentStart:], "") + content
+				//
+				// The window must match what quiet mode actually delivers and
+				// renders — the post-last-tool slice (#1302/#1320) — not the full
+				// segmentStart window. Otherwise a pre-tool lead-in makes
+				// couldBeSilentPrefix false, so a bare post-tool NO_REPLY defeats
+				// silentHold and flashes the marker into a live card frame (the
+				// silent finalize branch strips it separately).
+				holdStart := segmentStart
+				if e.display.quietDropsPreTool() {
+					holdStart = postLastToolStart
+				}
+				peekSegment := strings.Join(textParts[holdStart:], "") + content
 				prevHold := silentHold
 				silentHold = couldBeSilentPrefix(peekSegment)
 				releasedNow := prevHold && !silentHold
@@ -5209,7 +5252,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						} else {
 							cardAnswerText.WriteString(content)
 						}
-						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+						// In quiet mode the final card shows only the text after the
+						// last tool_use (#1302). Mirror that in the live frames so the
+						// card replaces rather than accumulates each pre-tool "lead-in"
+						// as it streams. cardAnswerText still accrues the full text for
+						// the silent-reply finalize path.
+						liveBody := cardAnswerText.String()
+						if e.display.quietDropsPreTool() {
+							liveBody = strings.Join(textParts[postLastToolStart:], "")
+						}
+						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, liveBody))
 					}
 					handledByStreamCard = true
 				}
@@ -5461,7 +5513,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// contains ALL text across tool boundaries. Prefer the full accumulated
 			// text over event.Content which only contains the last assistant segment.
 			if len(textParts) > 0 && segmentStart == 0 && !e.display.ToolMessages {
-				fullResponse = strings.Join(textParts, "")
+				// Quiet mode slices off the pre-tool "lead-in" so the user only
+				// sees the text emitted after the last tool_use (#1302). Other
+				// modes keep the full accumulated text as before.
+				textSource := textParts
+				if e.display.quietDropsPreTool() {
+					textSource = textParts[postLastToolStart:]
+				}
+				fullResponse = strings.Join(textSource, "")
 			} else if fullResponse == "" && len(textParts) > 0 {
 				fullResponse = strings.Join(textParts, "")
 			}
@@ -5595,15 +5654,27 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if streamCard != nil && !streamCard.Failed() {
 				sp.finish("", "") // cleanup preview (should be no-op if card was active)
 				// Silent reply: never render the NO_REPLY marker into the card.
-				// cardAnswerText holds only the text streamed BEFORE the marker
-				// (empty for a bare NO_REPLY, since silentHold suppresses card
-				// writes while the segment is still a NO_REPLY prefix). Finalize
-				// with that instead of fullResponse so the card resolves to Done
-				// without leaking the marker, and skip the fallback send that
-				// would otherwise post the suppressed marker verbatim.
+				// Non-quiet finalizes with cardAnswerText, which holds only the text
+				// streamed BEFORE the marker (empty for a bare NO_REPLY, since
+				// silentHold suppresses card writes while the segment is still a
+				// NO_REPLY prefix). Quiet mode instead uses the stripped post-tool
+				// slice (see below) so it also drops the pre-tool lead-in. Either
+				// way the card resolves to Done without leaking the marker, and we
+				// skip the fallback send that would post the suppressed marker.
 				cardBody := fullResponse
 				if isSilent {
-					cardBody = strings.TrimRight(cardAnswerText.String(), " \t\r\n")
+					silentBody := cardAnswerText.String()
+					if e.display.quietDropsPreTool() {
+						// Quiet mode delivers only the post-tool slice, so a silent
+						// reply must also drop the pre-tool lead-in — not show text
+						// the user never saw stream. textParts carries the marker
+						// unconditionally; strip the trailing NO_REPLY.
+						silentBody = strings.Join(textParts[postLastToolStart:], "")
+						if stripped, ok := stripTrailingSilent(silentBody); ok {
+							silentBody = stripped
+						}
+					}
+					cardBody = strings.TrimRight(silentBody, " \t\r\n")
 				}
 				finalContent := buildCardContent(cardThinkingText, cardToolCalls, cardBody)
 				if err := streamCard.Finalize(e.ctx, finalContent); err != nil {
@@ -5856,6 +5927,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				msgID = queued.messageID
 				textParts = nil
 				segmentStart = 0
+				// postLastToolStart indexes textParts, which was just reset to nil.
+				// Without this reset it stays stale from the prior turn and the next
+				// turn's first EventText reads textParts[postLastToolStart:] out of
+				// range (quiet mode), panicking the event loop.
+				postLastToolStart = 0
 				toolCount = 0
 				turnStart = time.Now()
 				firstEventLogged = false
