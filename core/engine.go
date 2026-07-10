@@ -5064,10 +5064,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						textParts = append(textParts, "\n\n")
 					}
 				} else {
+					// A healthy streaming card already renders this text, so skip
+					// the standalone flush that would duplicate it; segmentStart
+					// still advances for the failed-card fallback.
+					streamCardActive := streamCard != nil && !streamCard.Failed()
 					if sp.canPreview() {
 						sp.freeze()
 						sp.detachPreview()
-					} else {
+					} else if !streamCardActive {
 						segment := strings.Join(textParts[segmentStart:], "")
 						if segment != "" {
 							for _, chunk := range SplitMessageCodeFenceAware(segment, maxPlatformMessageLen) {
@@ -5161,10 +5165,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					// nothing in the kept slice ever references it.
 					postLastToolStart = len(textParts)
 				} else {
+					// A healthy streaming card already renders this text, so skip
+					// the standalone flush that would duplicate it; segmentStart
+					// still advances for the failed-card fallback.
+					streamCardActive := streamCard != nil && !streamCard.Failed()
 					if sp.canPreview() {
 						sp.freeze()
 						sp.detachPreview()
-					} else {
+					} else if !streamCardActive {
 						segment := strings.Join(textParts[segmentStart:], "")
 						if segment != "" {
 							for _, chunk := range SplitMessageCodeFenceAware(segment, maxPlatformMessageLen) {
