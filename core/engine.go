@@ -324,7 +324,7 @@ type DisplayCfg struct {
 // quietDropsPreTool reports whether quiet mode should keep only the text
 // emitted after the last tool_use, dropping the pre-tool "lead-in" (#1302).
 // It gates the post-tool slice used for silent-hold detection, the live card
-// frames, and the finalized reply.
+// frames, and both the normal and silent finalized reply.
 func (d DisplayCfg) quietDropsPreTool() bool {
 	return d.Mode == "quiet" && !d.PrependPreToolText
 }
@@ -5232,8 +5232,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// renders — the post-last-tool slice (#1302/#1320) — not the full
 				// segmentStart window. Otherwise a pre-tool lead-in makes
 				// couldBeSilentPrefix false, so a bare post-tool NO_REPLY defeats
-				// silentHold and leaks the marker into the live card and into
-				// cardAnswerText (which the isSilent finalize branch then renders).
+				// silentHold and flashes the marker into a live card frame (the
+				// silent finalize branch strips it separately).
 				holdStart := segmentStart
 				if e.display.quietDropsPreTool() {
 					holdStart = postLastToolStart
@@ -5654,12 +5654,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if streamCard != nil && !streamCard.Failed() {
 				sp.finish("", "") // cleanup preview (should be no-op if card was active)
 				// Silent reply: never render the NO_REPLY marker into the card.
-				// cardAnswerText holds only the text streamed BEFORE the marker
-				// (empty for a bare NO_REPLY, since silentHold suppresses card
-				// writes while the segment is still a NO_REPLY prefix). Finalize
-				// with that instead of fullResponse so the card resolves to Done
-				// without leaking the marker, and skip the fallback send that
-				// would otherwise post the suppressed marker verbatim.
+				// Non-quiet finalizes with cardAnswerText, which holds only the text
+				// streamed BEFORE the marker (empty for a bare NO_REPLY, since
+				// silentHold suppresses card writes while the segment is still a
+				// NO_REPLY prefix). Quiet mode instead uses the stripped post-tool
+				// slice (see below) so it also drops the pre-tool lead-in. Either
+				// way the card resolves to Done without leaking the marker, and we
+				// skip the fallback send that would post the suppressed marker.
 				cardBody := fullResponse
 				if isSilent {
 					silentBody := cardAnswerText.String()
@@ -5926,6 +5927,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				msgID = queued.messageID
 				textParts = nil
 				segmentStart = 0
+				// postLastToolStart indexes textParts, which was just reset to nil.
+				// Without this reset it stays stale from the prior turn and the next
+				// turn's first EventText reads textParts[postLastToolStart:] out of
+				// range (quiet mode), panicking the event loop.
+				postLastToolStart = 0
 				toolCount = 0
 				turnStart = time.Now()
 				firstEventLogged = false

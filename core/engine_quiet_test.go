@@ -13,8 +13,9 @@ package core
 // These tests run the same end-to-end event loop the production
 // code uses (processInteractiveEvents), so they exercise all
 // platform-agnostic finalization paths in one go: stream preview,
-// sendChunksWithStatusFooter, the !isSilent branch, and the
-// accumulated-textParts slice point in EventResult.
+// sendChunksWithStatusFooter, the !isSilent and isSilent branches, the
+// silent-hold live-frame path, and the accumulated-textParts slice point
+// in EventResult.
 
 import (
 	"strings"
@@ -290,6 +291,85 @@ func TestQuiet_StreamingCard_SilentAfterToolNoMarkerFlash(t *testing.T) {
 	// it." — text the user never saw stream and that quiet mode drops elsewhere.
 	if strings.Contains(card.finalContent(), "Working on it") {
 		t.Errorf("finalized silent card leaked the pre-tool lead-in: %q", card.finalContent())
+	}
+}
+
+// TestQuiet_QueuedTurnAfterTool_NoPanic is a regression test for a
+// slice-bounds panic: postLastToolStart is set at a tool boundary but was not
+// reset in the queued-turn reset block. In quiet mode the first EventText of a
+// queued follow-up turn reads textParts[postLastToolStart:] before appending —
+// with textParts freshly nil and postLastToolStart stale from the prior turn,
+// that panics ("slice bounds out of range"), crashing the event-loop goroutine
+// (no recover in engine.go) and taking down every active session.
+func TestQuiet_QueuedTurnAfterTool_NoPanic(t *testing.T) {
+	card := &recordingStreamCard{}
+	p := &recordingStreamCardPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "teams"},
+		card:               card,
+	}
+	sess := newQueuingSession("qs-quiet-panic")
+	agent := &controllableAgent{nextSession: sess}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{Mode: "quiet", ThinkingMessages: false, ToolMessages: false, PrependPreToolText: false})
+	e.SetReplyFooterEnabled(false)
+
+	key := "teams:quiet-queued"
+	session := e.sessions.GetOrCreateActive(key)
+	state := &interactiveState{
+		agentSession: sess,
+		platform:     p,
+		replyCtx:     "ctx-turn1",
+		pendingMessages: []queuedMessage{
+			{platform: p, replyCtx: "ctx-turn2", content: "queued-msg"},
+		},
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = state
+	e.interactiveMu.Unlock()
+
+	go func() {
+		// Turn 1: text then a tool_use (sets postLastToolStart) then result.
+		sess.events <- Event{Type: EventText, Content: "Checking..."}
+		sess.events <- Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "ls"}
+		sess.events <- Event{Type: EventResult, Content: "done", Done: true}
+		// Wait for the queued message's Send() before pushing turn 2 events.
+		sess.sendMu.Lock()
+		for len(sess.sendCalls) == 0 {
+			sess.sendMu.Unlock()
+			time.Sleep(5 * time.Millisecond)
+			sess.sendMu.Lock()
+		}
+		sess.sendMu.Unlock()
+		// Turn 2: first EventText is where the stale postLastToolStart detonates.
+		sess.events <- Event{Type: EventText, Content: "Hello again"}
+		sess.events <- Event{Type: EventResult, Content: "Hello again", Done: true}
+	}()
+
+	session.AddHistory("user", "initial-msg")
+	sendDone := make(chan error, 1)
+	sendDone <- nil
+
+	done := make(chan struct{})
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked <- r
+			}
+			close(done)
+		}()
+		e.processInteractiveEvents(state, session, e.sessions, key, "msg1", time.Now(), nil, sendDone, nil)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("processInteractiveEvents did not complete in time")
+	}
+	select {
+	case r := <-panicked:
+		t.Fatalf("queued quiet turn after a tool panicked: %v", r)
+	default:
 	}
 }
 
