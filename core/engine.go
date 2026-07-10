@@ -321,6 +321,14 @@ type DisplayCfg struct {
 	PrependPreToolText bool
 }
 
+// quietDropsPreTool reports whether quiet mode should keep only the text
+// emitted after the last tool_use, dropping the pre-tool "lead-in" (#1302).
+// It gates the post-tool slice used for silent-hold detection, the live card
+// frames, and the finalized reply.
+func (d DisplayCfg) quietDropsPreTool() bool {
+	return d.Mode == "quiet" && !d.PrependPreToolText
+}
+
 // InstantReplyCfg controls the immediate confirmation reply sent when a message
 // is received, before the agent starts processing.
 type InstantReplyCfg struct {
@@ -5227,7 +5235,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// silentHold and leaks the marker into the live card and into
 				// cardAnswerText (which the isSilent finalize branch then renders).
 				holdStart := segmentStart
-				if e.display.Mode == "quiet" && !e.display.PrependPreToolText {
+				if e.display.quietDropsPreTool() {
 					holdStart = postLastToolStart
 				}
 				peekSegment := strings.Join(textParts[holdStart:], "") + content
@@ -5250,7 +5258,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						// as it streams. cardAnswerText still accrues the full text for
 						// the silent-reply finalize path.
 						liveBody := cardAnswerText.String()
-						if e.display.Mode == "quiet" && !e.display.PrependPreToolText {
+						if e.display.quietDropsPreTool() {
 							liveBody = strings.Join(textParts[postLastToolStart:], "")
 						}
 						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, liveBody))
@@ -5509,7 +5517,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// sees the text emitted after the last tool_use (#1302). Other
 				// modes keep the full accumulated text as before.
 				textSource := textParts
-				if e.display.Mode == "quiet" && !e.display.PrependPreToolText {
+				if e.display.quietDropsPreTool() {
 					textSource = textParts[postLastToolStart:]
 				}
 				fullResponse = strings.Join(textSource, "")
