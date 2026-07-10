@@ -17,7 +17,22 @@ type activity struct {
 	Conversation conversationAccount `json:"conversation"`
 	Entities     []entity            `json:"entities"`
 	Attachments  []inboundAttachment `json:"attachments"`
+	ChannelData  teamsChannelData    `json:"channelData"`
 	Value        json.RawMessage     `json:"value"`
+}
+
+// teamsChannelData carries Teams-specific routing ids on an inbound channel
+// activity. The team's aadGroupId is the Microsoft Graph team id (the
+// `19:…@thread.tacv2` teamsTeamId is NOT valid for Graph `/teams/{id}`); the
+// channel id is the Graph channel id as-is.
+type teamsChannelData struct {
+	Team struct {
+		AADGroupID string `json:"aadGroupId"`
+		ID         string `json:"id"`
+	} `json:"team"`
+	Channel struct {
+		ID string `json:"id"`
+	} `json:"channel"`
 }
 
 // fileDownloadInfoContentType is the attachment contentType Teams uses for a file
@@ -104,6 +119,19 @@ type entity struct {
 	Type      string         `json:"type"`
 	Text      string         `json:"text"`
 	Mentioned channelAccount `json:"mentioned"`
+}
+
+// rootMessageID returns the channel thread's root message id, parsed from the
+// conversation id's `;messageid=<root>` suffix. Empty when the conversation id
+// has no suffix (e.g. a root message, 1:1, or group chat). Used to pick the Graph
+// read path: a reply reads `.../messages/{root}/replies/{id}`; a root message
+// (root empty or equal to the activity id) reads `.../messages/{id}`.
+func (a *activity) rootMessageID() string {
+	_, root, found := strings.Cut(a.Conversation.ID, ";messageid=")
+	if !found {
+		return ""
+	}
+	return root
 }
 
 func parseActivity(body []byte) (*activity, error) {
