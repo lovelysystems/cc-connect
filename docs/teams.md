@@ -89,7 +89,8 @@ message — Teams does not allow @mentioning a bot there.
 | `card_update_interval_ms` | no | `1500` | Streaming-card edit throttle in ms; Teams rate-limits edits to ~1/s |
 | `card_loading_text` | no | `""` | Label on the placeholder card shown while the agent works (e.g. `💭 Thinking…`); empty renders a label-less card |
 | `service_url_allowlist` | no | `""` | Comma-separated hosts the bot may send replies to. Empty = any JWT-validated host (default). Set it to pin the bot to your cloud's Bot Connector host(s) as defense-in-depth. See "serviceURL allowlist" below |
-| `max_attachment_bytes` | no | `20971520` (20 MiB) | Cap per inbound 1:1 file/image download. A larger attachment is skipped with a notice rather than buffered. See "Receiving files and images" below |
+| `max_attachment_bytes` | no | `20971520` (20 MiB) | Cap per inbound file/image download (1:1 and channel). A larger attachment is skipped with a notice rather than buffered. See "Receiving files and images" below |
+| `channel_files_enabled` | no | `false` | Opt into reading files attached to the bot in a **channel** (via Graph + `Sites.Selected`). Needs the RSC manifest permission and per-site grants. See "Reading files from a channel" below |
 
 ## serviceURL allowlist
 
@@ -150,11 +151,70 @@ large images up front). Sending **files** (non-image) is not supported — Teams
 requires a separate file consent / SharePoint flow.
 
 **Not supported:**
-- **Channel / group attachments.** Files posted in a channel or group chat live
-  in SharePoint and require Microsoft Graph + tenant admin consent; attachments
-  outside a 1:1 chat are ignored, not partially handled.
 - **Outbound files** (the bot *sending* non-image files) are not implemented.
   Outbound **images** are supported (see "Sending images").
+- **Channel / group attachments** are handled by a separate, opt-in path — see
+  "Reading files from a channel" below.
+
+## Reading files from a channel
+
+Optional (**off by default**). When enabled, a file a user attaches to the bot in
+a **channel** message — with a `@mention` of the bot, or in a thread the bot is
+already following — is downloaded and handed to the agent, alongside any text in
+the same message.
+
+This path differs from 1:1: Teams does **not** put a channel file's reference in
+the bot's inbound message, so the connector reads the message through Microsoft
+Graph to find the file, then downloads it from SharePoint. That requires two
+things an admin sets up once:
+
+1. **RSC permission in the Teams app manifest.** Add the resource-specific
+   application permission so the bot can read the channel's messages via Graph:
+
+   ```json
+   "webApplicationInfo": {
+     "id": "<your-app-id>",
+     "resource": "https://RscBasedStoreApp"
+   },
+   "authorization": {
+     "permissions": {
+       "resourceSpecific": [
+         { "name": "ChannelMessage.Read.Group", "type": "Application" }
+       ]
+     }
+   }
+   ```
+
+   Install (or re-install) the app **to the team** so a team owner consents — a
+   fresh install is required for the Graph grant to register (an in-place update
+   won't re-consent). This also makes the bot receive un-mentioned channel
+   messages (thread-follow).
+
+2. **`Sites.Selected` grant on the file's SharePoint site.** Grant the app the
+   `Sites.Selected` **application** permission (one-time admin consent), then grant
+   it **read** on each site whose files it should reach:
+
+   ```http
+   POST https://graph.microsoft.com/v1.0/sites/{siteId}/permissions
+   { "roles": ["read"], "grantedToIdentities": [ { "application": { "id": "<your-app-id>" } } ] }
+   ```
+
+   Find a team's site id from its SharePoint URL, e.g.
+   `GET /sites/{tenant}.sharepoint.com:/sites/{TeamName}`. **Private and shared
+   channels use their own separate SharePoint sites** — grant each one you want the
+   bot to read.
+
+Then enable it in config: `channel_files_enabled = true`.
+
+Notes:
+- Uses the narrowest permissions — RSC `ChannelMessage.Read.Group` (per-team) and
+  `Sites.Selected` (per-site), **not** the tenant-wide `ChannelMessage.Read.All`.
+- The Graph message read is **not metered** (Microsoft retired Teams API metering);
+  it runs under normal Graph rate limits.
+- A file on a site the app was not granted, or an oversized/failed download, is
+  skipped with a brief user notice (bounded by `max_attachment_bytes`).
+- Same limits as 1:1: file cards only; outbound send is not implemented.
+
 
 ## Connection type
 
@@ -172,7 +232,9 @@ which POSTs to your endpoint.
   never missed. Replying with text (`allow`, `deny`, a number) still works.
   multiSelect questions also render as buttons and resolve on the **first tap**
   (no multi-pick) — reply with comma-separated numbers as text to pick several.
-- Inbound files and images are supported in **1:1 chats only** (see "Receiving
-  files and images"); channel/group attachments and inbound audio are not.
+- Inbound files and images are supported in **1:1 chats** (see "Receiving files
+  and images"); **channel** files are supported via the opt-in
+  `channel_files_enabled` path (see "Reading files from a channel"). Inbound audio
+  is not supported.
 - No cron/timer → Teams proactive messages (a conversation-reference store is
   needed to send without an incoming activity).

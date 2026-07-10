@@ -37,6 +37,7 @@ type Platform struct {
 	validator   *inboundValidator
 	engaged     *engagement
 	conn        sender
+	graph       graphReader // Microsoft Graph reader for channel files (nil unless channel_files_enabled)
 	server      *http.Server
 	dispatchSem chan struct{} // bounds concurrent async dispatch goroutines
 }
@@ -88,6 +89,11 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	}
 	if p.conn == nil {
 		p.conn = newConnector(newTokenSource(p.cfg))
+	}
+	// Channel file reading uses a separate app-only Graph token (Sites.Selected +
+	// RSC ChannelMessage.Read.Group). Wired only when opted in.
+	if p.cfg.channelFilesEnabled && p.graph == nil {
+		p.graph = newGraphClient(newGraphTokenSource(p.cfg))
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(p.cfg.webhookPath, p.handleActivity)

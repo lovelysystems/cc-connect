@@ -208,6 +208,30 @@ func TestParseConfig_MaxAttachmentBytes(t *testing.T) {
 	}
 }
 
+func TestParseConfig_ChannelFilesEnabled(t *testing.T) {
+	// absent -> false (off by default)
+	c, _ := parseConfig(validOpts())
+	if c.channelFilesEnabled {
+		t.Errorf("channel_files_enabled default = true, want false")
+	}
+	// explicit true honored
+	opts := validOpts()
+	opts["channel_files_enabled"] = true
+	c, err := parseConfig(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c.channelFilesEnabled {
+		t.Errorf("channel_files_enabled = false, want true")
+	}
+	// wrong type -> default false
+	opts["channel_files_enabled"] = "yes"
+	c, _ = parseConfig(opts)
+	if c.channelFilesEnabled {
+		t.Errorf("non-bool channel_files_enabled should fall back to false")
+	}
+}
+
 func TestNew_RegistersAsPlatform(t *testing.T) {
 	p, err := New(validOpts())
 	if err != nil {

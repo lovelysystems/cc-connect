@@ -36,14 +36,22 @@ func newTokenSource(cfg config) *oauthTokenSource {
 
 // newTokenSourceWithURL allows overriding the token endpoint (tests).
 func newTokenSourceWithURL(cfg config, url string) *oauthTokenSource {
+	return newOAuthSource(cfg, url, connectorScope)
+}
+
+// newOAuthSource builds a cached client-credentials token source for the given
+// resource scope, reusing the app credentials. Used for both the Bot Connector
+// (connectorScope) and Microsoft Graph (graphScope) resources — all scopes in a
+// single request must target one resource.
+func newOAuthSource(cfg config, url, scope string) *oauthTokenSource {
 	conf := &clientcredentials.Config{
 		ClientID:     cfg.appID,
 		ClientSecret: cfg.appPassword,
 		TokenURL:     url,
-		Scopes:       []string{connectorScope},
+		Scopes:       []string{scope},
 		AuthStyle:    oauth2.AuthStyleInParams,
 	}
-	// Bound the token fetch with a timeout-bearing HTTP client — connector.do
+	// Bound the token fetch with a timeout-bearing HTTP client — the caller
 	// acquires the token before its own http.Client (with connectorTimeout) runs,
 	// so without this an unreachable login.microsoftonline.com would hang the turn
 	// goroutine indefinitely. clientcredentials.Config.TokenSource caches and
