@@ -242,6 +242,51 @@ func TestQuiet_StreamingCard_LiveFramesDropPreToolLeadIn(t *testing.T) {
 	}
 }
 
+// TestQuiet_StreamingCard_SilentAfterToolNoMarkerFlash guards the silent-hold
+// window in quiet mode: when the agent narrates a lead-in, runs a tool, then
+// resolves to a bare NO_REPLY marker after the last tool_use, neither the live
+// card frames nor the finalized card may render the raw NO_REPLY marker.
+// The marker window that decides silentHold must track the post-tool slice
+// (what quiet mode actually delivers), not the segmentStart window — otherwise
+// the pre-tool lead-in defeats silentHold and the marker flashes into the card.
+func TestQuiet_StreamingCard_SilentAfterToolNoMarkerFlash(t *testing.T) {
+	card := &recordingStreamCard{}
+	p := &recordingStreamCardPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "teams"},
+		card:               card,
+	}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{Mode: "quiet", ThinkingMessages: false, ToolMessages: false, PrependPreToolText: false})
+	e.SetReplyFooterEnabled(false)
+
+	sessionKey := "teams:quiet-silent"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	sess := newControllableSession("s-quiet-silent")
+	state := &interactiveState{agentSession: sess, platform: p, replyCtx: "ctx-quiet-silent"}
+	e.interactiveStates[sessionKey] = state
+
+	for _, ev := range []Event{
+		{Type: EventText, Content: "Working on it."},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "ls"},
+		{Type: EventText, Content: "NO_REPLY"},
+		{Type: EventResult, Content: "NO_REPLY", Done: true},
+	} {
+		sess.events <- ev
+	}
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-quiet-silent", time.Now(), nil, nil, state.replyCtx)
+
+	// No live frame may render the raw NO_REPLY marker.
+	for i, body := range card.updateBodies() {
+		if strings.Contains(body, "NO_REPLY") {
+			t.Errorf("live card frame %d flashed the NO_REPLY marker: %q", i, body)
+		}
+	}
+	// The finalized card must not render the marker either.
+	if strings.Contains(card.finalContent(), "NO_REPLY") {
+		t.Errorf("finalized card leaked the NO_REPLY marker: %q", card.finalContent())
+	}
+}
+
 // TestCompact_NotAffectedByQuietFix guards the other display modes
 // against the new quiet-mode slicing. The bug only exists in quiet
 // mode; compact and full mode must continue to deliver the full

@@ -5219,7 +5219,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// paths share this single transition; couldBeSilentPrefix is
 				// monotonically decreasing as segments grow, so the transition
 				// is held → released at most once per segment.
-				peekSegment := strings.Join(textParts[segmentStart:], "") + content
+				//
+				// The window must match what quiet mode actually delivers and
+				// renders — the post-last-tool slice (#1302/#1320) — not the full
+				// segmentStart window. Otherwise a pre-tool lead-in makes
+				// couldBeSilentPrefix false, so a bare post-tool NO_REPLY defeats
+				// silentHold and leaks the marker into the live card and into
+				// cardAnswerText (which the isSilent finalize branch then renders).
+				holdStart := segmentStart
+				if e.display.Mode == "quiet" && !e.display.PrependPreToolText {
+					holdStart = postLastToolStart
+				}
+				peekSegment := strings.Join(textParts[holdStart:], "") + content
 				prevHold := silentHold
 				silentHold = couldBeSilentPrefix(peekSegment)
 				releasedNow := prevHold && !silentHold
