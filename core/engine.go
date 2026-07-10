@@ -5662,7 +5662,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// would otherwise post the suppressed marker verbatim.
 				cardBody := fullResponse
 				if isSilent {
-					cardBody = strings.TrimRight(cardAnswerText.String(), " \t\r\n")
+					silentBody := cardAnswerText.String()
+					if e.display.quietDropsPreTool() {
+						// Quiet mode delivers only the post-tool slice, so a silent
+						// reply must also drop the pre-tool lead-in — not show text
+						// the user never saw stream. textParts carries the marker
+						// unconditionally; strip the trailing NO_REPLY.
+						silentBody = strings.Join(textParts[postLastToolStart:], "")
+						if stripped, ok := stripTrailingSilent(silentBody); ok {
+							silentBody = stripped
+						}
+					}
+					cardBody = strings.TrimRight(silentBody, " \t\r\n")
 				}
 				finalContent := buildCardContent(cardThinkingText, cardToolCalls, cardBody)
 				if err := streamCard.Finalize(e.ctx, finalContent); err != nil {

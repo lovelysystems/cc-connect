@@ -285,6 +285,12 @@ func TestQuiet_StreamingCard_SilentAfterToolNoMarkerFlash(t *testing.T) {
 	if strings.Contains(card.finalContent(), "NO_REPLY") {
 		t.Errorf("finalized card leaked the NO_REPLY marker: %q", card.finalContent())
 	}
+	// A silent reply drops the pre-tool lead-in too: quiet mode delivers only
+	// the post-tool slice, so the finalized card must not surface "Working on
+	// it." — text the user never saw stream and that quiet mode drops elsewhere.
+	if strings.Contains(card.finalContent(), "Working on it") {
+		t.Errorf("finalized silent card leaked the pre-tool lead-in: %q", card.finalContent())
+	}
 }
 
 // TestCompact_NotAffectedByQuietFix guards the other display modes
