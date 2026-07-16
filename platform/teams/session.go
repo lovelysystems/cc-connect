@@ -142,11 +142,14 @@ func (p *Platform) sessionKey(a *activity) string {
 	}
 }
 
-// conversationFromSessionKey extracts the conversation id from a session key of
-// the form "teams:<conversationID>" (thread/channel scope). Teams conversation
-// ids themselves contain ":", so user-scoped keys ("...:<userID>") cannot be
-// split unambiguously here; that is acceptable because proactive sends (the only
-// caller needing this) are deferred and also require a stored serviceURL.
+// conversationFromSessionKey extracts the conversation component from a session
+// key of the form "teams:<conversationID>" (thread/channel scope) or
+// "teams:<conversationID>:<userID>" (user scope). Teams conversation ids
+// themselves contain ":", so a user-scoped key cannot be split back into
+// conversation and user unambiguously — and it does not need to be: the
+// conversation-reference store (convref.go) keys on this function's raw output on
+// both the capture and the ReconstructReplyCtx side, so the two agree for every
+// scope without ever reversing the userID suffix.
 func conversationFromSessionKey(key string) (string, error) {
 	rest, ok := strings.CutPrefix(key, "teams:")
 	if !ok || rest == "" {

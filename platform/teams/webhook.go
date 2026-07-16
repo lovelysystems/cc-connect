@@ -132,6 +132,18 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		botAccount:     a.Recipient,
 		userAccount:    a.From,
 	}
+	// Capture the reply reference so a later proactive send (cron/timer/heartbeat)
+	// can rebuild an addressable reply context — the session key encodes the
+	// conversation but not the per-activity serviceURL. Key on the session key's
+	// conversation component so capture and ReconstructReplyCtx agree across
+	// thread/channel/user scopes (sessionKey() strips or augments the raw id).
+	if convKey, err := conversationFromSessionKey(sessionKey); err == nil {
+		p.convRefs.upsert(convKey, storedReplyRef{
+			ServiceURL:     a.ServiceURL,
+			ConversationID: a.Conversation.ID,
+			BotAccount:     a.Recipient,
+		})
+	}
 	msg := &core.Message{
 		SessionKey: sessionKey,
 		Platform:   "teams",

@@ -132,18 +132,79 @@ func TestReply_RejectsBadReplyCtx(t *testing.T) {
 	}
 }
 
-func TestReconstructReplyCtx(t *testing.T) {
-	p := &Platform{}
+func TestReconstructReplyCtx_HitReturnsAddressableCtx(t *testing.T) {
+	p := &Platform{convRefs: newConvRefStore("")}
+	p.convRefs.upsert("conv-42", storedReplyRef{
+		ServiceURL:     "https://smba.trafficmanager.net/emea/",
+		ConversationID: "19:conv-42@thread.tacv2",
+		BotAccount:     channelAccount{ID: "28:app-id", Name: "bot"},
+	})
+
 	got, err := p.ReconstructReplyCtx("teams:conv-42")
 	if err != nil {
 		t.Fatalf("ReconstructReplyCtx: %v", err)
 	}
 	rc, ok := got.(replyContext)
-	if !ok || rc.conversationID != "conv-42" {
-		t.Fatalf("reconstructed = %+v", got)
+	if !ok {
+		t.Fatalf("reconstructed type = %T", got)
 	}
+	// Both fields connector.send requires must be populated, or the proactive send
+	// fails with "reply context missing serviceURL/conversationID".
+	if rc.serviceURL == "" || rc.conversationID == "" {
+		t.Fatalf("reconstructed ctx not addressable: %+v", rc)
+	}
+	if rc.serviceURL != "https://smba.trafficmanager.net/emea/" || rc.conversationID != "19:conv-42@thread.tacv2" {
+		t.Errorf("reconstructed routing = %+v", rc)
+	}
+	if rc.botAccount.ID != "28:app-id" {
+		t.Errorf("missing bot envelope: %+v", rc.botAccount)
+	}
+	// A proactive send has no inbound activity to thread to.
+	if rc.activityID != "" {
+		t.Errorf("activityID should be empty for a proactive send, got %q", rc.activityID)
+	}
+}
 
+func TestReconstructReplyCtx_MissReturnsClearError(t *testing.T) {
+	p := &Platform{convRefs: newConvRefStore("")}
+	got, err := p.ReconstructReplyCtx("teams:never-seen")
+	if err == nil {
+		t.Fatal("expected a non-fatal error for an unseen conversation")
+	}
+	if got != nil {
+		t.Errorf("no context should be returned on a miss, got %+v", got)
+	}
+}
+
+func TestReconstructReplyCtx_RejectsBadKey(t *testing.T) {
+	p := &Platform{convRefs: newConvRefStore("")}
 	if _, err := p.ReconstructReplyCtx("slack:foo"); err == nil {
 		t.Error("expected error for non-teams session key")
+	}
+}
+
+func TestReconstructReplyCtx_ReChecksAllowlist(t *testing.T) {
+	p := &Platform{
+		convRefs: newConvRefStore(""),
+		cfg:      config{serviceURLAllowlist: []string{"smba.trafficmanager.net"}},
+	}
+	p.convRefs.upsert("conv-x", storedReplyRef{
+		ServiceURL:     "https://evil.example.com/",
+		ConversationID: "19:conv-x",
+		BotAccount:     channelAccount{ID: "28:app-id"},
+	})
+	// A stored serviceURL outside the allowlist must not be handed to a
+	// token-bearing proactive send.
+	if _, err := p.ReconstructReplyCtx("teams:conv-x"); err == nil {
+		t.Fatal("expected allowlist rejection for a disallowed stored serviceURL")
+	}
+
+	p.convRefs.upsert("conv-ok", storedReplyRef{
+		ServiceURL:     "https://smba.trafficmanager.net/emea/",
+		ConversationID: "19:conv-ok",
+		BotAccount:     channelAccount{ID: "28:app-id"},
+	})
+	if _, err := p.ReconstructReplyCtx("teams:conv-ok"); err != nil {
+		t.Fatalf("allowed serviceURL should reconstruct: %v", err)
 	}
 }
