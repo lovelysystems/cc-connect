@@ -8,6 +8,9 @@
 - **cloud_web platform**: 新增 self-hosted IM Gateway 作为 first-class platform 接入 (CWIP v1 协议,支持 websocket / long_poll / gateway 3 种 transport,完整 inbound/outbound + capability negotiation + graceful degradation)。 详见 docs/cloud-web.md + #1282。
 - **Microsoft Teams platform**: new Bot Framework connector — inbound webhook with JWT + serviceURL validation, outbound Bot Connector REST with AAD auth, streaming Adaptive Card replies (working card → answer, native AI label), inbound 1:1 files/images, outbound inline image send (size-capped), interactive permission & AskUserQuestion buttons folded into the streaming card, mention-to-engage with per-thread follow, and `session_scope` (thread/channel/user). See docs/teams.md.
 
+### Fixed
+- **Teams: proactive sends** (timer/cron/heartbeat) now deliver — the per-conversation `serviceURL` is persisted from inbound activities and reconstructed for later sends, with an allowlist re-check on the reconstructed URL (#1290).
+
 ## Unreleased
 
 ### Added
