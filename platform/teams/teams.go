@@ -36,6 +36,7 @@ type Platform struct {
 
 	validator   *inboundValidator
 	engaged     *engagement
+	convRefs    *convRefStore // conversation → reply reference, addresses proactive sends
 	conn        sender
 	graph       graphReader // Microsoft Graph reader for channel files (nil unless channel_files_enabled)
 	server      *http.Server
@@ -70,6 +71,7 @@ func New(opts map[string]any) (core.Platform, error) {
 	return &Platform{
 		cfg:         cfg,
 		engaged:     newEngagement(engagementPath(cfg.dataDir, cfg.project)),
+		convRefs:    newConvRefStore(convRefPath(cfg.dataDir, cfg.project)),
 		dispatchSem: make(chan struct{}, maxConcurrentDispatch),
 	}, nil
 }
@@ -178,17 +180,37 @@ func (p *Platform) SendImage(ctx context.Context, replyCtx any, img core.ImageAt
 	return err
 }
 
-// ReconstructReplyCtx rebuilds a reply context from a session key. Only the
-// conversation id is recoverable from the key; the per-activity serviceURL is
-// not encoded, so proactive sends (cron→Teams) need a conversation-reference
-// store — deferred follow-up. Implementing this satisfies the optional
-// ReplyContextReconstructor interface used by the engine.
+// ReconstructReplyCtx rebuilds a reply context for a proactive (unsolicited)
+// send — cron/timer/heartbeat — from the conversation-reference store. The
+// session key encodes the conversation but not the per-activity serviceURL the
+// Bot Connector must be POSTed to, so the serviceURL (and outbound envelope) come
+// from the reference captured on a prior inbound activity (webhook.go). Returns a
+// clear, non-fatal error when no reference is stored yet (e.g. a timer set before
+// the bot ever saw the conversation); the engine surfaces it without crashing the
+// proactive send. Satisfies the optional ReplyContextReconstructor interface.
 func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 	conv, err := conversationFromSessionKey(sessionKey)
 	if err != nil {
 		return nil, err
 	}
-	return replyContext{conversationID: conv}, nil
+	ref, ok := p.convRefs.lookup(conv)
+	if !ok {
+		return nil, fmt.Errorf("teams: no stored reply context for conversation %q (the bot has not seen this conversation yet)", conv)
+	}
+	// Re-check the serviceURL against the allowlist before it is used for a
+	// token-bearing outbound POST. The inbound path gates every activity via
+	// serviceURLAllowed, but a proactive send has no inbound activity and no JWT
+	// serviceurl claim, so on this path the allowlist is the only guard binding the
+	// bot token's destination — a stored value stranded by a later allowlist
+	// tightening must not silently redirect the token.
+	if !serviceURLAllowed(ref.ServiceURL, p.cfg.serviceURLAllowlist) {
+		return nil, fmt.Errorf("teams: stored serviceURL for conversation %q is not in the configured allowlist", conv)
+	}
+	return replyContext{
+		serviceURL:     ref.ServiceURL,
+		conversationID: ref.ConversationID,
+		botAccount:     ref.BotAccount,
+	}, nil
 }
 
 // Stop shuts down the webhook server.
