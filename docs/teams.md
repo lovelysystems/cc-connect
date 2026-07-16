@@ -236,5 +236,9 @@ which POSTs to your endpoint.
   and images"); **channel** files are supported via the opt-in
   `channel_files_enabled` path (see "Reading files from a channel"). Inbound audio
   is not supported.
-- No cron/timer → Teams proactive messages (a conversation-reference store is
-  needed to send without an incoming activity).
+- Proactive messages (cron/timer/heartbeat → Teams) require the bot to have seen
+  the conversation before: the per-conversation `serviceURL` is captured from
+  inbound activities and persisted, then reconstructed at send time. A
+  conversation the bot has never received a message in cannot be addressed yet.
+  Under `session_scope = channel`, a proactive send targets the most recently
+  active thread in the channel.
