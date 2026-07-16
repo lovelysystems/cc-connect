@@ -70,14 +70,19 @@ func (s *convRefStore) load() {
 		slog.Warn("teams: ignoring corrupt conversation-reference store", "path", s.path, "error", err)
 		return
 	}
+	if refs == nil {
+		return // e.g. a file whose content is the JSON literal `null`; keep the empty map
+	}
 	s.refs = refs
 }
 
 // upsert records ref under key, persisting only when the stored value actually
-// changes. The stored fields are stable per conversation (serviceURL, bot
-// account), so a rewrite happens only on a genuine change such as a serviceURL
-// rotation — keeping the inbound webhook path write-rare, like engagement.engage.
-// A nil store or empty key is a no-op.
+// changes. For thread and user scope the stored fields are stable per key, so a
+// rewrite happens only on a genuine change (e.g. a serviceURL rotation), keeping
+// the webhook path write-rare like engagement.engage. Under channel scope many
+// threads share one key while the stored conversationID tracks the active thread,
+// so switching active threads rewrites the entry — acceptable, and the write is
+// a single bounded AtomicWriteFile. A nil store or empty key is a no-op.
 func (s *convRefStore) upsert(key string, ref storedReplyRef) {
 	if s == nil || key == "" {
 		return

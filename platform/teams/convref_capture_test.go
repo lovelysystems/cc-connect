@@ -71,6 +71,47 @@ func TestCapture_ChannelScopeKeyMatchesReconstruct(t *testing.T) {
 	}
 }
 
+// TestCapture_UserScopeKeyMatchesReconstruct pins the capture/reconstruct key
+// symmetry under session_scope=user, whose session key is
+// "teams:<conv>:<userID>". conversationFromSessionKey cannot split that back into
+// conversation and user, but it does not need to — both sides key on its raw
+// output, so the round-trip resolves.
+func TestCapture_UserScopeKeyMatchesReconstruct(t *testing.T) {
+	p := captureTestPlatform("user")
+	p.dispatch(jwt.MapClaims{}, convrefPersonalActivity("19:1on1", "https://smba.example/"))
+
+	got, err := p.ReconstructReplyCtx("teams:19:1on1:user-1")
+	if err != nil {
+		t.Fatalf("user-scope reconstruct should hit the store: %v", err)
+	}
+	rc := got.(replyContext)
+	if rc.serviceURL == "" {
+		t.Fatal("user-scope proactive send not addressable (empty serviceURL)")
+	}
+	// The stored conversationID is the real Teams id, not the session key's
+	// userID-suffixed form.
+	if rc.conversationID != "19:1on1" {
+		t.Errorf("conversationID = %q, want %q", rc.conversationID, "19:1on1")
+	}
+}
+
+// TestCapture_ServiceURLRotationOverwrites proves that a serviceURL change for a
+// known conversation is picked up through the real dispatch path — the store
+// overwrites rather than keeping the stale value.
+func TestCapture_ServiceURLRotationOverwrites(t *testing.T) {
+	p := captureTestPlatform("thread")
+	p.dispatch(jwt.MapClaims{}, convrefPersonalActivity("19:1on1", "https://emea.smba.example/"))
+	p.dispatch(jwt.MapClaims{}, convrefPersonalActivity("19:1on1", "https://amer.smba.example/"))
+
+	got, err := p.ReconstructReplyCtx("teams:19:1on1")
+	if err != nil {
+		t.Fatalf("reconstruct: %v", err)
+	}
+	if rc := got.(replyContext); rc.serviceURL != "https://amer.smba.example/" {
+		t.Errorf("expected the latest serviceURL to win, got %q", rc.serviceURL)
+	}
+}
+
 func TestCapture_UnauthorizedNotCaptured(t *testing.T) {
 	p := captureTestPlatform("thread")
 	p.cfg.allowFrom = "someone-else" // user-1 is not on the allow list

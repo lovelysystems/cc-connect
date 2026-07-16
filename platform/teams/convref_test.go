@@ -126,6 +126,35 @@ func TestConvRefStore_CorruptFileStartsEmpty(t *testing.T) {
 	}
 }
 
+func TestConvRefStore_PersistsWithOwnerOnlyMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "convrefs.json")
+	newConvRefStore(path).upsert("teams:conv", sampleRef())
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	// The stored serviceURL routes the bot's bearer token, so the file is
+	// owner-only (0600) — stricter than the engagement store's 0644.
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("store file mode = %o, want 0600", perm)
+	}
+}
+
+func TestConvRefStore_NullJSONStartsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "convrefs.json")
+	if err := os.WriteFile(path, []byte("null"), 0o600); err != nil {
+		t.Fatalf("seed null: %v", err)
+	}
+	s := newConvRefStore(path)
+	// The nil-map guard in load() means a subsequent upsert must not panic on the
+	// nil map a bare `null` would otherwise unmarshal into.
+	s.upsert("teams:conv", sampleRef())
+	if _, ok := s.lookup("teams:conv"); !ok {
+		t.Fatal("store should be usable after loading a `null` file")
+	}
+}
+
 func TestConvRefStore_NilSafe(t *testing.T) {
 	var s *convRefStore
 	s.upsert("teams:conv", sampleRef()) // must not panic
