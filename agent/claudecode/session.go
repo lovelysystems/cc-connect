@@ -876,7 +876,12 @@ func (cs *claudeSession) handleControlRequest(raw map[string]any) {
 	toolName, _ := request["tool_name"].(string)
 	input, _ := request["input"].(map[string]any)
 
-	if cs.autoApprove.Load() {
+	// AskUserQuestion is never auto-decided: its "permission" is the user's
+	// answer, carried back via the EventPermissionRequest prompt. Auto-allowing
+	// it produces an empty answer and auto-denying it suppresses the prompt
+	// entirely, so it must fall through to the emit in every permission mode.
+	// Mirrors the engine's `autoApprove && !isAskQuestion` carve-out.
+	if cs.autoApprove.Load() && toolName != "AskUserQuestion" {
 		slog.Debug("claudeSession: auto-approving", "request_id", requestID, "tool", toolName)
 		_ = cs.RespondPermission(requestID, core.PermissionResult{
 			Behavior:     "allow",
@@ -884,7 +889,7 @@ func (cs *claudeSession) handleControlRequest(raw map[string]any) {
 		})
 		return
 	}
-	if cs.dontAsk.Load() {
+	if cs.dontAsk.Load() && toolName != "AskUserQuestion" {
 		slog.Debug("claudeSession: auto-denying", "request_id", requestID, "tool", toolName)
 		_ = cs.RespondPermission(requestID, core.PermissionResult{
 			Behavior: "deny",
