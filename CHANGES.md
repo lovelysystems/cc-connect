@@ -11,6 +11,8 @@ upstream; it drops when that PR lands upstream and we re-base.
 
 ### Unreleased
 
+### 2026-07-17 / v1.5.0-beta.2-ls.1
+
 #### Fix
 
 - **teams**: reconstruct serviceURL for proactive sends (upstream: pending)
