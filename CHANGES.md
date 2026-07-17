@@ -4,6 +4,8 @@ Downstream-only changes on top of upstream cc-connect, grouped by the upstream b
 they sit on (newest first). See `DOWNSTREAM.md` for the versioning scheme and how
 this file evolves across re-bases. Inline `(upstream: …)` marks each item's
 upstreaming status: `pending` (not submitted) · `submitted #N` · `merged`.
+`(backport: upstream #N)` marks an upstream PR we carry early — not ours to
+upstream; it drops when that PR lands upstream and we re-base.
 
 ## v1.5.0-beta.2
 
@@ -22,6 +24,8 @@ upstreaming status: `pending` (not submitted) · `submitted #N` · `merged`.
   (upstream: submitted #1528)
 - **display**: quiet-mode streaming-card NO_REPLY handling
   (upstream: pending; rel. chenhg5#1302)
+- **slack**: working-indicator reactions target the summoning message, not the
+  thread root (backport: upstream #1523)
 
 #### Feature
 

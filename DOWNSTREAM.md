@@ -123,6 +123,28 @@ only changes at a re-base — within a base it only grows:
 - **Reading it:** a tag's contents = read within its base section down to that tag;
   the current delta = the base's `### Unreleased` plus its released sections.
 
+## Backporting upstream PRs
+
+Sometimes we carry an **in-flight upstream PR** early — a fix that's merged into a
+newer upstream release than our base, or an open PR we don't want to wait for. It's
+part of the downstream delta like our own patches, but with different semantics: it
+is **not ours to upstream** (it's already an upstream PR by its author), so it needs
+no action from us — it drops when that PR lands upstream and we re-base.
+
+- **Cherry-pick the PR's commit(s) pristine** — preserve the original author and the
+  exact diff. `git cherry` / patch-id then recognizes it as merged once it lands
+  upstream, so it drops cleanly at the next re-base with zero conflict. Do **not**
+  fold a `CHANGES.md` edit into the cherry-picked commit (that changes the diff and
+  breaks patch-id matching) — put the changelog line in a separate commit.
+- **Mark it** `(backport: upstream #N)` in `CHANGES.md`, so it's clear it's carried,
+  not authored here, and that it's tracked by *their* PR, not ours.
+
+```
+git fetch upstream pull/<N>/head
+git cherry-pick <commit>          # pristine; author preserved
+# separate commit: add the (backport: upstream #N) CHANGES.md line
+```
+
 ## Cutting a fork release (same base)
 
 Between re-bases the delta only appends — no copying.
