@@ -15,11 +15,11 @@ upstreaming status: `pending` (not submitted) · `submitted #N` · `merged`.
 - **claudecode**: AskUserQuestion reaches its interactive prompt in `dontAsk` /
   `bypassPermissions` modes instead of being auto-decided (upstream: pending)
 - **claudecode**: resume sessions against the agent's real working directory
-  (upstream: pending; rel. chenhg5#599)
+  (upstream: pending)
 - **core**: open the API control socket to `run_as_user` agents
   (upstream: pending; rel. chenhg5#1527)
 - **core**: stop duplicating pre-boundary text on non-preview streaming cards
-  (upstream: pending)
+  (upstream: submitted #1528)
 - **display**: quiet-mode streaming-card NO_REPLY handling
   (upstream: pending; rel. chenhg5#1302)
 
@@ -27,4 +27,4 @@ upstreaming status: `pending` (not submitted) · `submitted #N` · `merged`.
 
 - **teams**: Microsoft Teams connector — inbound/outbound messaging, streaming
   Adaptive-Card replies, and reading files attached to the bot in a channel via
-  Microsoft Graph (upstream: pending — needs maintainer buy-in)
+  Microsoft Graph (upstream: submitted #1518)
