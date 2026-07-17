@@ -135,16 +135,27 @@ Between re-bases the delta only appends — no copying.
 
 ## Re-basing onto a new upstream release
 
-This is the only point where the delta shrinks. Merge, then **copy the survivors
-forward and drop the graduated**:
+`downstream` is a **clean patch set** — `<base>` + our commits, linear. Moving to a
+newer upstream release **rebases that patch set onto the new tag**; it does not
+merge. (A merge drags the old base's commits along — that is how stray upstream
+commits leak in — and it leaves `git cherry` polluted.) Rebasing rewrites
+`downstream` history, so it ends in a **force-push** — that is the accepted cost of
+keeping the branch clean.
 
-1. Merge the new upstream release tag into `downstream` and reconcile: keep
-   `CHANGELOG.md` as upstream's, keep Lovely changes.
-2. Run `git cherry -v <new-base> downstream`. Every item now shown as `-` has
-   landed upstream — **drop it** from the delta (it lives in upstream's
-   `CHANGELOG.md` now). Items still shown as `+` are the survivors.
-3. Add a new `## <new-base>` section at the top of `CHANGES.md`, and **copy the
-   surviving entries** into its `### Unreleased` (dropping the graduated ones). The
-   old base section stays frozen as history of what its tags shipped.
-4. Cut the first release on the new base (`<new-base>-ls.1`) per "Cutting a fork
+1. Replay our commits onto the new release tag:
+   `git rebase --onto <new-base> <old-base> downstream`. If the old base is tangled
+   (e.g. a previous merge is in the way), rebuild instead: branch from `<new-base>`
+   and `git cherry-pick` our commits in order — that picks *only* our commits and
+   avoids re-applying the new base's own commits.
+2. Resolve `CHANGELOG.md` conflicts to the base (`--ours`) — fork changes live in
+   `CHANGES.md`, so `CHANGELOG.md` stays pure upstream. (`git rerere` replays these
+   resolutions across attempts.)
+3. Run `git cherry -v <new-base> downstream`; it must list **only** our commits. An
+   item that graduated upstream simply won't be in the replay — drop its
+   `CHANGES.md` entry.
+4. In `CHANGES.md`, add a new `## <new-base>` section and copy the surviving entries
+   into its `### Unreleased`, dropping the graduated ones. The old base section stays
+   frozen as history of what its tags shipped.
+5. Build + test, then `git push --force-with-lease origin downstream`.
+6. Cut the first release on the new base (`<new-base>-ls.1`) per "Cutting a fork
    release" above.
