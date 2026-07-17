@@ -24,6 +24,8 @@ upstream; it drops when that PR lands upstream and we re-base.
   (upstream: submitted #1528)
 - **display**: quiet-mode streaming-card NO_REPLY handling
   (upstream: pending; rel. chenhg5#1302)
+- **slack**: ignore edited @mentions instead of re-running the agent
+  (upstream: pending)
 - **slack**: working-indicator reactions target the summoning message, not the
   thread root (backport: upstream #1523)
 
