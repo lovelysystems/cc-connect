@@ -775,3 +775,138 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 }
+
+// bufWriteCloser adapts a bytes.Buffer to io.WriteCloser so tests can capture
+// the control_response JSON that RespondPermission writes to stdin.
+type bufWriteCloser struct{ bytes.Buffer }
+
+func (*bufWriteCloser) Close() error { return nil }
+
+// TestHandleControlRequest_PermissionModes verifies that AskUserQuestion always
+// reaches the EventPermissionRequest emit (rendering as an interactive prompt)
+// regardless of permission mode, while non-question tools keep their
+// auto-decision. Regression guard for the dontAsk/bypassPermissions carve-out.
+func TestHandleControlRequest_PermissionModes(t *testing.T) {
+	askInput := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "Pick one",
+				"header":   "Choice",
+				"options": []any{
+					map[string]any{"label": "A", "description": "first"},
+					map[string]any{"label": "B", "description": "second"},
+				},
+			},
+		},
+	}
+	bashInput := map[string]any{"command": "ls"}
+
+	newRaw := func(tool string, input map[string]any) map[string]any {
+		return map[string]any{
+			"request_id": "req-1",
+			"request": map[string]any{
+				"subtype":   "can_use_tool",
+				"tool_name": tool,
+				"input":     input,
+			},
+		}
+	}
+
+	cases := []struct {
+		name          string
+		auto          bool
+		dont          bool
+		accept        bool
+		tool          string
+		input         map[string]any
+		wantEvent     bool
+		wantQuestions bool
+		wantStdin     string // substring expected in stdin JSON; "" means expect no write
+	}{
+		{
+			name:          "dontAsk lets AskUserQuestion prompt",
+			dont:          true,
+			tool:          "AskUserQuestion",
+			input:         askInput,
+			wantEvent:     true,
+			wantQuestions: true,
+		},
+		{
+			name:          "bypassPermissions lets AskUserQuestion prompt",
+			auto:          true,
+			tool:          "AskUserQuestion",
+			input:         askInput,
+			wantEvent:     true,
+			wantQuestions: true,
+		},
+		{
+			name:      "dontAsk still auto-denies Bash",
+			dont:      true,
+			tool:      "Bash",
+			input:     bashInput,
+			wantStdin: `"deny"`,
+		},
+		{
+			name:      "bypassPermissions still auto-allows Bash",
+			auto:      true,
+			tool:      "Bash",
+			input:     bashInput,
+			wantStdin: `"allow"`,
+		},
+		{
+			name:          "acceptEdits lets AskUserQuestion prompt",
+			accept:        true,
+			tool:          "AskUserQuestion",
+			input:         askInput,
+			wantEvent:     true,
+			wantQuestions: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			stdin := &bufWriteCloser{}
+			cs := &claudeSession{
+				events:  make(chan core.Event, 4),
+				ctx:     ctx,
+				stdin:   stdin,
+				ccHooks: newCCPermissionHookRunner(t.TempDir()),
+			}
+			cs.alive.Store(true)
+			cs.autoApprove.Store(tc.auto)
+			cs.dontAsk.Store(tc.dont)
+			cs.acceptEditsOnly.Store(tc.accept)
+
+			cs.handleControlRequest(newRaw(tc.tool, tc.input))
+
+			got := stdin.String()
+			if tc.wantStdin == "" {
+				if got != "" {
+					t.Errorf("expected no control_response written to stdin, got %q", got)
+				}
+			} else if !strings.Contains(got, tc.wantStdin) {
+				t.Errorf("stdin = %q, want substring %q", got, tc.wantStdin)
+			}
+
+			select {
+			case evt := <-cs.events:
+				if !tc.wantEvent {
+					t.Fatalf("unexpected event emitted: %+v", evt)
+				}
+				if evt.Type != core.EventPermissionRequest {
+					t.Errorf("event type = %q, want %q", evt.Type, core.EventPermissionRequest)
+				}
+				if tc.wantQuestions && len(evt.Questions) == 0 {
+					t.Error("expected non-empty Questions on AskUserQuestion event")
+				}
+			default:
+				if tc.wantEvent {
+					t.Fatal("expected EventPermissionRequest, got none")
+				}
+			}
+		})
+	}
+}
