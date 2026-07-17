@@ -868,12 +868,20 @@ func TestHandleControlRequest_PermissionModes(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
+			// Isolate hook discovery from the host's real ~/.claude/settings.json:
+			// settingsPaths reads claudeConfigHomeDir() first, so without this the
+			// AskUserQuestion fall-through would only be green because this machine
+			// happens to have no matching PermissionRequest hook. An empty config
+			// dir makes tryHook find no hooks regardless of host.
+			cfgDir := t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
+
 			stdin := &bufWriteCloser{}
 			cs := &claudeSession{
 				events:  make(chan core.Event, 4),
 				ctx:     ctx,
 				stdin:   stdin,
-				ccHooks: newCCPermissionHookRunner(t.TempDir()),
+				ccHooks: newCCPermissionHookRunner(cfgDir),
 			}
 			cs.alive.Store(true)
 			cs.autoApprove.Store(tc.auto)
