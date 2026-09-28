@@ -116,7 +116,8 @@ only changes at a re-base — within a base it only grows:
 - **Entry style** mirrors upstream's `CHANGELOG.md`: `- **scope**: description`,
   scope lowercase (`teams`, `claudecode`, `core`, `display`).
 - **Inline upstream status** on each entry — `(upstream: <status>)` where status is
-  `pending` (not submitted) · `submitted #N` (PR open) · `merged`. This is the one
+  `pending` (not submitted) · `submitted #N` (PR open) · `merged` ·
+  `superseded by #N` (upstream fixed it in another PR). This is the one
   fork-specific deviation from house style; it replaces a separate tracking table so
   there is a single source of truth. `git cherry` is the objective "merged?" check;
   the marker adds the PR link and the not-yet-submitted state git cannot see.

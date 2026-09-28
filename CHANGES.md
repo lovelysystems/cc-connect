@@ -4,7 +4,8 @@ Downstream-only changes on top of upstream cc-connect, grouped by the upstream b
 they sit on (newest first). See `DOWNSTREAM.md` for the versioning scheme and how
 this file evolves across re-bases. Inline `(upstream: …)` marks each item's
 upstreaming status: `pending` (not submitted) · `submitted chenhg5/cc-connect#N` ·
-`merged`. `(backport: chenhg5/cc-connect#N)` marks an upstream PR we carry early — not ours to
+`merged` · `superseded by chenhg5/cc-connect#N` (upstream fixed it in another PR).
+`(backport: chenhg5/cc-connect#N)` marks an upstream PR we carry early — not ours to
 upstream; it drops when that PR lands upstream and we re-base.
 
 ## v1.5.0-beta.2
@@ -17,8 +18,7 @@ upstream; it drops when that PR lands upstream and we re-base.
 
 - **claudecode**: AskUserQuestion reaches its interactive prompt in `dontAsk` /
   `bypassPermissions` modes instead of being auto-decided
-  (upstream: pending; `bypassPermissions` half tracked by chenhg5/cc-connect#1533,
-  `dontAsk` half not submitted)
+  (upstream: superseded by chenhg5/cc-connect#1880, merged)
 - **claudecode**: resume sessions against the agent's real working directory
   (upstream: submitted chenhg5/cc-connect#1581)
 - **core**: open the API control socket to `run_as_user` agents
@@ -26,11 +26,11 @@ upstream; it drops when that PR lands upstream and we re-base.
 - **core**: stop duplicating pre-boundary text on non-preview streaming cards
   (upstream: submitted chenhg5/cc-connect#1528)
 - **display**: quiet-mode streaming-card NO_REPLY handling
-  (upstream: pending; rel. chenhg5/cc-connect#1302)
+  (upstream: submitted chenhg5/cc-connect#1919; completes chenhg5/cc-connect#1320)
 - **slack**: ignore edited @mentions instead of re-running the agent
   (upstream: submitted chenhg5/cc-connect#1579)
 - **slack**: working-indicator reactions target the summoning message, not the
-  thread root (backport: chenhg5/cc-connect#1523)
+  thread root (backport: chenhg5/cc-connect#1523, merged)
 
 #### Feature
 
