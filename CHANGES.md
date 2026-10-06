@@ -14,6 +14,8 @@ upstream; it drops when that PR lands upstream and we re-base.
 
 ### Unreleased
 
+### 2026-10-06 / v1.5.0-ls.1
+
 #### Fix
 
 - **claudecode**: AskUserQuestion reaches its interactive prompt in `dontAsk` /
