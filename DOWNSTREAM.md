@@ -106,10 +106,10 @@ only changes at a re-base — within a base it only grows:
 ```
 ## <upstream-base>            # e.g. ## v1.5.0-beta.2 — the base section
 ### Unreleased                # work not yet cut into a fork tag
-#### Fix / #### Feature / #### Removal
+#### Fix / #### Feature / #### Revert
 - **scope**: description (upstream: <status>)
 ### <date> / <base>-ls.<N>    # a cut fork release, newest first
-#### Fix / #### Feature / #### Removal
+#### Fix / #### Feature / #### Revert
 - ...
 ```
 
@@ -123,7 +123,7 @@ only changes at a re-base — within a base it only grows:
   change's newest listing in the file: a carried change → its entry in the current
   base section; a change that graduated at a re-base → its last entry in the old base
   section, which keeps its final marker (`merged` /
-  `superseded by chenhg5/cc-connect#N`); a withdrawn change → its `#### Removal`
+  `superseded by chenhg5/cc-connect#N`); a withdrawn change → its `#### Revert`
   entry. Older base sections carry no other markers. This is the one fork-specific
   deviation from house style; it replaces a separate tracking table so there is a
   single source of truth. `git cherry` is the objective "merged?" check; the marker
@@ -192,12 +192,12 @@ keeping the branch clean.
 3. Run `git cherry -v <new-base> downstream`; it must list **only** our commits. An
    item that graduated upstream (merged or superseded) simply won't be in the replay
    and gets no new entry; its entry in the old base section keeps its final marker. A
-   withdrawn item gets a `#### Removal` entry, with its `withdrawn` marker, in the new
+   withdrawn item gets a `#### Revert` entry, with its `withdrawn` marker, in the new
    base's `### Unreleased`, so it lands in the new base's first release.
 4. In `CHANGES.md`, add a new `## <new-base>` section and copy the surviving entries,
-   with their markers, into its `### Unreleased`; `#### Removal` entries stay in their
+   with their markers, into its `### Unreleased`; `#### Revert` entries stay in their
    base section. Then strip the markers from the old base section, except on graduated
-   entries and `#### Removal` entries, which keep their final marker.
+   entries and `#### Revert` entries, which keep their final marker.
 5. Build + test, then `git push --force-with-lease origin downstream`.
 6. Cut the first release on the new base (`<new-base>-ls.1`) per "Cutting a fork
    release" above.

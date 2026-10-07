@@ -45,7 +45,7 @@ entry that graduated upstream at the re-base keeps its final marker there.
 - **teams**: read files attached to the bot in a channel via Microsoft Graph
   (upstream: pending; follow-up to chenhg5/cc-connect#1518)
 
-#### Removal
+#### Revert
 
 - **core**: API control socket access for `run_as_user` agents
   (upstream: withdrawn chenhg5/cc-connect#1580)
