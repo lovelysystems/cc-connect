@@ -106,24 +106,31 @@ only changes at a re-base — within a base it only grows:
 ```
 ## <upstream-base>            # e.g. ## v1.5.0-beta.2 — the base section
 ### Unreleased                # work not yet cut into a fork tag
-#### Fix / #### Feature
+#### Fix / #### Feature / #### Revert
 - **scope**: description (upstream: <status>)
 ### <date> / <base>-ls.<N>    # a cut fork release, newest first
-#### Fix / #### Feature
+#### Fix / #### Feature / #### Revert
 - ...
 ```
 
 - **Entry style** mirrors upstream's `CHANGELOG.md`: `- **scope**: description`,
   scope lowercase (`teams`, `claudecode`, `core`, `display`).
-- **Inline upstream status** on each entry — `(upstream: <status>)` where status is
-  `pending` (not submitted) · `submitted #N` (PR open) · `merged` ·
-  `superseded by #N` (upstream fixed it in another PR) · `withdrawn #N` (PR closed
-  by us; the change is dropped downstream). This is the one fork-specific
+- **Inline upstream status** — `(upstream: <status>)` where status is `pending` (not
+  submitted) · `submitted chenhg5/cc-connect#N` (PR open) · `merged` ·
+  `superseded by chenhg5/cc-connect#N` (upstream fixed it in another PR) ·
+  `withdrawn chenhg5/cc-connect#N` (PR closed by us; the change is dropped
+  downstream). Upstream and backport markers show today's status and sit on a
+  change's newest listing in the file: a carried change → its entry in the current
+  base section; a change that graduated at a re-base → its last entry in the old base
+  section, which keeps its final marker (`merged` /
+  `superseded by chenhg5/cc-connect#N`); a withdrawn change → its `#### Revert`
+  entry. Older base sections carry no other markers. This is the one fork-specific
   deviation from house style; it replaces a separate tracking table so there is a
-  single source of truth. `git cherry` is the objective "merged?" check;
-  the marker adds the PR link and the not-yet-submitted state git cannot see.
+  single source of truth. `git cherry` is the objective "merged?" check; the marker
+  adds the PR link and the not-yet-submitted state git cannot see.
 - **Reading it:** a tag's contents = read within its base section down to that tag;
-  the current delta = the base's `### Unreleased` plus its released sections.
+  the current delta = the top base's `### Unreleased` plus its released sections;
+  an item's upstream status = the marker on its newest listing.
 
 ## Backporting upstream PRs
 
@@ -144,13 +151,13 @@ no action from us — it drops when that PR lands upstream and we re-base.
   squash default. A squash folds the cherry-pick into the `CHANGES.md` commit next
   to it, and re-base step 1 can no longer drop the backport on its own. The same
   applies to a PR carrying a revert.
-- **Mark it** `(backport: upstream #N)` in `CHANGES.md`, so it's clear it's carried,
-  not authored here, and that it's tracked by *their* PR, not ours.
+- **Mark it** `(backport: chenhg5/cc-connect#N)` in `CHANGES.md`, so it's clear
+  it's carried, not authored here, and that it's tracked by *their* PR, not ours.
 
 ```
 git fetch upstream pull/<N>/head
 git cherry-pick <commit>          # pristine; author preserved
-# separate commit: add the (backport: upstream #N) CHANGES.md line
+# separate commit: add the (backport: chenhg5/cc-connect#N) CHANGES.md line
 ```
 
 ## Cutting a fork release (same base)
@@ -183,11 +190,14 @@ keeping the branch clean.
    `CHANGES.md`, so `CHANGELOG.md` stays pure upstream. (`git rerere` replays these
    resolutions across attempts.)
 3. Run `git cherry -v <new-base> downstream`; it must list **only** our commits. An
-   item that graduated upstream simply won't be in the replay — drop its
-   `CHANGES.md` entry.
-4. In `CHANGES.md`, add a new `## <new-base>` section and copy the surviving entries
-   into its `### Unreleased`, dropping the graduated and withdrawn ones. The old
-   base section stays frozen as history of what its tags shipped.
+   item that graduated upstream (merged or superseded) simply won't be in the replay
+   and gets no new entry; its entry in the old base section keeps its final marker. A
+   withdrawn item gets a `#### Revert` entry, with its `withdrawn` marker, in the new
+   base's `### Unreleased`, so it lands in the new base's first release.
+4. In `CHANGES.md`, add a new `## <new-base>` section and copy the surviving entries,
+   with their markers, into its `### Unreleased`; `#### Revert` entries stay in their
+   base section. Then strip the markers from the old base section, except on graduated
+   entries and `#### Revert` entries, which keep their final marker.
 5. Build + test, then `git push --force-with-lease origin downstream`.
 6. Cut the first release on the new base (`<new-base>-ls.1`) per "Cutting a fork
    release" above.
