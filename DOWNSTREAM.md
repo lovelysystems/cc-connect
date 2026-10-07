@@ -115,20 +115,22 @@ only changes at a re-base — within a base it only grows:
 
 - **Entry style** mirrors upstream's `CHANGELOG.md`: `- **scope**: description`,
   scope lowercase (`teams`, `claudecode`, `core`, `display`).
-- **Inline upstream status** on each entry of the current (top) base section —
-  `(upstream: <status>)` where status is `pending` (not submitted) ·
-  `submitted chenhg5/cc-connect#N` (PR open) · `merged` ·
+- **Inline upstream status** — `(upstream: <status>)` where status is `pending` (not
+  submitted) · `submitted chenhg5/cc-connect#N` (PR open) · `merged` ·
   `superseded by chenhg5/cc-connect#N` (upstream fixed it in another PR) ·
   `withdrawn chenhg5/cc-connect#N` (PR closed by us; the change is dropped
-  downstream). Upstream and backport markers show today's status and live only in
-  the current base section; older base sections keep their entries but carry no
-  markers. This is the one fork-specific deviation from house style; it replaces a
-  separate tracking table so there is a single source of truth. `git cherry` is the
-  objective "merged?" check; the marker adds the PR link and the not-yet-submitted
-  state git cannot see.
+  downstream). Upstream and backport markers show today's status and sit on a
+  change's newest listing in the file: a carried change → its entry in the current
+  base section; a change that graduated at a re-base → its last entry in the old base
+  section, which keeps its final marker (`merged` /
+  `superseded by chenhg5/cc-connect#N`); a withdrawn change → its `#### Removal`
+  entry. Older base sections carry no other markers. This is the one fork-specific
+  deviation from house style; it replaces a separate tracking table so there is a
+  single source of truth. `git cherry` is the objective "merged?" check; the marker
+  adds the PR link and the not-yet-submitted state git cannot see.
 - **Reading it:** a tag's contents = read within its base section down to that tag;
   the current delta = the top base's `### Unreleased` plus its released sections;
-  an item's upstream status = its marker in the top base section.
+  an item's upstream status = the marker on its newest listing.
 
 ## Backporting upstream PRs
 
@@ -189,12 +191,13 @@ keeping the branch clean.
    resolutions across attempts.)
 3. Run `git cherry -v <new-base> downstream`; it must list **only** our commits. An
    item that graduated upstream (merged or superseded) simply won't be in the replay
-   and gets no entry on the new base. A withdrawn item gets a `#### Removal` entry,
-   with its `withdrawn` marker, in the new base's `### Unreleased`, so it lands in
-   the new base's first release.
+   and gets no new entry; its entry in the old base section keeps its final marker. A
+   withdrawn item gets a `#### Removal` entry, with its `withdrawn` marker, in the new
+   base's `### Unreleased`, so it lands in the new base's first release.
 4. In `CHANGES.md`, add a new `## <new-base>` section and copy the surviving entries,
    with their markers, into its `### Unreleased`. Then strip the markers from the old
-   base section; its entries keep listing what its tags shipped.
+   base section, except on graduated entries and `#### Removal` entries, which keep
+   their final marker.
 5. Build + test, then `git push --force-with-lease origin downstream`.
 6. Cut the first release on the new base (`<new-base>-ls.1`) per "Cutting a fork
    release" above.

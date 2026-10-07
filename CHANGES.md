@@ -9,8 +9,9 @@ upstreaming status: `pending` (not submitted) · `submitted chenhg5/cc-connect#N
 downstream).
 `(backport: chenhg5/cc-connect#N)` marks an upstream PR we carry early — not ours to
 upstream; it drops when that PR lands upstream and we re-base.
-Both marks show today's status and appear only in the current base section; older
-base sections list what shipped.
+Both marks show today's status and sit on a change's newest listing: for a carried
+change that is the current base section. Older base sections list what shipped; only an
+entry that graduated upstream at the re-base keeps its final marker there.
 
 ## v1.5.0
 
