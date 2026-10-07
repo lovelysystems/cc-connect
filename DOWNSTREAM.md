@@ -195,9 +195,9 @@ keeping the branch clean.
    withdrawn item gets a `#### Removal` entry, with its `withdrawn` marker, in the new
    base's `### Unreleased`, so it lands in the new base's first release.
 4. In `CHANGES.md`, add a new `## <new-base>` section and copy the surviving entries,
-   with their markers, into its `### Unreleased`. Then strip the markers from the old
-   base section, except on graduated entries and `#### Removal` entries, which keep
-   their final marker.
+   with their markers, into its `### Unreleased`; `#### Removal` entries stay in their
+   base section. Then strip the markers from the old base section, except on graduated
+   entries and `#### Removal` entries, which keep their final marker.
 5. Build + test, then `git push --force-with-lease origin downstream`.
 6. Cut the first release on the new base (`<new-base>-ls.1`) per "Cutting a fork
    release" above.
