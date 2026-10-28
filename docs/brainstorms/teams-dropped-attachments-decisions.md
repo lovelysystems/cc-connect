@@ -4,7 +4,7 @@
 
 - Retry both paths (1:1 `connector.fetch` and the channel content GET), not the channel path alone: the brief lists both as giving up on the first non-2xx — `platform/teams/connector.go:157`, `platform/teams/graph.go:237`.
 - Retry transport errors and 404/408/409/423/429/5xx, not 400/401/403: a missing `Sites.Selected` grant answers 403 and retrying it only delays the warning — `platform/teams/graph.go:205`.
-- Retry around `graph.downloadFile` in the dispatch loop, which re-runs site and drive lookups, rather than inside `downloadFile` around the content GET only: the loop is reachable from the `fakeGraph` dispatch tests and only the content step reports retryable — `platform/teams/webhook.go:258`.
+- Retry around `graph.downloadFile` in the dispatch loop, which re-runs site and drive lookups, rather than inside `downloadFile` around the content GET only: the loop is reachable from the `fakeGraph` dispatch tests — `platform/teams/webhook.go:258`.
 - Waits 2 s and 5 s within a 10 s budget, chosen by the user (Taras) in review, not 5/10/20/40 s with 75 s or 5 s + 15 s: a file that never arrives costs the editor ~7 s, tuned later from the `teams: retrying inbound attachment download` log line — `platform/teams/webhook.go:32`.
 - One 10 s budget per message measured as wall-clock time since its first download attempt, not a wait schedule per attachment or a sum of waits: bounds when the last retry can start even when attempts hit the 30 s client timeout — `platform/teams/webhook.go:60`, `platform/teams/graph.go:18`, `platform/teams/connector.go:17`.
 - Wait schedule and budget as package variables overridden in tests, not an injected clock: smallest seam the package needs — `platform/teams/webhook.go:188`.
@@ -28,5 +28,6 @@
 - The note does not say the user saw the warning: the notice reply can fail, and the note would then be wrong — `platform/teams/webhook.go:198`.
 - Over-cap reason text "unavailable: too many files in one message, only the first N are read", with N from `maxChannelFileRefs`: says why without a third reason — `platform/teams/webhook.go:287`.
 - Tests shrink `retryWaits`/`retryBudget` through a `fastRetries` helper, and the fakes gained scripted per-URL outcomes, not new fake types: smallest change to the existing `fakeGraph`/`fakeSender` — `platform/teams/session_test.go`, `platform/teams/reply_test.go`.
+- Site and drive lookups retry on transport errors and 408/409/423/429/5xx like the content GET, but a lookup 404 fails, not retries: a 404 there means a wrong site or drive (chosen by Taras in review, accepting the review finding) — `platform/teams/graph.go:223`.
 
 ## Open questions

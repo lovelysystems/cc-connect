@@ -173,6 +173,46 @@ func TestDownloadFile_RetryableContentStatus(t *testing.T) {
 	}
 }
 
+func TestDownloadFile_LookupStatusOutcome(t *testing.T) {
+	cases := []struct {
+		name   string
+		step   string // path suffix that answers with status
+		status int
+		want   fetchOutcome
+	}{
+		{"site 503", "site", http.StatusServiceUnavailable, fetchRetryable},
+		{"site 429", "site", http.StatusTooManyRequests, fetchRetryable},
+		{"site 403", "site", http.StatusForbidden, fetchFailed},
+		{"drive 429", "drive", http.StatusTooManyRequests, fetchRetryable},
+		{"drive 404", "drive", http.StatusNotFound, fetchFailed},
+	}
+	for _, tc := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/drive"):
+				if tc.step == "drive" {
+					w.WriteHeader(tc.status)
+					return
+				}
+				_, _ = w.Write([]byte(`{"id":"D","webUrl":"https://ex.sharepoint.com/sites/T/Shared Documents"}`))
+			case strings.Contains(r.URL.Path, "/drives/"):
+				_, _ = w.Write([]byte("X"))
+			default:
+				if tc.step == "site" {
+					w.WriteHeader(tc.status)
+					return
+				}
+				_, _ = w.Write([]byte(`{"id":"S"}`))
+			}
+		}))
+		g := newTestGraph(srv.URL)
+		if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != tc.want {
+			t.Errorf("%s: outcome = %v, want %v", tc.name, outcome, tc.want)
+		}
+		srv.Close()
+	}
+}
+
 func TestDownloadFile_SiteNotFoundFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

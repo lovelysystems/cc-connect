@@ -93,8 +93,8 @@ func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID
 		u = fmt.Sprintf("%s/teams/%s/channels/%s/messages/%s",
 			g.base, url.PathEscape(aadGroupID), url.PathEscape(channelID), url.PathEscape(msgID))
 	}
-	body, ok := g.get(ctx, u)
-	if !ok {
+	body, outcome := g.get(ctx, u)
+	if outcome != fetchOK {
 		return nil
 	}
 	var m graphMessage
@@ -138,14 +138,20 @@ func (g *graphClient) downloadFile(ctx context.Context, contentURL string, maxBy
 		siteRef = u.Host + ":" + sitePath
 	}
 	var site graphSite
-	if !g.getJSON(ctx, fmt.Sprintf("%s/sites/%s", g.base, siteRef), &site) || site.ID == "" {
+	if outcome := g.getJSON(ctx, fmt.Sprintf("%s/sites/%s", g.base, siteRef), &site); outcome != fetchOK {
+		return nil, outcome
+	}
+	if site.ID == "" {
 		return nil, fetchFailed
 	}
 	// 2. Resolve the site's default drive to learn its root folder web path
 	//    (localized/renamed libraries vary, so derive it rather than assume
 	//    "Shared Documents").
 	var drive graphDrive
-	if !g.getJSON(ctx, fmt.Sprintf("%s/sites/%s/drive", g.base, site.ID), &drive) || drive.ID == "" {
+	if outcome := g.getJSON(ctx, fmt.Sprintf("%s/sites/%s/drive", g.base, site.ID), &drive); outcome != fetchOK {
+		return nil, outcome
+	}
+	if drive.ID == "" {
 		return nil, fetchFailed
 	}
 	// 3. Compute the item path relative to the drive root, then GET its content.
@@ -190,21 +196,23 @@ func driveRelativePath(driveWebURL, itemPath string) (string, bool) {
 }
 
 // get performs an authenticated Graph GET returning the raw body (bounded by
-// maxBodyBytes). ok is false on any auth/transport/status error.
-func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, bool) {
+// maxBodyBytes). Transport and read errors are fetchRetryable; a non-2xx status
+// is classified per statusOutcome, except 404, which here means a wrong site or
+// drive and fails.
+func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, false
+		return nil, fetchFailed
 	}
 	token, err := g.tokens.token(ctx)
 	if err != nil {
-		return nil, false
+		return nil, fetchFailed
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := g.http.Do(req)
 	if err != nil {
 		slog.Warn("teams: graph GET transport error", "url", rawURL, "error", err)
-		return nil, false
+		return nil, fetchRetryable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -212,22 +220,29 @@ func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, bool) {
 		// or the site not granted Sites.Selected → 403) so it isn't invisible.
 		// Graph URLs carry no secret (no token in the URL).
 		slog.Warn("teams: graph GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		return nil, false
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fetchFailed
+		}
+		return nil, statusOutcome(resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		slog.Warn("teams: graph GET read error", "url", rawURL, "error", err)
-		return nil, false
+		return nil, fetchRetryable
 	}
-	return body, true
+	return body, fetchOK
 }
 
-func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) bool {
-	body, ok := g.get(ctx, rawURL)
-	if !ok {
-		return false
+// getJSON GETs rawURL into out; a body that does not decode is fetchFailed.
+func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) fetchOutcome {
+	body, outcome := g.get(ctx, rawURL)
+	if outcome != fetchOK {
+		return outcome
 	}
-	return json.Unmarshal(body, out) == nil
+	if json.Unmarshal(body, out) != nil {
+		return fetchFailed
+	}
+	return fetchOK
 }
 
 // getBounded fetches content bounded by maxBytes, following the 302 to the
