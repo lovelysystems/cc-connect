@@ -18,5 +18,15 @@
 - One `statusOutcome` helper in the connector file used by both download paths, not a classifier per path: the retryable status set is the same for SharePoint and Bot Connector URLs — `platform/teams/connector.go:156`.
 - A body read error mid-download is retryable, not failed: it is a transport failure like a dropped connection — `platform/teams/connector.go:197`, `platform/teams/graph.go:261`.
 - Token-acquisition failure stays `fetchFailed`, not retryable: a token error is not the SharePoint commit lag this retry targets — `platform/teams/connector.go:176`.
+- Retry as a `retryDownload` function taking the message deadline, not a retrier type: both loops only need a deadline and a closure — `platform/teams/webhook.go:313`.
+- Inline 1:1 images fetched over HTTP get the same retry as files; `data:` URIs return `fetchFailed` and are never retried: one path for every network download — `platform/teams/webhook.go:245`.
+- One Info log per retry with the file name and wait, not silent retries: an operator can see a slow commit before the warning fires — `platform/teams/webhook.go:319`.
+- Retry and the agent note land in one commit, not separate ones: both rewrite the same download loops and return values — `platform/teams/webhook.go:212`, `platform/teams/webhook.go:270`.
+- Download functions return `[]droppedAttachment` (name, reason), not the count plus a parallel reason list: the dispatch log keeps its `count` from `len(dropped)` — `platform/teams/webhook.go:43`.
+- Note is one bracketed line naming each file in quotes with its reason, not a multi-line list: it is prepended to the user's text by the engine — `platform/teams/webhook.go:339`.
+- An attachment without a name appears as "unnamed attachment" in the note, not omitted: inline 1:1 images often carry no name — `platform/teams/webhook.go:344`.
+- The note does not say the user saw the warning: the notice reply can fail, and the note would then be wrong — `platform/teams/webhook.go:198`.
+- Over-cap reason text "unavailable: too many files in one message, only the first N are read", with N from `maxChannelFileRefs`: says why without a third reason — `platform/teams/webhook.go:287`.
+- Tests shrink `retryWaits`/`retryBudget` through a `fastRetries` helper, and the fakes gained scripted per-URL outcomes, not new fake types: smallest change to the existing `fakeGraph`/`fakeSender` — `platform/teams/session_test.go`, `platform/teams/reply_test.go`.
 
 ## Open questions
