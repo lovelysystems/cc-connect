@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -150,16 +151,16 @@ const (
 	fetchRetryable                     // transport error or a status that may clear on a later attempt
 )
 
-// statusOutcome classifies a non-2xx download status. A file SharePoint is still
-// committing answers 404 for a while, so 404 retries along with timeout, conflict,
-// lock, throttling and server errors; auth and malformed-request errors do not.
-func statusOutcome(status int) fetchOutcome {
+// statusOutcome classifies a non-2xx status. Timeout, conflict, lock, throttling
+// and server errors may clear on a later attempt and are retryable for every
+// caller; a caller adds the codes that are transient only for its request. Any
+// other status fails.
+func statusOutcome(status int, extraRetryable ...int) fetchOutcome {
 	switch status {
-	case http.StatusNotFound, http.StatusRequestTimeout, http.StatusConflict,
-		http.StatusLocked, http.StatusTooManyRequests:
+	case http.StatusRequestTimeout, http.StatusConflict, http.StatusLocked, http.StatusTooManyRequests:
 		return fetchRetryable
 	}
-	if status >= 500 {
+	if status >= 500 || slices.Contains(extraRetryable, status) {
 		return fetchRetryable
 	}
 	return fetchFailed
@@ -188,7 +189,8 @@ func (c *connector) fetch(ctx context.Context, rawURL string, withToken bool, ma
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, statusOutcome(resp.StatusCode)
+		// A file SharePoint is still saving answers 404 for a while.
+		return nil, statusOutcome(resp.StatusCode, http.StatusNotFound)
 	}
 	// Read one byte past the cap so a payload exactly at the limit still succeeds
 	// while anything larger is detected as oversize.

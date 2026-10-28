@@ -1005,8 +1005,7 @@ func TestDispatch_NoteToAgentWhenChannelFileUnavailable(t *testing.T) {
 	if len(*got) != 1 {
 		t.Fatalf("a message with no text and a dropped attachment must still reach the agent, got %d", len(*got))
 	}
-	note := (*got)[0].ExtraContent
-	if !strings.Contains(note, "photo.jpg") || !strings.Contains(note, "unavailable") {
+	if note := (*got)[0].ExtraContent; note != `[Attachments not received] "photo.jpg" (unavailable)` {
 		t.Errorf("note should name the file and say it was unavailable, got %q", note)
 	}
 }
@@ -1015,8 +1014,7 @@ func TestDispatch_NoteToAgentWhenPersonalFileTooLarge(t *testing.T) {
 	p, got, _ := personalPlatform(fetchResult{outcome: fetchOversize})
 	p.dispatch(nil, personalActivity("", fileDL("big.docx", "https://files.example/dl")))
 
-	note := (*got)[0].ExtraContent
-	if !strings.Contains(note, "big.docx") || !strings.Contains(note, "too large") {
+	if note := (*got)[0].ExtraContent; note != `[Attachments not received] "big.docx" (too large)` {
 		t.Errorf("note should name the file and say it was too large, got %q", note)
 	}
 }
@@ -1078,8 +1076,8 @@ func TestDispatch_NoteCoversRefsOverCap(t *testing.T) {
 	p.dispatch(nil, channelFileActivity("lots of files"))
 
 	note := (*got)[0].ExtraContent
-	if !strings.Contains(note, "extra.docx") || !strings.Contains(note, "unavailable") || !strings.Contains(note, "too many files") {
-		t.Errorf("note should list the extra ref as unavailable because of too many files, got %q", note)
+	if !strings.HasPrefix(note, "[Attachments not received] ") || !strings.Contains(note, `"extra.docx" (unavailable, over the 10-file limit)`) {
+		t.Errorf("note should list the extra ref as over the file limit, got %q", note)
 	}
 	if fg.downloads[sharepointB] != 0 {
 		t.Errorf("a ref over the cap must not be downloaded")

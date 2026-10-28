@@ -40,6 +40,8 @@ const (
 	dropUnavailable = "unavailable"
 )
 
+var dropOverLimit = fmt.Sprintf("%s, over the %d-file limit", dropUnavailable, maxChannelFileRefs)
+
 // droppedAttachment is an inbound attachment that could not be handed to the agent.
 type droppedAttachment struct {
 	name   string
@@ -283,10 +285,7 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 	// and the agent are told.
 	if len(refs) > maxChannelFileRefs {
 		for _, ref := range refs[maxChannelFileRefs:] {
-			dropped = append(dropped, droppedAttachment{
-				name:   ref.name,
-				reason: fmt.Sprintf("%s: too many files in one message, only the first %d are read", dropUnavailable, maxChannelFileRefs),
-			})
+			dropped = append(dropped, droppedAttachment{name: ref.name, reason: dropOverLimit})
 		}
 		refs = refs[:maxChannelFileRefs]
 	}
@@ -346,8 +345,7 @@ func attachmentDropNote(dropped []droppedAttachment) string {
 		}
 		parts[i] = fmt.Sprintf("%q (%s)", name, d.reason)
 	}
-	return "[Teams: the user attached files that could not be read and are not included: " +
-		strings.Join(parts, ", ") + "]"
+	return "[Attachments not received] " + strings.Join(parts, ", ")
 }
 
 // fetchImage retrieves an inline image attachment. A data: URI is decoded in

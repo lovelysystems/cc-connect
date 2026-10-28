@@ -197,8 +197,8 @@ func driveRelativePath(driveWebURL, itemPath string) (string, bool) {
 
 // get performs an authenticated Graph GET returning the raw body (bounded by
 // maxBodyBytes). Transport and read errors are fetchRetryable; a non-2xx status
-// is classified per statusOutcome, except 404, which here means a wrong site or
-// drive and fails.
+// is classified per statusOutcome. A 404 means a wrong site or drive, or a
+// message the bot cannot read, and fails.
 func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -220,9 +220,6 @@ func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, fetchOutc
 		// or the site not granted Sites.Selected → 403) so it isn't invisible.
 		// Graph URLs carry no secret (no token in the URL).
 		slog.Warn("teams: graph GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, fetchFailed
-		}
 		return nil, statusOutcome(resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
@@ -268,7 +265,8 @@ func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes in
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("teams: graph content GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		return nil, statusOutcome(resp.StatusCode)
+		// A file SharePoint is still saving answers 404 for a while.
+		return nil, statusOutcome(resp.StatusCode, http.StatusNotFound)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
