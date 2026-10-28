@@ -30,8 +30,8 @@ const attachmentFailureNotice = "⚠️ I couldn't read one of your attachments 
 // attempt a retry may still start; all attachments of the message share it.
 // Values unmeasured: tune from the "retrying inbound attachment download" log.
 var (
-	retryWaits  = []time.Duration{2 * time.Second, 5 * time.Second}
-	retryBudget = 10 * time.Second
+	retryWaits  = []time.Duration{1 * time.Second, 3 * time.Second}
+	retryBudget = 6 * time.Second
 )
 
 // Reasons given to the agent for an attachment it does not receive.
