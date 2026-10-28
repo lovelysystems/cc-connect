@@ -28,6 +28,7 @@ const attachmentFailureNotice = "⚠️ I couldn't read one of your attachments 
 // retryWaits are the pauses before each retry of a download that came back
 // fetchRetryable. retryBudget bounds how long after a message's first download
 // attempt a retry may still start; all attachments of the message share it.
+// Values unmeasured: tune from the "retrying inbound attachment download" log.
 var (
 	retryWaits  = []time.Duration{2 * time.Second, 5 * time.Second}
 	retryBudget = 10 * time.Second
