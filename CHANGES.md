@@ -17,6 +17,13 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+#### Fix
+
+- **teams**: retry inbound attachment downloads that fail transiently
+  (upstream: pending; follow-up to chenhg5/cc-connect#1518)
+- **teams**: tell the agent which inbound attachments could not be read and why
+  (upstream: pending; follow-up to chenhg5/cc-connect#1518)
+
 ### 2026-10-06 / v1.5.0-ls.1
 
 #### Fix
