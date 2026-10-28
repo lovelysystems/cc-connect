@@ -144,16 +144,32 @@ func (c *connector) sendTo(ctx context.Context, url string, a outboundActivity) 
 type fetchOutcome int
 
 const (
-	fetchOK       fetchOutcome = iota // download succeeded within the size cap
-	fetchOversize                     // payload exceeded maxBytes; skipped
-	fetchFailed                       // request/transport/status error; skipped
+	fetchOK        fetchOutcome = iota // download succeeded within the size cap
+	fetchOversize                      // payload exceeded maxBytes; skipped
+	fetchFailed                        // request/status error a retry won't fix; skipped
+	fetchRetryable                     // transport error or a status that may clear on a later attempt
 )
+
+// statusOutcome classifies a non-2xx download status. A file SharePoint is still
+// committing answers 404 for a while, so 404 retries along with timeout, conflict,
+// lock, throttling and server errors; auth and malformed-request errors do not.
+func statusOutcome(status int) fetchOutcome {
+	switch status {
+	case http.StatusNotFound, http.StatusRequestTimeout, http.StatusConflict,
+		http.StatusLocked, http.StatusTooManyRequests:
+		return fetchRetryable
+	}
+	if status >= 500 {
+		return fetchRetryable
+	}
+	return fetchFailed
+}
 
 // fetch GETs rawURL and returns its bytes bounded by maxBytes. A bearer token is
 // attached only when withToken is true (file downloadUrls are pre-authenticated
 // and must NOT carry the token; images on the Bot Connector host require it). A
-// payload larger than maxBytes is reported as fetchOversize rather than truncated,
-// and any transport/status error as fetchFailed — neither is fatal to the turn.
+// payload larger than maxBytes is reported as fetchOversize, never truncated; an
+// error is fetchRetryable or fetchFailed per statusOutcome. None is fatal to the turn.
 func (c *connector) fetch(ctx context.Context, rawURL string, withToken bool, maxBytes int64) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -168,17 +184,17 @@ func (c *connector) fetch(ctx context.Context, rawURL string, withToken bool, ma
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fetchFailed
+		return nil, statusOutcome(resp.StatusCode)
 	}
 	// Read one byte past the cap so a payload exactly at the limit still succeeds
 	// while anything larger is detected as oversize.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	if int64(len(data)) > maxBytes {
 		return nil, fetchOversize

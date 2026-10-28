@@ -153,6 +153,37 @@ func TestDownloadFile_Failures(t *testing.T) {
 	}
 }
 
+func TestDownloadFile_RetryableContentStatus(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/drive"):
+				_, _ = w.Write([]byte(`{"id":"D","webUrl":"https://ex.sharepoint.com/sites/T/Shared Documents"}`))
+			case strings.Contains(r.URL.Path, "/drives/"):
+				w.WriteHeader(status)
+			default:
+				_, _ = w.Write([]byte(`{"id":"S"}`))
+			}
+		}))
+		g := newTestGraph(srv.URL)
+		if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != fetchRetryable {
+			t.Errorf("content %d → %v, want fetchRetryable", status, outcome)
+		}
+		srv.Close()
+	}
+}
+
+func TestDownloadFile_SiteNotFoundFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	g := newTestGraph(srv.URL)
+	if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != fetchFailed {
+		t.Errorf("site 404 → %v, want fetchFailed", outcome)
+	}
+}
+
 func TestDownloadFile_Oversize(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

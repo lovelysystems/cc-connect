@@ -15,4 +15,8 @@
 
 ## Implementation
 
+- One `statusOutcome` helper in the connector file used by both download paths, not a classifier per path: the retryable status set is the same for SharePoint and Bot Connector URLs — `platform/teams/connector.go:156`.
+- A body read error mid-download is retryable, not failed: it is a transport failure like a dropped connection — `platform/teams/connector.go:197`, `platform/teams/graph.go:261`.
+- Token-acquisition failure stays `fetchFailed`, not retryable: a token error is not the SharePoint commit lag this retry targets — `platform/teams/connector.go:176`.
+
 ## Open questions

@@ -233,7 +233,8 @@ func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) bool 
 // getBounded fetches content bounded by maxBytes, following the 302 to the
 // pre-authed download URL (the default client follows redirects; Go strips the
 // Authorization header on the cross-host hop, which is fine — the redirect target
-// is pre-authenticated). A payload over the cap is reported oversize, not truncated.
+// is pre-authenticated). A payload over the cap is reported oversize, never
+// truncated; an error is classified per statusOutcome.
 func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -247,17 +248,17 @@ func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes in
 	resp, err := g.http.Do(req)
 	if err != nil {
 		slog.Warn("teams: graph content GET transport error", "url", rawURL, "error", err)
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("teams: graph content GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		return nil, fetchFailed
+		return nil, statusOutcome(resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		slog.Warn("teams: graph content GET read error", "url", rawURL, "error", err)
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	if int64(len(data)) > maxBytes {
 		return nil, fetchOversize

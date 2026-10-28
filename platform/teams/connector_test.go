@@ -214,23 +214,39 @@ func TestConnectorFetch_ExactCapSucceeds(t *testing.T) {
 	}
 }
 
-func TestConnectorFetch_HTTPErrorReturnsFailed(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	c := newConnector(&staticTokens{value: "t"})
-	if _, outcome := c.fetch(context.Background(), srv.URL, false, 1024); outcome != fetchFailed {
-		t.Fatalf("outcome = %v, want fetchFailed on 404", outcome)
+func TestConnectorFetch_StatusOutcome(t *testing.T) {
+	cases := []struct {
+		status int
+		want   fetchOutcome
+	}{
+		{http.StatusNotFound, fetchRetryable},
+		{http.StatusRequestTimeout, fetchRetryable},
+		{http.StatusConflict, fetchRetryable},
+		{http.StatusLocked, fetchRetryable},
+		{http.StatusTooManyRequests, fetchRetryable},
+		{http.StatusInternalServerError, fetchRetryable},
+		{http.StatusServiceUnavailable, fetchRetryable},
+		{http.StatusBadRequest, fetchFailed},
+		{http.StatusUnauthorized, fetchFailed},
+		{http.StatusForbidden, fetchFailed},
+	}
+	for _, tc := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+		}))
+		c := newConnector(&staticTokens{value: "t"})
+		if _, outcome := c.fetch(context.Background(), srv.URL, false, 1024); outcome != tc.want {
+			t.Errorf("status %d: outcome = %v, want %v", tc.status, outcome, tc.want)
+		}
+		srv.Close()
 	}
 }
 
-func TestConnectorFetch_TransportErrorReturnsFailed(t *testing.T) {
+func TestConnectorFetch_TransportErrorReturnsRetryable(t *testing.T) {
 	c := newConnector(&staticTokens{value: "t"})
 	// Unroutable/closed endpoint -> transport error, not a panic.
-	if _, outcome := c.fetch(context.Background(), "http://127.0.0.1:0/nope", false, 1024); outcome != fetchFailed {
-		t.Fatalf("outcome = %v, want fetchFailed on transport error", outcome)
+	if _, outcome := c.fetch(context.Background(), "http://127.0.0.1:0/nope", false, 1024); outcome != fetchRetryable {
+		t.Fatalf("outcome = %v, want fetchRetryable on transport error", outcome)
 	}
 }
 
