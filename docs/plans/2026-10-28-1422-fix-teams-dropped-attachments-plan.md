@@ -29,7 +29,7 @@ Downloads of inbound Teams attachments are retried when the failure looks transi
 
 ### Problem Frame
 
-On 2026-09-07 an image attached in a Teams channel got `404` from the Graph content GET because SharePoint had not finished committing it; the bot posted its warning and ran the turn with empty content. The same file worked about 70 s later. The agent, given nothing, then told the editor no attachment had reached it, contradicting the bot's own warning (see origin: docs/brainstorms/2049-requirements.md).
+On 2026-09-07 an image attached in a Teams channel got `404` from the Graph content GET because SharePoint had not finished committing it; the bot posted its warning and ran the turn with empty content. Re-sending the same file about 70 s later worked. The agent, given nothing, then told the editor no attachment had reached it, contradicting the bot's own warning (see origin: docs/brainstorms/2049-requirements.md).
 
 ### Requirements
 
@@ -68,7 +68,7 @@ On 2026-09-07 an image attached in a Teams channel got `404` from the Graph cont
 
 - KTD1. A download failure is retryable when it is a transport error or a status of 404, 408, 409, 423, 429 or 5xx. 400, 401 and 403 fail at once: a missing `Sites.Selected` grant answers 403 (`platform/teams/graph.go`, `get`) and retrying it would only delay the warning. The classification lives in `getBounded` (`platform/teams/graph.go`) and `connector.fetch` (`platform/teams/connector.go`) as a new `fetchOutcome` value; callers keep treating anything but `fetchOK` as a drop.
 - KTD2. Retries run in the dispatch download loops in `platform/teams/webhook.go`, around `graph.downloadFile` and `conn.fetch`. Both paths gain retry (the brief names the 1:1 `fetch` as also giving up on the first non-2xx). On the channel path a retry re-runs the site and drive lookups as well; only the content step reports retryable, so a site or drive failure still fails at once.
-- KTD3. Waits between attempts are 5 s, 10 s, 20 s and 40 s, within one 75 s budget per message measured as wall-clock time since the message's first download attempt. The first attempt of every attachment always runs; a retry runs only while elapsed time plus the next wait stays within the budget, otherwise the attachment is dropped. This covers the ~70 s observed lag and bounds when the last retry of a message can start, so one dead attachment cannot hold a dispatch slot (`dispatchSem`, `platform/teams/webhook.go`) for up to 10 × 75 s (`maxChannelFileRefs`). The schedule and budget are package variables so tests can shrink them.
+- KTD3. Waits between attempts are 2 s and 5 s (attempts at 0, 2 and 7 s), within one 10 s budget per message measured as wall-clock time since the message's first download attempt. The first attempt of every attachment always runs; a retry runs only while elapsed time plus the next wait stays within the budget, otherwise the attachment is dropped. The short total keeps a file that never arrives to about 7 s of waiting for the editor; the schedule is tuned from the `teams: retrying inbound attachment download` log line. The budget bounds when the last retry of a message can start, so one dead attachment cannot hold a dispatch slot (`dispatchSem`, `platform/teams/webhook.go`) for up to 10 × 10 s (`maxChannelFileRefs`). The schedule and budget are package variables so tests can shrink them.
 - KTD4. The agent note goes in `core.Message.ExtraContent`, which the engine prepends to the user text or uses alone when there is none (`core/engine.go`, the `ExtraContent` merge in `handleMessage`). Slash-command and alias checks there read the user text only, so a note never breaks a command.
 - KTD5. The note is an English literal in `platform/teams/`, like `attachmentFailureNotice`. CLAUDE.md's i18n rule covers user-facing strings and lives in `core/i18n.go`, which is outside this unit; the note is read by the agent, not shown to the editor.
 - KTD6. The download functions return the dropped attachments (name when known, plus reason) instead of a bare count. Reasons follow R6: too large (`fetchOversize`) or unavailable (any other failure, including a malformed 1:1 file attachment). A ref beyond `maxChannelFileRefs` is reported as unavailable with the detail that the message carried too many files.
@@ -93,7 +93,7 @@ After the loop: any drop → log, post `attachmentFailureNotice` (unchanged), an
 ### Assumptions
 
 - The pipeline run had no scoping confirmation; the KTDs above are planning-time choices logged in `docs/brainstorms/teams-dropped-attachments-decisions.md`.
-- SharePoint's commit lag stays within roughly the observed 70 s; a longer lag still ends in R2's warning plus the R6 note.
+- SharePoint usually commits a file within the 10 s budget; its commit time has not been measured, and a longer lag still ends in R2's warning plus the R6 note.
 - Risk, not addressed here: during a retry window the editor sees nothing, so a follow-up sent then ("did you get it?") reaches the engine before the attachment turn and the agent may still answer that nothing arrived. Fixing turn ordering or adding a typing indicator is outside this unit.
 
 ---

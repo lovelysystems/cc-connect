@@ -867,7 +867,7 @@ func TestDispatch_MalformedCardValueFallsThroughToText(t *testing.T) {
 func fastRetries(t *testing.T, wait, budget time.Duration) {
 	t.Helper()
 	waits, b := retryWaits, retryBudget
-	retryWaits = []time.Duration{wait, wait, wait, wait}
+	retryWaits = []time.Duration{wait, wait}
 	retryBudget = budget
 	t.Cleanup(func() { retryWaits, retryBudget = waits, b })
 }
@@ -956,7 +956,7 @@ func TestDispatch_FailingAttachmentDoesNotBlockOthers(t *testing.T) {
 }
 
 func TestDispatch_RetryBudgetSharedAcrossAttachments(t *testing.T) {
-	fastRetries(t, 30*time.Millisecond, 100*time.Millisecond)
+	fastRetries(t, 30*time.Millisecond, 50*time.Millisecond)
 	fg := &fakeGraph{
 		refs:    []channelFileRef{{name: "a.jpg", contentURL: sharepointA}, {name: "b.jpg", contentURL: sharepointB}},
 		outcome: fetchRetryable,

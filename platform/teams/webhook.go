@@ -29,8 +29,8 @@ const attachmentFailureNotice = "⚠️ I couldn't read one of your attachments 
 // fetchRetryable. retryBudget bounds how long after a message's first download
 // attempt a retry may still start; all attachments of the message share it.
 var (
-	retryWaits  = []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second}
-	retryBudget = 75 * time.Second
+	retryWaits  = []time.Duration{2 * time.Second, 5 * time.Second}
+	retryBudget = 10 * time.Second
 )
 
 // Reasons given to the agent for an attachment it does not receive.
