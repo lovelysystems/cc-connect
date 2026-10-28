@@ -225,7 +225,7 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 			info, ok := att.downloadInfo()
 			if !ok || info.DownloadURL == "" {
 				// Malformed file attachment: report it so the user and the agent
-				// are told rather than left with a silently dropped turn.
+				// are told.
 				dropped = append(dropped, droppedAttachment{name: att.Name, reason: dropUnavailable})
 				continue
 			}
