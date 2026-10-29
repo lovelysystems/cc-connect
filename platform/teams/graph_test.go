@@ -107,7 +107,6 @@ func TestMessageFileRefs_ReadOutcome(t *testing.T) {
 	}
 }
 
-// fetchFile runs both steps of a channel file download.
 func fetchFile(g *graphClient, sharepointURL string, maxBytes int64) ([]byte, fetchOutcome) {
 	graphURL, outcome := g.resolveContentURL(context.Background(), sharepointURL)
 	if outcome != fetchOK {

@@ -245,7 +245,7 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 				continue
 			}
 			// downloadUrl is pre-authenticated: fetch WITHOUT the bot token.
-			data, outcome := retryDownload(deadline, att.Name, func() ([]byte, fetchOutcome) {
+			data, outcome := retryFetch(deadline, att.Name, func() ([]byte, fetchOutcome) {
 				return p.conn.fetch(ctx, info.DownloadURL, false, max)
 			})
 			if outcome != fetchOK {
@@ -258,7 +258,7 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 				FileName: att.Name,
 			})
 		case att.isImage():
-			data, outcome := retryDownload(deadline, att.Name, func() ([]byte, fetchOutcome) {
+			data, outcome := retryFetch(deadline, att.Name, func() ([]byte, fetchOutcome) {
 				return p.fetchImage(ctx, att, a.ServiceURL, max)
 			})
 			if outcome != fetchOK {
@@ -292,7 +292,7 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 		max = defaultMaxAttachmentBytes
 	}
 	deadline := time.Now().Add(retryBudget)
-	refs, outcome := retryDownload(deadline, "channel message", func() ([]channelFileRef, fetchOutcome) {
+	refs, outcome := retryFetch(deadline, "channel message", func() ([]channelFileRef, fetchOutcome) {
 		return p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
 	})
 	if outcome != fetchOK {
@@ -310,14 +310,14 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 	for _, ref := range refs {
 		// The site and drive lookups and the content GET retry on their own, so a
 		// content GET answering 404 while SharePoint saves repeats only itself.
-		graphURL, outcome := retryDownload(deadline, ref.name, func() (string, fetchOutcome) {
+		graphURL, outcome := retryFetch(deadline, ref.name, func() (string, fetchOutcome) {
 			return p.graph.resolveContentURL(ctx, ref.contentURL)
 		})
 		if outcome != fetchOK {
 			dropped = append(dropped, droppedAttachment{name: ref.name, reason: dropReason(outcome)})
 			continue
 		}
-		data, outcome := retryDownload(deadline, ref.name, func() ([]byte, fetchOutcome) {
+		data, outcome := retryFetch(deadline, ref.name, func() ([]byte, fetchOutcome) {
 			return p.graph.getBounded(ctx, graphURL, max)
 		})
 		if outcome != fetchOK {
@@ -333,23 +333,23 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 	return files, dropped, false
 }
 
-// retryDownload runs download, retrying a fetchRetryable outcome after each of
-// retryWaits while the wait still ends before deadline. A download still
-// retryable when the waits run out is reported as fetchFailed.
-func retryDownload[T any](deadline time.Time, name string, download func() (T, fetchOutcome)) (T, fetchOutcome) {
-	data, outcome := download()
+// retryFetch runs fetch, retrying a fetchRetryable outcome after each of
+// retryWaits while the wait still ends before deadline. A fetch still retryable
+// when the waits run out is reported as fetchFailed.
+func retryFetch[T any](deadline time.Time, name string, fetch func() (T, fetchOutcome)) (T, fetchOutcome) {
+	result, outcome := fetch()
 	for _, wait := range retryWaits {
 		if outcome != fetchRetryable || time.Now().Add(wait).After(deadline) {
 			break
 		}
 		slog.Info("teams: retrying inbound attachment fetch", "name", name, "wait", wait)
 		time.Sleep(wait)
-		data, outcome = download()
+		result, outcome = fetch()
 	}
 	if outcome == fetchRetryable {
 		outcome = fetchFailed
 	}
-	return data, outcome
+	return result, outcome
 }
 
 // dropReason maps a failed download outcome to the reason the agent is given.
