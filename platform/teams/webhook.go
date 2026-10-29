@@ -25,14 +25,19 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 // A user-facing i18n key is a possible follow-up; kept a literal for now.
 const attachmentFailureNotice = "⚠️ I couldn't read one of your attachments — it may be too large or unavailable."
 
-// retryWaits are the pauses before each retry of a download that came back
-// fetchRetryable. retryBudget bounds how long after a message's first download
-// attempt a retry may still start; all attachments of the message share it.
-// Values unmeasured: tune from the "retrying inbound attachment download" log.
+// retryWaits are the pauses before each retry of a fetch that came back
+// fetchRetryable. retryBudget bounds how long after a message's first fetch a
+// retry may still start; the channel message read and all attachments of the
+// message share it. Values unmeasured: tune from the "retrying inbound attachment
+// fetch" log.
 var (
 	retryWaits  = []time.Duration{1 * time.Second, 3 * time.Second}
 	retryBudget = 6 * time.Second
 )
+
+// attachmentsNotCheckedNote tells the agent the channel message could not be read,
+// so any attachments it has were not received.
+const attachmentsNotCheckedNote = "[Attachments not checked] could not read the message for attachments"
 
 // Reasons given to the agent for an attachment it does not receive.
 const (
@@ -192,7 +197,14 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		case mightHaveChannelFile:
 			// Channel: the file reference is not in the activity — read the engaged
 			// message via Graph to discover it, then download under Sites.Selected.
-			msg.Files, dropped = p.downloadChannelFiles(a)
+			var readFailed bool
+			msg.Files, dropped, readFailed = p.downloadChannelFiles(a)
+			if readFailed {
+				// Only the agent is told: every engaged channel message is read, so
+				// most failed reads concern a message without a file.
+				slog.Warn("teams: could not read channel message for attachments")
+				msg.ExtraContent = attachmentsNotCheckedNote
+			}
 		}
 		if len(dropped) > 0 {
 			// Tell the user and the agent about the dropped attachments; the turn
@@ -265,21 +277,27 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 
 // downloadChannelFiles reads the engaged channel message via Graph to discover
 // file attachments (which the inbound activity strips) and downloads them under
-// Sites.Selected. Returns the files plus the ones that failed or were too large.
-// Runs on the async dispatch goroutine, so the blocking Graph calls and retry
-// waits never delay the webhook ack. The Graph read is one call per engaged
-// channel message (free, not metered); the download only fires when a file
-// reference is present.
-func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachment, dropped []droppedAttachment) {
+// Sites.Selected. Returns the files, the ones that failed or were too large, and
+// whether the message itself could not be read. Runs on the async dispatch
+// goroutine, so the blocking Graph calls and retry waits never delay the webhook
+// ack. The Graph read runs for every engaged channel message (free, not
+// metered); the downloads only fire when a file reference is present.
+func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachment, dropped []droppedAttachment, readFailed bool) {
 	if p.graph == nil {
-		return nil, nil
+		return nil, nil, false
 	}
 	ctx := context.Background()
 	max := p.cfg.maxAttachmentBytes
 	if max <= 0 {
 		max = defaultMaxAttachmentBytes
 	}
-	refs := p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+	deadline := time.Now().Add(retryBudget)
+	refs, outcome := retryDownload(deadline, "channel message", func() ([]channelFileRef, fetchOutcome) {
+		return p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+	})
+	if outcome != fetchOK {
+		return nil, nil, true
+	}
 	// Bound per-message downloads: each ref is a 3-call Graph sequence + up to
 	// maxAttachmentBytes buffered. Extra refs are reported as dropped so the user
 	// and the agent are told.
@@ -289,10 +307,18 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 		}
 		refs = refs[:maxChannelFileRefs]
 	}
-	deadline := time.Now().Add(retryBudget)
 	for _, ref := range refs {
+		// The site and drive lookups and the content GET retry on their own, so a
+		// content GET answering 404 while SharePoint saves repeats only itself.
+		graphURL, outcome := retryDownload(deadline, ref.name, func() (string, fetchOutcome) {
+			return p.graph.resolveContentURL(ctx, ref.contentURL)
+		})
+		if outcome != fetchOK {
+			dropped = append(dropped, droppedAttachment{name: ref.name, reason: dropReason(outcome)})
+			continue
+		}
 		data, outcome := retryDownload(deadline, ref.name, func() ([]byte, fetchOutcome) {
-			return p.graph.downloadFile(ctx, ref.contentURL, max)
+			return p.graph.getBounded(ctx, graphURL, max)
 		})
 		if outcome != fetchOK {
 			dropped = append(dropped, droppedAttachment{name: ref.name, reason: dropReason(outcome)})
@@ -304,19 +330,19 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 			FileName: ref.name,
 		})
 	}
-	return files, dropped
+	return files, dropped, false
 }
 
 // retryDownload runs download, retrying a fetchRetryable outcome after each of
 // retryWaits while the wait still ends before deadline. A download still
 // retryable when the waits run out is reported as fetchFailed.
-func retryDownload(deadline time.Time, name string, download func() ([]byte, fetchOutcome)) ([]byte, fetchOutcome) {
+func retryDownload[T any](deadline time.Time, name string, download func() (T, fetchOutcome)) (T, fetchOutcome) {
 	data, outcome := download()
 	for _, wait := range retryWaits {
 		if outcome != fetchRetryable || time.Now().Add(wait).After(deadline) {
 			break
 		}
-		slog.Info("teams: retrying inbound attachment download", "name", name, "wait", wait)
+		slog.Info("teams: retrying inbound attachment fetch", "name", name, "wait", wait)
 		time.Sleep(wait)
 		data, outcome = download()
 	}

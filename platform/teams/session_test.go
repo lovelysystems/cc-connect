@@ -534,31 +534,62 @@ func TestDispatch_NoNoticeOnSuccess(t *testing.T) {
 	}
 }
 
-// fakeGraph is a stub graphReader for channel-file dispatch tests. A scripted
-// sequence per content URL is consumed one download at a time, then data/outcome.
+// fakeGraph is a stub graphReader for channel-file dispatch tests. Each scripted
+// sequence is consumed one call at a time: readScript for message reads, then
+// readOutcome; lookupScript per SharePoint URL for lookups, then fetchOK; script
+// per SharePoint URL for content GETs, then data/outcome.
 type fakeGraph struct {
 	refs                                      []channelFileRef
+	readScript                                []fetchOutcome
+	readOutcome                               fetchOutcome
+	lookupScript                              map[string][]fetchOutcome
 	data                                      []byte
 	outcome                                   fetchOutcome
 	script                                    map[string][]fetchResult
+	lookups                                   map[string]int
 	downloads                                 map[string]int
 	readCalls                                 int
 	lastGroup, lastChannel, lastRoot, lastMsg string
 }
 
-func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) []channelFileRef {
+// fakeGraphPrefix marks the Graph content URL the fake resolves a SharePoint URL to.
+const fakeGraphPrefix = "graph:"
+
+func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) ([]channelFileRef, fetchOutcome) {
 	f.readCalls++
 	f.lastGroup, f.lastChannel, f.lastRoot, f.lastMsg = group, channel, root, msg
-	return f.refs
+	outcome := f.readOutcome
+	if len(f.readScript) > 0 {
+		outcome, f.readScript = f.readScript[0], f.readScript[1:]
+	}
+	if outcome != fetchOK {
+		return nil, outcome
+	}
+	return f.refs, fetchOK
 }
 
-func (f *fakeGraph) downloadFile(_ context.Context, contentURL string, _ int64) ([]byte, fetchOutcome) {
+func (f *fakeGraph) resolveContentURL(_ context.Context, sharepointURL string) (string, fetchOutcome) {
+	if f.lookups == nil {
+		f.lookups = map[string]int{}
+	}
+	f.lookups[sharepointURL]++
+	if seq := f.lookupScript[sharepointURL]; len(seq) > 0 {
+		f.lookupScript[sharepointURL] = seq[1:]
+		if seq[0] != fetchOK {
+			return "", seq[0]
+		}
+	}
+	return fakeGraphPrefix + sharepointURL, fetchOK
+}
+
+func (f *fakeGraph) getBounded(_ context.Context, graphURL string, _ int64) ([]byte, fetchOutcome) {
+	sharepointURL := strings.TrimPrefix(graphURL, fakeGraphPrefix)
 	if f.downloads == nil {
 		f.downloads = map[string]int{}
 	}
-	f.downloads[contentURL]++
-	if seq := f.script[contentURL]; len(seq) > 0 {
-		f.script[contentURL] = seq[1:]
+	f.downloads[sharepointURL]++
+	if seq := f.script[sharepointURL]; len(seq) > 0 {
+		f.script[sharepointURL] = seq[1:]
 		return seq[0].data, seq[0].outcome
 	}
 	return f.data, f.outcome
@@ -896,11 +927,81 @@ func TestDispatch_ChannelFileRetriedUntilAvailable(t *testing.T) {
 	if fg.downloads[sharepointA] != 3 {
 		t.Errorf("downloads = %d, want 3", fg.downloads[sharepointA])
 	}
+	if fg.lookups[sharepointA] != 1 {
+		t.Errorf("site and drive lookups = %d, want 1: a content retry must not repeat them", fg.lookups[sharepointA])
+	}
 	if len(fs.replied) != 0 {
 		t.Errorf("a file that arrives after retries must not send a notice, replied=%+v", fs.replied)
 	}
 	if (*got)[0].ExtraContent != "" {
 		t.Errorf("no note expected when every attachment arrives, got %q", (*got)[0].ExtraContent)
+	}
+}
+
+func TestDispatch_ChannelFileLookupRetried(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		refs:         []channelFileRef{{name: "a.jpg", contentURL: sharepointA}},
+		lookupScript: map[string][]fetchOutcome{sharepointA: {fetchRetryable}},
+		data:         []byte("JPG"),
+		outcome:      fetchOK,
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity(""))
+
+	if len((*got)[0].Files) != 1 {
+		t.Fatalf("file should arrive after a lookup retry, got %+v", (*got)[0].Files)
+	}
+	if fg.lookups[sharepointA] != 2 || fg.downloads[sharepointA] != 1 {
+		t.Errorf("lookups = %d, downloads = %d, want 2 and 1", fg.lookups[sharepointA], fg.downloads[sharepointA])
+	}
+}
+
+func TestDispatch_ChannelMessageReadRetried(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		refs:       []channelFileRef{{name: "a.jpg", contentURL: sharepointA}},
+		readScript: []fetchOutcome{fetchRetryable},
+		data:       []byte("JPG"),
+		outcome:    fetchOK,
+	}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	if fg.readCalls != 2 {
+		t.Errorf("message reads = %d, want 2", fg.readCalls)
+	}
+	if len((*got)[0].Files) != 1 || (*got)[0].ExtraContent != "" || len(fs.replied) != 0 {
+		t.Errorf("file should arrive with no note or notice, got files=%d note=%q replied=%+v",
+			len((*got)[0].Files), (*got)[0].ExtraContent, fs.replied)
+	}
+}
+
+func TestDispatch_ChannelMessageReadFailedNotesAgentOnly(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	for _, tc := range []struct {
+		outcome fetchOutcome
+		reads   int
+	}{
+		{fetchRetryable, len(retryWaits) + 1},
+		{fetchFailed, 1},
+	} {
+		fg := &fakeGraph{refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}}, readOutcome: tc.outcome}
+		p, got, fs := channelFilePlatform(true, fg)
+		p.dispatch(nil, channelFileActivity("look"))
+
+		if fg.readCalls != tc.reads {
+			t.Errorf("outcome %v: message reads = %d, want %d", tc.outcome, fg.readCalls, tc.reads)
+		}
+		if len(*got) != 1 || (*got)[0].Content != "look" {
+			t.Fatalf("outcome %v: the turn should still dispatch its text, got %+v", tc.outcome, *got)
+		}
+		if note := (*got)[0].ExtraContent; note != "[Attachments not checked] could not read the message for attachments" {
+			t.Errorf("outcome %v: note = %q", tc.outcome, note)
+		}
+		if len(fs.replied) != 0 {
+			t.Errorf("outcome %v: a failed message read must not notify the user, replied=%+v", tc.outcome, fs.replied)
+		}
 	}
 }
 

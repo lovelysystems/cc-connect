@@ -32,8 +32,11 @@ func TestMessageFileRefs_ReplyPathAndParse(t *testing.T) {
 	defer srv.Close()
 
 	g := newTestGraph(srv.URL)
-	refs := g.messageFileRefs(context.Background(), "group-1", "19:chan@thread.tacv2", "root-9", "msg-1")
+	refs, outcome := g.messageFileRefs(context.Background(), "group-1", "19:chan@thread.tacv2", "root-9", "msg-1")
 
+	if outcome != fetchOK {
+		t.Errorf("outcome = %v, want fetchOK", outcome)
+	}
 	if gotAuth != "Bearer tok" {
 		t.Errorf("auth = %q", gotAuth)
 	}
@@ -69,24 +72,48 @@ func TestMessageFileRefs_NoAttachmentsAndErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 	g := newTestGraph(srv.URL)
-	if refs := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil {
-		t.Errorf("no attachments should yield nil, got %+v", refs)
+	if refs, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != fetchOK {
+		t.Errorf("no attachments should yield nil + fetchOK, got %+v %v", refs, outcome)
 	}
 
-	// 403 → nil, no panic
-	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer deny.Close()
-	g2 := newTestGraph(deny.URL)
-	if refs := g2.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil {
-		t.Errorf("403 should yield nil, got %+v", refs)
+	// missing ids → nil, no request, not a failed read
+	if refs, outcome := g.messageFileRefs(context.Background(), "", "c", "", "m"); refs != nil || outcome != fetchOK {
+		t.Errorf("missing aadGroupID should yield nil + fetchOK, got %+v %v", refs, outcome)
 	}
+}
 
-	// missing ids → nil, no request
-	if refs := g.messageFileRefs(context.Background(), "", "c", "", "m"); refs != nil {
-		t.Errorf("missing aadGroupID should yield nil")
+func TestMessageFileRefs_ReadOutcome(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   fetchOutcome
+	}{
+		{"403", http.StatusForbidden, "", fetchFailed},
+		{"429", http.StatusTooManyRequests, "", fetchRetryable},
+		{"503", http.StatusServiceUnavailable, "", fetchRetryable},
+		{"undecodable body", http.StatusOK, "not json", fetchFailed},
 	}
+	for _, tc := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		g := newTestGraph(srv.URL)
+		if refs, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != tc.want {
+			t.Errorf("%s: refs=%+v outcome=%v, want nil + %v", tc.name, refs, outcome, tc.want)
+		}
+		srv.Close()
+	}
+}
+
+// fetchFile runs both steps of a channel file download.
+func fetchFile(g *graphClient, sharepointURL string, maxBytes int64) ([]byte, fetchOutcome) {
+	graphURL, outcome := g.resolveContentURL(context.Background(), sharepointURL)
+	if outcome != fetchOK {
+		return nil, outcome
+	}
+	return g.getBounded(context.Background(), graphURL, maxBytes)
 }
 
 func TestDownloadFile_ResolvesSiteDriveContent(t *testing.T) {
@@ -107,7 +134,7 @@ func TestDownloadFile_ResolvesSiteDriveContent(t *testing.T) {
 	defer srv.Close()
 
 	g := newTestGraph(srv.URL)
-	data, outcome := g.downloadFile(context.Background(),
+	data, outcome := fetchFile(g,
 		"https://ex.sharepoint.com/sites/T/Shared Documents/Test/report.docx", 1<<20)
 
 	if outcome != fetchOK || string(data) != "FILEBYTES" {
@@ -143,12 +170,12 @@ func TestDownloadFile_Failures(t *testing.T) {
 	}))
 	defer deny.Close()
 	g := newTestGraph(deny.URL)
-	if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/a.txt", 1<<20); outcome != fetchFailed {
+	if _, outcome := fetchFile(g, "https://ex.sharepoint.com/sites/T/Shared Documents/a.txt", 1<<20); outcome != fetchFailed {
 		t.Errorf("content 403 → %v, want fetchFailed", outcome)
 	}
 
 	// unparseable URL → failed (no request)
-	if _, outcome := g.downloadFile(context.Background(), "::not a url", 1<<20); outcome != fetchFailed {
+	if _, outcome := fetchFile(g, "::not a url", 1<<20); outcome != fetchFailed {
 		t.Errorf("bad url → %v, want fetchFailed", outcome)
 	}
 }
@@ -166,7 +193,7 @@ func TestDownloadFile_RetryableContentStatus(t *testing.T) {
 			}
 		}))
 		g := newTestGraph(srv.URL)
-		if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != fetchRetryable {
+		if _, outcome := fetchFile(g, "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != fetchRetryable {
 			t.Errorf("content %d → %v, want fetchRetryable", status, outcome)
 		}
 		srv.Close()
@@ -206,7 +233,7 @@ func TestDownloadFile_LookupStatusOutcome(t *testing.T) {
 			}
 		}))
 		g := newTestGraph(srv.URL)
-		if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != tc.want {
+		if _, outcome := fetchFile(g, "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != tc.want {
 			t.Errorf("%s: outcome = %v, want %v", tc.name, outcome, tc.want)
 		}
 		srv.Close()
@@ -219,7 +246,7 @@ func TestDownloadFile_SiteNotFoundFails(t *testing.T) {
 	}))
 	defer srv.Close()
 	g := newTestGraph(srv.URL)
-	if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != fetchFailed {
+	if _, outcome := fetchFile(g, "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg", 1<<20); outcome != fetchFailed {
 		t.Errorf("site 404 → %v, want fetchFailed", outcome)
 	}
 }
@@ -237,7 +264,7 @@ func TestDownloadFile_Oversize(t *testing.T) {
 	}))
 	defer srv.Close()
 	g := newTestGraph(srv.URL)
-	if _, outcome := g.downloadFile(context.Background(), "https://ex.sharepoint.com/sites/T/Shared Documents/big.bin", 10); outcome != fetchOversize {
+	if _, outcome := fetchFile(g, "https://ex.sharepoint.com/sites/T/Shared Documents/big.bin", 10); outcome != fetchOversize {
 		t.Errorf("oversize → %v, want fetchOversize", outcome)
 	}
 }
