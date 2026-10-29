@@ -45,10 +45,12 @@ type graphReader interface {
 	// (`reference`-type) attachments. aadGroupID is the Graph team id
 	// (channelData.team.aadGroupId — NOT the thread-style teamsTeamId). When rootID
 	// is non-empty and differs from msgID the message is a thread reply.
-	messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) []channelFileRef
-	// downloadFile fetches a SharePoint file's bytes under Sites.Selected, bounded
-	// by maxBytes. The site hosting the file must be admin-granted read.
-	downloadFile(ctx context.Context, contentURL string, maxBytes int64) ([]byte, fetchOutcome)
+	messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, fetchOutcome)
+	// resolveContentURL maps a SharePoint file URL to the Graph URL of its content,
+	// under Sites.Selected. The site hosting the file must be admin-granted read.
+	resolveContentURL(ctx context.Context, sharepointURL string) (string, fetchOutcome)
+	// getBounded GETs a Graph content URL, bounded by maxBytes.
+	getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome)
 }
 
 // graphClient is the concrete Graph reader: an app-only Graph token + HTTP client.
@@ -76,11 +78,12 @@ type graphAttachment struct {
 }
 
 // messageFileRefs GETs the channel message and returns its `reference` file
-// attachments. Failures (auth, transport, decode) yield no refs — never a panic;
-// the caller treats an empty result as "no file".
-func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) []channelFileRef {
+// attachments. A failed GET keeps its outcome and a body that does not decode is
+// fetchFailed; either yields no refs. Missing ids yield no refs and fetchOK, with
+// no request.
+func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, fetchOutcome) {
 	if aadGroupID == "" || channelID == "" || msgID == "" {
-		return nil
+		return nil, fetchOK
 	}
 	// Escape every id path segment (they are opaque, never multi-segment) so a
 	// malformed/unexpected id can't restructure the Graph path.
@@ -93,13 +96,9 @@ func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID
 		u = fmt.Sprintf("%s/teams/%s/channels/%s/messages/%s",
 			g.base, url.PathEscape(aadGroupID), url.PathEscape(channelID), url.PathEscape(msgID))
 	}
-	body, ok := g.get(ctx, u)
-	if !ok {
-		return nil
-	}
 	var m graphMessage
-	if err := json.Unmarshal(body, &m); err != nil {
-		return nil
+	if outcome := g.getJSON(ctx, u, &m); outcome != fetchOK {
+		return nil, outcome
 	}
 	var refs []channelFileRef
 	for _, att := range m.Attachments {
@@ -107,7 +106,7 @@ func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID
 			refs = append(refs, channelFileRef{name: att.Name, contentURL: att.ContentURL})
 		}
 	}
-	return refs
+	return refs, fetchOK
 }
 
 // site is the subset of a Graph site resource the connector consumes.
@@ -121,14 +120,14 @@ type graphDrive struct {
 	WebURL string `json:"webUrl"`
 }
 
-// downloadFile resolves a SharePoint file URL to its Graph drive item and returns
-// its content, under Sites.Selected. It deliberately avoids the /shares API
-// (unauthorized under Sites.Selected); instead it resolves the hosting site, its
-// default drive, and the item path relative to that drive, then GETs the content.
-func (g *graphClient) downloadFile(ctx context.Context, contentURL string, maxBytes int64) ([]byte, fetchOutcome) {
-	u, err := url.Parse(contentURL)
+// resolveContentURL resolves a SharePoint file URL to the Graph content URL of its
+// drive item, under Sites.Selected. It resolves the hosting site, its default
+// drive, and the item path relative to that drive; the /shares API is unauthorized
+// under Sites.Selected.
+func (g *graphClient) resolveContentURL(ctx context.Context, sharepointURL string) (string, fetchOutcome) {
+	u, err := url.Parse(sharepointURL)
 	if err != nil || u.Host == "" || u.Path == "" {
-		return nil, fetchFailed
+		return "", fetchFailed
 	}
 	// 1. Resolve the hosting site from host + site-collection path (/sites/X or
 	//    /teams/X); a root-hosted file has no such prefix.
@@ -138,23 +137,28 @@ func (g *graphClient) downloadFile(ctx context.Context, contentURL string, maxBy
 		siteRef = u.Host + ":" + sitePath
 	}
 	var site graphSite
-	if !g.getJSON(ctx, fmt.Sprintf("%s/sites/%s", g.base, siteRef), &site) || site.ID == "" {
-		return nil, fetchFailed
+	if outcome := g.getJSON(ctx, fmt.Sprintf("%s/sites/%s", g.base, siteRef), &site); outcome != fetchOK {
+		return "", outcome
+	}
+	if site.ID == "" {
+		return "", fetchFailed
 	}
 	// 2. Resolve the site's default drive to learn its root folder web path
 	//    (localized/renamed libraries vary, so derive it rather than assume
 	//    "Shared Documents").
 	var drive graphDrive
-	if !g.getJSON(ctx, fmt.Sprintf("%s/sites/%s/drive", g.base, site.ID), &drive) || drive.ID == "" {
-		return nil, fetchFailed
+	if outcome := g.getJSON(ctx, fmt.Sprintf("%s/sites/%s/drive", g.base, site.ID), &drive); outcome != fetchOK {
+		return "", outcome
 	}
-	// 3. Compute the item path relative to the drive root, then GET its content.
+	if drive.ID == "" {
+		return "", fetchFailed
+	}
+	// 3. Compute the item path relative to the drive root.
 	rel, ok := driveRelativePath(drive.WebURL, u.Path)
 	if !ok {
-		return nil, fetchFailed
+		return "", fetchFailed
 	}
-	contentURLGraph := fmt.Sprintf("%s/drives/%s/root:/%s:/content", g.base, drive.ID, rel)
-	return g.getBounded(ctx, contentURLGraph, maxBytes)
+	return fmt.Sprintf("%s/drives/%s/root:/%s:/content", g.base, drive.ID, rel), fetchOK
 }
 
 // siteCollectionPath extracts the `/sites/X` or `/teams/X` site-collection prefix
@@ -190,21 +194,23 @@ func driveRelativePath(driveWebURL, itemPath string) (string, bool) {
 }
 
 // get performs an authenticated Graph GET returning the raw body (bounded by
-// maxBodyBytes). ok is false on any auth/transport/status error.
-func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, bool) {
+// maxBodyBytes). Token, transport and read errors are fetchRetryable; a non-2xx
+// status is classified per statusOutcome. A 404 means a wrong site or drive, or a
+// message the bot cannot read, and fails.
+func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, false
+		return nil, fetchFailed
 	}
 	token, err := g.tokens.token(ctx)
 	if err != nil {
-		return nil, false
+		return nil, fetchRetryable
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := g.http.Do(req)
 	if err != nil {
 		slog.Warn("teams: graph GET transport error", "url", rawURL, "error", err)
-		return nil, false
+		return nil, fetchRetryable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -212,28 +218,34 @@ func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, bool) {
 		// or the site not granted Sites.Selected → 403) so it isn't invisible.
 		// Graph URLs carry no secret (no token in the URL).
 		slog.Warn("teams: graph GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		return nil, false
+		return nil, statusOutcome(resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		slog.Warn("teams: graph GET read error", "url", rawURL, "error", err)
-		return nil, false
+		return nil, fetchRetryable
 	}
-	return body, true
+	return body, fetchOK
 }
 
-func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) bool {
-	body, ok := g.get(ctx, rawURL)
-	if !ok {
-		return false
+// getJSON GETs rawURL into out; a body that does not decode is fetchFailed.
+func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) fetchOutcome {
+	body, outcome := g.get(ctx, rawURL)
+	if outcome != fetchOK {
+		return outcome
 	}
-	return json.Unmarshal(body, out) == nil
+	if json.Unmarshal(body, out) != nil {
+		return fetchFailed
+	}
+	return fetchOK
 }
 
 // getBounded fetches content bounded by maxBytes, following the 302 to the
 // pre-authed download URL (the default client follows redirects; Go strips the
 // Authorization header on the cross-host hop, which is fine — the redirect target
-// is pre-authenticated). A payload over the cap is reported oversize, not truncated.
+// is pre-authenticated). A payload over the cap is reported oversize, never
+// truncated. Token, transport and read errors are fetchRetryable; a non-2xx status
+// is classified per statusOutcome, with 404 retryable.
 func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -241,23 +253,24 @@ func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes in
 	}
 	token, err := g.tokens.token(ctx)
 	if err != nil {
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := g.http.Do(req)
 	if err != nil {
 		slog.Warn("teams: graph content GET transport error", "url", rawURL, "error", err)
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("teams: graph content GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		return nil, fetchFailed
+		// A file SharePoint is still saving answers 404 for a while.
+		return nil, statusOutcome(resp.StatusCode, http.StatusNotFound)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		slog.Warn("teams: graph content GET read error", "url", rawURL, "error", err)
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	if int64(len(data)) > maxBytes {
 		return nil, fetchOversize

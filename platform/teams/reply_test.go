@@ -16,7 +16,9 @@ type fakeSender struct {
 	replied     []outboundActivity
 	repliedToID []string
 
-	// fetch behavior: keyed by requested URL, falling back to fetchDefault.
+	// fetch behavior: a scripted sequence per URL is consumed one call at a time,
+	// then fetchByURL, then fetchDefault.
+	fetchSeq       map[string][]fetchResult
 	fetchByURL     map[string]fetchResult
 	fetchDefault   fetchResult
 	fetchedURLs    []string
@@ -31,6 +33,10 @@ type fetchResult struct {
 func (f *fakeSender) fetch(_ context.Context, url string, withToken bool, _ int64) ([]byte, fetchOutcome) {
 	f.fetchedURLs = append(f.fetchedURLs, url)
 	f.fetchwithToken = append(f.fetchwithToken, withToken)
+	if seq := f.fetchSeq[url]; len(seq) > 0 {
+		f.fetchSeq[url] = seq[1:]
+		return seq[0].data, seq[0].outcome
+	}
 	if r, ok := f.fetchByURL[url]; ok {
 		return r.data, r.outcome
 	}

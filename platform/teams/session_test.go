@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 	"github.com/golang-jwt/jwt/v5"
@@ -533,22 +534,64 @@ func TestDispatch_NoNoticeOnSuccess(t *testing.T) {
 	}
 }
 
-// fakeGraph is a stub graphReader for channel-file dispatch tests.
+// fakeGraph is a stub graphReader for channel-file dispatch tests. Each scripted
+// sequence is consumed one call at a time: readScript for message reads, then
+// readOutcome; lookupScript per SharePoint URL for lookups, then fetchOK; script
+// per SharePoint URL for content GETs, then data/outcome.
 type fakeGraph struct {
 	refs                                      []channelFileRef
+	readScript                                []fetchOutcome
+	readOutcome                               fetchOutcome
+	lookupScript                              map[string][]fetchOutcome
 	data                                      []byte
 	outcome                                   fetchOutcome
+	script                                    map[string][]fetchResult
+	lookups                                   map[string]int
+	downloads                                 map[string]int
 	readCalls                                 int
 	lastGroup, lastChannel, lastRoot, lastMsg string
 }
 
-func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) []channelFileRef {
+// fakeGraphPrefix marks the Graph content URL the fake resolves a SharePoint URL to.
+const fakeGraphPrefix = "graph:"
+
+func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) ([]channelFileRef, fetchOutcome) {
 	f.readCalls++
 	f.lastGroup, f.lastChannel, f.lastRoot, f.lastMsg = group, channel, root, msg
-	return f.refs
+	outcome := f.readOutcome
+	if len(f.readScript) > 0 {
+		outcome, f.readScript = f.readScript[0], f.readScript[1:]
+	}
+	if outcome != fetchOK {
+		return nil, outcome
+	}
+	return f.refs, fetchOK
 }
 
-func (f *fakeGraph) downloadFile(_ context.Context, _ string, _ int64) ([]byte, fetchOutcome) {
+func (f *fakeGraph) resolveContentURL(_ context.Context, sharepointURL string) (string, fetchOutcome) {
+	if f.lookups == nil {
+		f.lookups = map[string]int{}
+	}
+	f.lookups[sharepointURL]++
+	if seq := f.lookupScript[sharepointURL]; len(seq) > 0 {
+		f.lookupScript[sharepointURL] = seq[1:]
+		if seq[0] != fetchOK {
+			return "", seq[0]
+		}
+	}
+	return fakeGraphPrefix + sharepointURL, fetchOK
+}
+
+func (f *fakeGraph) getBounded(_ context.Context, graphURL string, _ int64) ([]byte, fetchOutcome) {
+	sharepointURL := strings.TrimPrefix(graphURL, fakeGraphPrefix)
+	if f.downloads == nil {
+		f.downloads = map[string]int{}
+	}
+	f.downloads[sharepointURL]++
+	if seq := f.script[sharepointURL]; len(seq) > 0 {
+		f.script[sharepointURL] = seq[1:]
+		return seq[0].data, seq[0].outcome
+	}
 	return f.data, f.outcome
 }
 
@@ -848,5 +891,296 @@ func TestDispatch_MalformedCardValueFallsThroughToText(t *testing.T) {
 	}
 	if m := (*got)[0]; m.Content != "hello" || m.IsPermissionResponse {
 		t.Errorf("expected plain text dispatch, got content=%q isPerm=%v", m.Content, m.IsPermissionResponse)
+	}
+}
+
+// fastRetries shrinks the download retry schedule for the duration of a test.
+func fastRetries(t *testing.T, wait, budget time.Duration) {
+	t.Helper()
+	waits, b := retryWaits, retryBudget
+	retryWaits = []time.Duration{wait, wait}
+	retryBudget = budget
+	t.Cleanup(func() { retryWaits, retryBudget = waits, b })
+}
+
+const (
+	sharepointA = "https://ex.sharepoint.com/sites/T/Shared Documents/a.jpg"
+	sharepointB = "https://ex.sharepoint.com/sites/T/Shared Documents/b.jpg"
+)
+
+func TestDispatch_ChannelFileRetriedUntilAvailable(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}},
+		script: map[string][]fetchResult{sharepointA: {
+			{outcome: fetchRetryable},
+			{outcome: fetchRetryable},
+			{data: []byte("JPG"), outcome: fetchOK},
+		}},
+	}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity(""))
+
+	if len(*got) != 1 || len((*got)[0].Files) != 1 || string((*got)[0].Files[0].Data) != "JPG" {
+		t.Fatalf("file should arrive after retries, got %+v", *got)
+	}
+	if fg.downloads[sharepointA] != 3 {
+		t.Errorf("downloads = %d, want 3", fg.downloads[sharepointA])
+	}
+	if fg.lookups[sharepointA] != 1 {
+		t.Errorf("site and drive lookups = %d, want 1: a content retry must not repeat them", fg.lookups[sharepointA])
+	}
+	if len(fs.replied) != 0 {
+		t.Errorf("a file that arrives after retries must not send a notice, replied=%+v", fs.replied)
+	}
+	if (*got)[0].ExtraContent != "" {
+		t.Errorf("no note expected when every attachment arrives, got %q", (*got)[0].ExtraContent)
+	}
+}
+
+func TestDispatch_ChannelFileLookupRetried(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		refs:         []channelFileRef{{name: "a.jpg", contentURL: sharepointA}},
+		lookupScript: map[string][]fetchOutcome{sharepointA: {fetchRetryable}},
+		data:         []byte("JPG"),
+		outcome:      fetchOK,
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity(""))
+
+	if len((*got)[0].Files) != 1 {
+		t.Fatalf("file should arrive after a lookup retry, got %+v", (*got)[0].Files)
+	}
+	if fg.lookups[sharepointA] != 2 || fg.downloads[sharepointA] != 1 {
+		t.Errorf("lookups = %d, downloads = %d, want 2 and 1", fg.lookups[sharepointA], fg.downloads[sharepointA])
+	}
+}
+
+func TestDispatch_ChannelMessageReadRetried(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		refs:       []channelFileRef{{name: "a.jpg", contentURL: sharepointA}},
+		readScript: []fetchOutcome{fetchRetryable},
+		data:       []byte("JPG"),
+		outcome:    fetchOK,
+	}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	if fg.readCalls != 2 {
+		t.Errorf("message reads = %d, want 2", fg.readCalls)
+	}
+	if len((*got)[0].Files) != 1 || (*got)[0].ExtraContent != "" || len(fs.replied) != 0 {
+		t.Errorf("file should arrive with no note or notice, got files=%d note=%q replied=%+v",
+			len((*got)[0].Files), (*got)[0].ExtraContent, fs.replied)
+	}
+}
+
+func TestDispatch_ChannelMessageReadFailedNotesAgentOnly(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	for _, tc := range []struct {
+		outcome fetchOutcome
+		reads   int
+	}{
+		{fetchRetryable, len(retryWaits) + 1},
+		{fetchFailed, 1},
+	} {
+		fg := &fakeGraph{refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}}, readOutcome: tc.outcome}
+		p, got, fs := channelFilePlatform(true, fg)
+		p.dispatch(nil, channelFileActivity("look"))
+
+		if fg.readCalls != tc.reads {
+			t.Errorf("outcome %v: message reads = %d, want %d", tc.outcome, fg.readCalls, tc.reads)
+		}
+		if len(*got) != 1 || (*got)[0].Content != "look" {
+			t.Fatalf("outcome %v: the turn should still dispatch its text, got %+v", tc.outcome, *got)
+		}
+		if note := (*got)[0].ExtraContent; note != "[Attachments not checked] could not read the message for attachments" {
+			t.Errorf("outcome %v: note = %q", tc.outcome, note)
+		}
+		if len(fs.replied) != 0 {
+			t.Errorf("outcome %v: a failed message read must not notify the user, replied=%+v", tc.outcome, fs.replied)
+		}
+	}
+}
+
+func TestDispatch_ChannelFileRetryExhausted(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}}, outcome: fetchRetryable}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	if fg.downloads[sharepointA] != len(retryWaits)+1 {
+		t.Errorf("downloads = %d, want %d", fg.downloads[sharepointA], len(retryWaits)+1)
+	}
+	if len((*got)[0].Files) != 0 {
+		t.Errorf("an attachment that never arrives must not be attached")
+	}
+	if len(fs.replied) != 1 || fs.replied[0].Text != attachmentFailureNotice {
+		t.Errorf("exhausted retries should send the notice once, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_OversizeAndPermanentFailureNotRetried(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	for _, outcome := range []fetchOutcome{fetchOversize, fetchFailed} {
+		fg := &fakeGraph{refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}}, outcome: outcome}
+		p, _, fs := channelFilePlatform(true, fg)
+		p.dispatch(nil, channelFileActivity("look"))
+
+		if fg.downloads[sharepointA] != 1 {
+			t.Errorf("outcome %v: downloads = %d, want 1", outcome, fg.downloads[sharepointA])
+		}
+		if len(fs.replied) != 1 {
+			t.Errorf("outcome %v: should send the notice, replied=%d", outcome, len(fs.replied))
+		}
+	}
+}
+
+func TestDispatch_FailingAttachmentDoesNotBlockOthers(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}, {name: "b.jpg", contentURL: sharepointB}},
+		script: map[string][]fetchResult{
+			sharepointA: {{outcome: fetchRetryable}, {outcome: fetchRetryable}, {outcome: fetchRetryable}, {outcome: fetchRetryable}, {outcome: fetchRetryable}},
+			sharepointB: {{data: []byte("B"), outcome: fetchOK}},
+		},
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("two files"))
+
+	files := (*got)[0].Files
+	if len(files) != 1 || files[0].FileName != "b.jpg" {
+		t.Fatalf("the working attachment should still arrive, got %+v", files)
+	}
+}
+
+func TestDispatch_RetryBudgetSharedAcrossAttachments(t *testing.T) {
+	fastRetries(t, 30*time.Millisecond, 50*time.Millisecond)
+	fg := &fakeGraph{
+		refs:    []channelFileRef{{name: "a.jpg", contentURL: sharepointA}, {name: "b.jpg", contentURL: sharepointB}},
+		outcome: fetchRetryable,
+		script:  map[string][]fetchResult{sharepointB: {{outcome: fetchRetryable}, {data: []byte("B"), outcome: fetchOK}}},
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("two files"))
+
+	if n := fg.downloads[sharepointA]; n < 2 || n > len(retryWaits) {
+		t.Errorf("first attachment downloads = %d, want retries cut short by the budget", n)
+	}
+	if fg.downloads[sharepointB] != 1 {
+		t.Errorf("second attachment should get its first attempt but no retry once the budget is spent, downloads = %d", fg.downloads[sharepointB])
+	}
+	if len((*got)[0].Files) != 0 {
+		t.Errorf("no attachment should arrive, got %d", len((*got)[0].Files))
+	}
+}
+
+func TestDispatch_PersonalFileRetriedUntilAvailable(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	p, got, fs := personalPlatform(fetchResult{})
+	fs.fetchSeq = map[string][]fetchResult{"https://files.example/dl": {
+		{outcome: fetchRetryable},
+		{data: []byte("DOCX"), outcome: fetchOK},
+	}}
+	p.dispatch(nil, personalActivity("", fileDL("a.docx", "https://files.example/dl")))
+
+	if len((*got)[0].Files) != 1 || string((*got)[0].Files[0].Data) != "DOCX" {
+		t.Fatalf("1:1 file should arrive after a retry, got %+v", (*got)[0].Files)
+	}
+	if len(fs.fetchedURLs) != 2 {
+		t.Errorf("fetches = %d, want 2", len(fs.fetchedURLs))
+	}
+	if len(fs.replied) != 0 {
+		t.Errorf("no notice expected, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_NoteToAgentWhenChannelFileUnavailable(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{refs: []channelFileRef{{name: "photo.jpg", contentURL: sharepointA}}, outcome: fetchFailed}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity(""))
+
+	if len(*got) != 1 {
+		t.Fatalf("a message with no text and a dropped attachment must still reach the agent, got %d", len(*got))
+	}
+	if note := (*got)[0].ExtraContent; note != `[Attachments not received] "photo.jpg" (unavailable)` {
+		t.Errorf("note should name the file and say it was unavailable, got %q", note)
+	}
+}
+
+func TestDispatch_NoteToAgentWhenPersonalFileTooLarge(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{outcome: fetchOversize})
+	p.dispatch(nil, personalActivity("", fileDL("big.docx", "https://files.example/dl")))
+
+	if note := (*got)[0].ExtraContent; note != `[Attachments not received] "big.docx" (too large)` {
+		t.Errorf("note should name the file and say it was too large, got %q", note)
+	}
+}
+
+func TestDispatch_NoteListsOnlyDroppedAttachments(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}, {name: "b.jpg", contentURL: sharepointB}},
+		script: map[string][]fetchResult{
+			sharepointA: {{data: []byte("A"), outcome: fetchOK}},
+			sharepointB: {{outcome: fetchFailed}},
+		},
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("compare these"))
+
+	m := (*got)[0]
+	if len(m.Files) != 1 || m.Files[0].FileName != "a.jpg" {
+		t.Fatalf("the readable file should arrive, got %+v", m.Files)
+	}
+	if m.Content != "compare these" {
+		t.Errorf("user text should be unchanged, got %q", m.Content)
+	}
+	if !strings.Contains(m.ExtraContent, "b.jpg") || strings.Contains(m.ExtraContent, "a.jpg") {
+		t.Errorf("note should list only the dropped file, got %q", m.ExtraContent)
+	}
+}
+
+func TestDispatch_NoNoteWhenNothingDropped(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{data: []byte("OK"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", fileDL("a.docx", "https://files.example/dl")))
+	if (*got)[0].ExtraContent != "" {
+		t.Errorf("no note expected, got %q", (*got)[0].ExtraContent)
+	}
+}
+
+func TestDispatch_NoteForMalformedPersonalAttachment(t *testing.T) {
+	p, got, fs := personalPlatform(fetchResult{outcome: fetchOK})
+	bad := inboundAttachment{ContentType: fileDownloadInfoContentType, Name: "x.docx", Content: []byte(`{"downloadUrl":""}`)}
+	p.dispatch(nil, personalActivity("", bad))
+
+	note := (*got)[0].ExtraContent
+	if !strings.Contains(note, "x.docx") || !strings.Contains(note, "unavailable") {
+		t.Errorf("note should name the file and say it was unavailable, got %q", note)
+	}
+	if len(fs.replied) != 1 || fs.replied[0].Text != attachmentFailureNotice {
+		t.Errorf("editor notice must be unchanged, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_NoteCoversRefsOverCap(t *testing.T) {
+	var refs []channelFileRef
+	for i := 0; i < maxChannelFileRefs; i++ {
+		refs = append(refs, channelFileRef{name: "f.docx", contentURL: sharepointA})
+	}
+	refs = append(refs, channelFileRef{name: "extra.docx", contentURL: sharepointB})
+	fg := &fakeGraph{refs: refs, data: []byte("D"), outcome: fetchOK}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("lots of files"))
+
+	note := (*got)[0].ExtraContent
+	if !strings.HasPrefix(note, "[Attachments not received] ") || !strings.Contains(note, `"extra.docx" (unavailable, over the 10-file limit)`) {
+		t.Errorf("note should list the extra ref as over the file limit, got %q", note)
+	}
+	if fg.downloads[sharepointB] != 0 {
+		t.Errorf("a ref over the cap must not be downloaded")
 	}
 }
