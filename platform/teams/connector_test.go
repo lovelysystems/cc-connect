@@ -275,15 +275,15 @@ func TestConnectorFetch_AttachesBearerOnlyWhenRequested(t *testing.T) {
 	}
 }
 
-func TestConnectorFetch_TokenErrorReturnsFailed(t *testing.T) {
+func TestConnectorFetch_TokenErrorReturnsRetryable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("x"))
 	}))
 	defer srv.Close()
 
 	c := newConnector(failTokens{})
-	if _, outcome := c.fetch(context.Background(), srv.URL, true, 1024); outcome != fetchFailed {
-		t.Fatalf("outcome = %v, want fetchFailed when the token cannot be acquired", outcome)
+	if _, outcome := c.fetch(context.Background(), srv.URL, true, 1024); outcome != fetchRetryable {
+		t.Fatalf("outcome = %v, want fetchRetryable when the token cannot be acquired", outcome)
 	}
 }
 

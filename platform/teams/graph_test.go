@@ -242,6 +242,21 @@ func TestDownloadFile_Oversize(t *testing.T) {
 	}
 }
 
+func TestGraphGet_TokenErrorRetryable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer srv.Close()
+	g := &graphClient{tokens: failTokens{}, http: &http.Client{}, base: srv.URL}
+
+	if _, outcome := g.get(context.Background(), srv.URL); outcome != fetchRetryable {
+		t.Errorf("get: outcome = %v, want fetchRetryable when the token cannot be acquired", outcome)
+	}
+	if _, outcome := g.getBounded(context.Background(), srv.URL, 1024); outcome != fetchRetryable {
+		t.Errorf("getBounded: outcome = %v, want fetchRetryable when the token cannot be acquired", outcome)
+	}
+}
+
 func TestSiteCollectionPath(t *testing.T) {
 	cases := map[string]string{
 		"/sites/Marketing/Shared Documents/x.docx": "/sites/Marketing",

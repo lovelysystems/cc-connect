@@ -169,8 +169,9 @@ func statusOutcome(status int, extraRetryable ...int) fetchOutcome {
 // fetch GETs rawURL and returns its bytes bounded by maxBytes. A bearer token is
 // attached only when withToken is true (file downloadUrls are pre-authenticated
 // and must NOT carry the token; images on the Bot Connector host require it). A
-// payload larger than maxBytes is reported as fetchOversize, never truncated; an
-// error is fetchRetryable or fetchFailed per statusOutcome. None is fatal to the turn.
+// payload larger than maxBytes is reported as fetchOversize, never truncated. Token,
+// transport and read errors are fetchRetryable; a non-2xx status is classified per
+// statusOutcome. None is fatal to the turn.
 func (c *connector) fetch(ctx context.Context, rawURL string, withToken bool, maxBytes int64) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -179,7 +180,7 @@ func (c *connector) fetch(ctx context.Context, rawURL string, withToken bool, ma
 	if withToken {
 		token, err := c.tokens.token(ctx)
 		if err != nil {
-			return nil, fetchFailed
+			return nil, fetchRetryable
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 	}

@@ -196,8 +196,8 @@ func driveRelativePath(driveWebURL, itemPath string) (string, bool) {
 }
 
 // get performs an authenticated Graph GET returning the raw body (bounded by
-// maxBodyBytes). Transport and read errors are fetchRetryable; a non-2xx status
-// is classified per statusOutcome. A 404 means a wrong site or drive, or a
+// maxBodyBytes). Token, transport and read errors are fetchRetryable; a non-2xx
+// status is classified per statusOutcome. A 404 means a wrong site or drive, or a
 // message the bot cannot read, and fails.
 func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -206,7 +206,7 @@ func (g *graphClient) get(ctx context.Context, rawURL string) ([]byte, fetchOutc
 	}
 	token, err := g.tokens.token(ctx)
 	if err != nil {
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := g.http.Do(req)
@@ -246,7 +246,8 @@ func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) fetch
 // pre-authed download URL (the default client follows redirects; Go strips the
 // Authorization header on the cross-host hop, which is fine — the redirect target
 // is pre-authenticated). A payload over the cap is reported oversize, never
-// truncated; an error is classified per statusOutcome.
+// truncated. Token, transport and read errors are fetchRetryable; a non-2xx status
+// is classified per statusOutcome, with 404 retryable.
 func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -254,7 +255,7 @@ func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes in
 	}
 	token, err := g.tokens.token(ctx)
 	if err != nil {
-		return nil, fetchFailed
+		return nil, fetchRetryable
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := g.http.Do(req)
