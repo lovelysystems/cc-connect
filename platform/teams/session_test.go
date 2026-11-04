@@ -1199,7 +1199,7 @@ func withHTML(t *testing.T, b []byte, body string) []byte {
 
 const linkHTML = `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> read <a href="https://example.com/x">Example Page Title</a></p>`
 
-func TestDispatch_FormattedContextAttached(t *testing.T) {
+func TestDispatch_TitleLinkArrivesAsMarkdown(t *testing.T) {
 	p := teamsPlatform("thread")
 	h, got := collector()
 	p.handler = h
@@ -1209,39 +1209,60 @@ func TestDispatch_FormattedContextAttached(t *testing.T) {
 		t.Fatalf("got %d messages, want 1", len(*got))
 	}
 	m := (*got)[0]
-	if m.Content != "read Example Page Title" {
-		t.Errorf("Content = %q, want the plain text", m.Content)
+	if m.Content != "read [Example Page Title](https://example.com/x)" {
+		t.Errorf("Content = %q, want the Markdown link", m.Content)
 	}
-	want := htmlContextOpen + "\n" + `<p> read <a href="https://example.com/x">Example Page Title</a></p>` + "\n" + htmlContextClose
-	if m.ExtraContent != want {
-		t.Errorf("ExtraContent = %q, want %q", m.ExtraContent, want)
+	if m.ExtraContent != "" {
+		t.Errorf("ExtraContent = %q, want none", m.ExtraContent)
 	}
 }
 
-func TestDispatch_PlainReplyNoFormattedContext(t *testing.T) {
+func TestDispatch_PlainReplyKeepsPlainText(t *testing.T) {
 	p := teamsPlatform("thread")
 	h, got := collector()
 	p.handler = h
 	plain := `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> ok, publish it</p>`
 	p.dispatch(nil, withHTML(t, messageActivity("conv-P", "user-1", "ok, publish it", true), plain))
 
-	if len(*got) != 1 || (*got)[0].ExtraContent != "" {
-		t.Fatalf("plain reply should carry no context, got %+v", *got)
+	if len(*got) != 1 || (*got)[0].Content != "ok, publish it" || (*got)[0].ExtraContent != "" {
+		t.Fatalf("plain reply should arrive unchanged, got %+v", *got)
 	}
 }
 
-func TestDispatch_CommandTextUnchangedByFormattedContext(t *testing.T) {
+func TestDispatch_CommandKeepsPlainText(t *testing.T) {
+	cases := map[string]string{
+		"/new": `<p><at>bot</at> <b>/new</b></p>`,
+		"!ls":  `<p><at>bot</at> <b>!ls</b></p>`,
+	}
+	for text, html := range cases {
+		p := teamsPlatform("thread")
+		h, got := collector()
+		p.handler = h
+		p.dispatch(nil, withHTML(t, messageActivity("conv-N", "user-1", text, true), html))
+
+		if len(*got) != 1 || (*got)[0].Content != text {
+			t.Errorf("%s: content should stay plain, got %+v", text, *got)
+		}
+	}
+}
+
+func TestDispatch_MarkdownStartingWithBangIsEscaped(t *testing.T) {
 	p := teamsPlatform("thread")
 	h, got := collector()
 	p.handler = h
-	p.dispatch(nil, withHTML(t, messageActivity("conv-N", "user-1", "/new", true), `<p><at>bot</at> <b>/new</b></p>`))
+	html := `<p><img alt="😀" src="https://statics.teams.cdn.office.net/x.png" itemtype="http://schema.skype.com/Emoji"> check <b>this</b></p>`
+	p.dispatch(nil, withHTML(t, messageActivity("conv-E", "user-1", "😀 check this", true), html))
 
-	if len(*got) != 1 || (*got)[0].Content != "/new" {
-		t.Fatalf("command content should stay plain, got %+v", *got)
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(*got))
+	}
+	c := (*got)[0].Content
+	if !strings.HasPrefix(c, `\![😀](`) || !strings.HasSuffix(c, "check **this**") {
+		t.Errorf("Content = %q, want escaped emoji image then the Markdown", c)
 	}
 }
 
-func TestDispatch_NoHTMLNoFormattedContext(t *testing.T) {
+func TestDispatch_NoHTMLKeepsPlainText(t *testing.T) {
 	p := teamsPlatform("thread")
 	h, got := collector()
 	p.handler = h
@@ -1252,7 +1273,7 @@ func TestDispatch_NoHTMLNoFormattedContext(t *testing.T) {
 	}
 }
 
-func TestDispatch_CardActionNoFormattedContext(t *testing.T) {
+func TestDispatch_CardActionIgnoresHTML(t *testing.T) {
 	p := teamsPlatform("thread")
 	h, got := collector()
 	p.handler = h
@@ -1267,11 +1288,11 @@ func TestDispatch_CardActionNoFormattedContext(t *testing.T) {
 	p.dispatch(nil, withHTML(t, mustJSON(a), `<p><b>allow</b></p>`))
 
 	if len(*got) != 1 || (*got)[0].Content != "allow" || (*got)[0].ExtraContent != "" {
-		t.Fatalf("card action should carry no context, got %+v", *got)
+		t.Fatalf("card action should arrive unchanged, got %+v", *got)
 	}
 }
 
-func TestDispatch_FormattedContextFollowsDropNote(t *testing.T) {
+func TestDispatch_MarkdownWithDropNote(t *testing.T) {
 	p, got, _ := personalPlatform(fetchResult{outcome: fetchFailed})
 	html := `<p>review <a href="https://example.com/x">Example Page Title</a></p>`
 	p.dispatch(nil, withHTML(t, personalActivity("review Example Page Title", fileDL("a.docx", "https://files.example/dl")), html))
@@ -1279,22 +1300,24 @@ func TestDispatch_FormattedContextFollowsDropNote(t *testing.T) {
 	if len(*got) != 1 {
 		t.Fatalf("got %d messages, want 1", len(*got))
 	}
-	extra := (*got)[0].ExtraContent
-	block := htmlContextOpen + "\n" + html + "\n" + htmlContextClose
-	note, rest, found := strings.Cut(extra, "\n\n")
-	if !found || !strings.HasPrefix(note, "[Attachments not received]") || !strings.Contains(note, "a.docx") || rest != block {
-		t.Errorf("ExtraContent = %q, want the drop note, a blank line, then the block", extra)
+	m := (*got)[0]
+	if m.Content != "review [Example Page Title](https://example.com/x)" {
+		t.Errorf("Content = %q, want the Markdown link", m.Content)
+	}
+	extra := m.ExtraContent
+	if !strings.HasPrefix(extra, "[Attachments not received]") || !strings.Contains(extra, "a.docx") || strings.Contains(extra, "\n\n") {
+		t.Errorf("ExtraContent = %q, want only the drop note", extra)
 	}
 }
 
-func TestDispatch_EmptyTextNoFormattedContext(t *testing.T) {
+func TestDispatch_EmptyTextStaysEmpty(t *testing.T) {
 	fg := &fakeGraph{refs: nil}
 	p, got, _ := channelFilePlatform(true, fg)
 	p.dispatch(nil, withHTML(t, channelFileActivity(""), `<p><at>bot</at> <b>bold</b></p>`))
 
 	for _, m := range *got {
-		if strings.Contains(m.ExtraContent, htmlContextOpen) {
-			t.Errorf("message with empty text should carry no context, got %q", m.ExtraContent)
+		if m.Content != "" {
+			t.Errorf("message with empty text should keep empty content, got %q", m.Content)
 		}
 	}
 }

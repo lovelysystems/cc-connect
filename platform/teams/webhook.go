@@ -188,7 +188,7 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		msg.Content = cardActionReply(action)
 		msg.IsPermissionResponse = true
 	} else {
-		msg.Content = content
+		msg.Content = messageContent(a, content)
 		var dropped []droppedAttachment
 		switch {
 		case hasMedia:
@@ -215,17 +215,29 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 			}
 			msg.ExtraContent = attachmentDropNote(dropped)
 		}
-		if content != "" {
-			if formatted := a.formattedContext(); formatted != "" {
-				if msg.ExtraContent != "" {
-					msg.ExtraContent += "\n\n"
-				}
-				msg.ExtraContent += formatted
-				slog.Debug("teams: formatted context added", "msg_id", msg.MessageID, "html", formatted)
-			}
-		}
 	}
 	p.handler(p, msg)
+}
+
+// messageContent returns the Markdown of the message's HTML version when it carries formatting the
+// plain text lacks, else the plain text. A plain text the engine reads as a command or shell
+// shortcut is kept, and Markdown that would read as one gets a backslash in front.
+func messageContent(a *activity, plain string) string {
+	if plain == "" || isEngineTrigger(plain) {
+		return plain
+	}
+	md := a.markdown()
+	if md == "" {
+		return plain
+	}
+	if isEngineTrigger(md) {
+		return `\` + md
+	}
+	return md
+}
+
+func isEngineTrigger(s string) bool {
+	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, "!")
 }
 
 // downloadInboundMedia downloads a 1:1 activity's file and image attachments,

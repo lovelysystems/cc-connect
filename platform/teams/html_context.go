@@ -13,33 +13,12 @@ import (
 	"golang.org/x/net/html"
 )
 
-// The agent reads the formatted copy of a message between these two lines.
-const (
-	htmlContextOpen  = "[Formatted original of this message (HTML)]"
-	htmlContextClose = "[End of formatted original]"
-)
-
 // formatTags count as formatting the plain text lacks.
 var formatTags = map[string]bool{
 	"b": true, "strong": true, "i": true, "em": true, "u": true,
 	"s": true, "strike": true, "del": true,
 	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
 	"ul": true, "ol": true, "li": true, "pre": true, "code": true, "table": true,
-}
-
-// formattedContext returns the message's HTML version, framed for the agent, when it carries a
-// link target or formatting the plain text lacks; otherwise "". Mentions are removed and every
-// other byte is kept as Teams sent it.
-func (a *activity) formattedContext() string {
-	body := a.htmlBody()
-	if body == "" {
-		return ""
-	}
-	kept, formatted := scanHTML(body)
-	if !formatted {
-		return ""
-	}
-	return htmlContextOpen + "\n" + strings.TrimSpace(kept) + "\n" + htmlContextClose
 }
 
 // mdConverter keeps the user's characters unescaped: its output is read by the agent and matched
