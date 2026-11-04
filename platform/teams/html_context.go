@@ -21,8 +21,6 @@ var formatTags = map[string]bool{
 	"ul": true, "ol": true, "li": true, "pre": true, "code": true, "table": true,
 }
 
-// mdConverter keeps the user's characters unescaped: its output is read by the agent and matched
-// by the engine, never rendered.
 var mdConverter = converter.NewConverter(
 	converter.WithPlugins(
 		base.NewBasePlugin(),
