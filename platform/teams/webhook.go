@@ -215,6 +215,14 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 			}
 			msg.ExtraContent = attachmentDropNote(dropped)
 		}
+		if content != "" {
+			if formatted := a.formattedContext(); formatted != "" {
+				if msg.ExtraContent != "" {
+					msg.ExtraContent += "\n\n"
+				}
+				msg.ExtraContent += formatted
+			}
+		}
 	}
 	p.handler(p, msg)
 }

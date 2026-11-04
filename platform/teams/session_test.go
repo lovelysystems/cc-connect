@@ -1184,3 +1184,117 @@ func TestDispatch_NoteCoversRefsOverCap(t *testing.T) {
 		t.Errorf("a ref over the cap must not be downloaded")
 	}
 }
+
+// withHTML adds the Teams HTML version of the message to an encoded activity.
+func withHTML(t *testing.T, b []byte, body string) []byte {
+	t.Helper()
+	var a activity
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := json.Marshal(body)
+	a.Attachments = append(a.Attachments, inboundAttachment{ContentType: "text/html", Content: content})
+	return mustJSON(a)
+}
+
+const linkHTML = `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> read <a href="https://example.com/x">Example Page Title</a></p>`
+
+func TestDispatch_FormattedContextAttached(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	p.dispatch(nil, withHTML(t, messageActivity("conv-H", "user-1", "read Example Page Title", true), linkHTML))
+
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(*got))
+	}
+	m := (*got)[0]
+	if m.Content != "read Example Page Title" {
+		t.Errorf("Content = %q, want the plain text", m.Content)
+	}
+	want := htmlContextOpen + "\n" + `<p> read <a href="https://example.com/x">Example Page Title</a></p>` + "\n" + htmlContextClose
+	if m.ExtraContent != want {
+		t.Errorf("ExtraContent = %q, want %q", m.ExtraContent, want)
+	}
+}
+
+func TestDispatch_PlainReplyNoFormattedContext(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	plain := `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> ok, publish it</p>`
+	p.dispatch(nil, withHTML(t, messageActivity("conv-P", "user-1", "ok, publish it", true), plain))
+
+	if len(*got) != 1 || (*got)[0].ExtraContent != "" {
+		t.Fatalf("plain reply should carry no context, got %+v", *got)
+	}
+}
+
+func TestDispatch_CommandTextUnchangedByFormattedContext(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	p.dispatch(nil, withHTML(t, messageActivity("conv-N", "user-1", "/new", true), `<p><at>bot</at> <b>/new</b></p>`))
+
+	if len(*got) != 1 || (*got)[0].Content != "/new" {
+		t.Fatalf("command content should stay plain, got %+v", *got)
+	}
+}
+
+func TestDispatch_NoHTMLNoFormattedContext(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	p.dispatch(nil, messageActivity("conv-I", "user-1", "single line", true))
+
+	if len(*got) != 1 || (*got)[0].ExtraContent != "" || (*got)[0].Content != "single line" {
+		t.Fatalf("message without HTML should be unchanged, got %+v", *got)
+	}
+}
+
+func TestDispatch_CardActionNoFormattedContext(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	a := activity{
+		Type:         "message",
+		ID:           "act-2",
+		From:         channelAccount{ID: "user-1"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "conv-C"},
+		Value:        []byte(`{"action":"allow"}`),
+	}
+	p.dispatch(nil, withHTML(t, mustJSON(a), `<p><b>allow</b></p>`))
+
+	if len(*got) != 1 || (*got)[0].Content != "allow" || (*got)[0].ExtraContent != "" {
+		t.Fatalf("card action should carry no context, got %+v", *got)
+	}
+}
+
+func TestDispatch_FormattedContextFollowsDropNote(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{outcome: fetchFailed})
+	html := `<p>review <a href="https://example.com/x">Example Page Title</a></p>`
+	p.dispatch(nil, withHTML(t, personalActivity("review Example Page Title", fileDL("a.docx", "https://files.example/dl")), html))
+
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(*got))
+	}
+	extra := (*got)[0].ExtraContent
+	block := htmlContextOpen + "\n" + html + "\n" + htmlContextClose
+	note, rest, found := strings.Cut(extra, "\n\n")
+	if !found || !strings.HasPrefix(note, "[Attachments not received]") || !strings.Contains(note, "a.docx") || rest != block {
+		t.Errorf("ExtraContent = %q, want the drop note, a blank line, then the block", extra)
+	}
+}
+
+func TestDispatch_EmptyTextNoFormattedContext(t *testing.T) {
+	fg := &fakeGraph{refs: nil}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, withHTML(t, channelFileActivity(""), `<p><at>bot</at> <b>bold</b></p>`))
+
+	for _, m := range *got {
+		if strings.Contains(m.ExtraContent, htmlContextOpen) {
+			t.Errorf("message with empty text should carry no context, got %q", m.ExtraContent)
+		}
+	}
+}
