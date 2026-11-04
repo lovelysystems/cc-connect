@@ -1,0 +1,1 @@
+work on the cc-connect part of the formatting context issue in this branch (requirements R1-R6 of docs/plans/2026-11-04-1155-feat-teams-formatted-message-context-plan.md; the ch-content-bot rule R7-R9 is out of scope for this PR). a PR has to be created against downstream branch, not main
