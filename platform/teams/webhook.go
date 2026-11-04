@@ -221,6 +221,7 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 					msg.ExtraContent += "\n\n"
 				}
 				msg.ExtraContent += formatted
+				slog.Debug("teams: formatted context added", "msg_id", msg.MessageID, "html", formatted)
 			}
 		}
 	}
