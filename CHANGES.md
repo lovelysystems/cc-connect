@@ -26,8 +26,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 #### Feature
 
-- **teams**: pass the message's HTML to the agent as context when it carries links or
-  formatting (upstream: pending)
+- **teams**: send a message with links or formatting to the agent as Markdown
+  (upstream: pending)
 
 ### 2026-10-06 / v1.5.0-ls.1
 

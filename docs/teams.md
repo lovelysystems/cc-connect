@@ -12,9 +12,9 @@ requires a publicly reachable URL.
 - The connector validates each request's JWT, then forwards the message to the
   cc-connect engine.
 - The agent receives the message as plain text. When Teams' HTML version of the
-  message carries a link target or formatting the plain text lacks, the agent also
-  receives that HTML, mentions removed, between
-  `[Formatted original of this message (HTML)]` and `[End of formatted original]`.
+  message carries a link target or formatting the plain text lacks, the agent
+  receives that HTML converted to Markdown, mentions removed. A command (`/…`) or
+  shell shortcut (`!…`) keeps its plain text.
 - Replies are sent back through the Bot Connector REST API and stream as an
   **Adaptive Card**: a "working" card is posted immediately, then edited in place
   as the answer grows. Every card — the working card included — carries the native
