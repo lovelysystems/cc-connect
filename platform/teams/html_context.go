@@ -5,6 +5,11 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
 	"golang.org/x/net/html"
 )
 
@@ -35,6 +40,41 @@ func (a *activity) formattedContext() string {
 		return ""
 	}
 	return htmlContextOpen + "\n" + strings.TrimSpace(kept) + "\n" + htmlContextClose
+}
+
+// mdConverter keeps the user's characters unescaped: its output is read by the agent and matched
+// by the engine, never rendered.
+var mdConverter = converter.NewConverter(
+	converter.WithPlugins(
+		base.NewBasePlugin(),
+		commonmark.NewCommonmarkPlugin(),
+		strikethrough.NewStrikethroughPlugin(),
+		table.NewTablePlugin(),
+	),
+	converter.WithEscapeMode(converter.EscapeModeDisabled),
+)
+
+// markdown returns the message's HTML version converted to Markdown, mentions removed, when it
+// carries a link target or formatting the plain text lacks; otherwise "".
+func (a *activity) markdown() string {
+	body := a.htmlBody()
+	if body == "" {
+		return ""
+	}
+	kept, formatted := scanHTML(body)
+	if !formatted {
+		return ""
+	}
+	md, err := mdConverter.ConvertString(kept)
+	if err != nil {
+		slog.Warn("teams: could not convert html to markdown", "error", err)
+		return ""
+	}
+	md = strings.TrimSpace(md)
+	if md == "" {
+		slog.Warn("teams: html converted to empty markdown")
+	}
+	return md
 }
 
 // htmlBody returns the content of the first text/html attachment, or "".
