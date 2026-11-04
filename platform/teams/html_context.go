@@ -2,6 +2,7 @@ package teams
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -42,8 +43,12 @@ func (a *activity) htmlBody() string {
 		if !strings.EqualFold(att.ContentType, "text/html") {
 			continue
 		}
+		if len(att.Content) == 0 {
+			return ""
+		}
 		var s string
-		if len(att.Content) == 0 || json.Unmarshal(att.Content, &s) != nil {
+		if err := json.Unmarshal(att.Content, &s); err != nil {
+			slog.Warn("teams: unreadable html attachment", "error", err)
 			return ""
 		}
 		return s
