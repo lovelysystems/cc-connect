@@ -15,6 +15,8 @@ requires a publicly reachable URL.
   message carries a link target or formatting the plain text lacks, the agent
   receives that HTML converted to Markdown, mentions and reply quotes removed. A
   command (`/…`) or shell shortcut (`!…`) keeps its plain text.
+- Images pasted into a message (⌘V) do not reach the agent; attach them as a
+  file instead.
 - Replies are sent back through the Bot Connector REST API and stream as an
   **Adaptive Card**: a "working" card is posted immediately, then edited in place
   as the answer grows. Every card — the working card included — carries the native
