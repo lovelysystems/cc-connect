@@ -67,7 +67,6 @@ func TestMarkdown_Styles(t *testing.T) {
 }
 
 func TestMarkdown_TeamsMarkupAlone(t *testing.T) {
-	wantNoMarkdown(t, `<p>nice <img alt="😀" src="https://statics.teams.cdn.office.net/emoji.png" itemtype="http://schema.skype.com/Emoji"></p>`)
 	wantNoMarkdown(t, `<p>file <attachment id="1"></attachment></p>`)
 	wantNoMarkdown(t, `<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="9"><strong itemprop="mri">Name</strong><p itemprop="preview">text</p></blockquote><p>yes</p>`)
 }
@@ -89,6 +88,11 @@ func TestMarkdown_TypedEntityAsTyped(t *testing.T) {
 func TestMarkdown_EmojiAsText(t *testing.T) {
 	wantMarkdown(t, `<p>Super <img alt="😀" src="https://statics.teams.cdn.office.net/emoji.png" itemtype="http://schema.skype.com/Emoji"> <b>danke</b></p>`,
 		`Super 😀 **danke**`)
+}
+
+func TestMarkdown_EmojiAlone(t *testing.T) {
+	wantMarkdown(t, `<p>what do you see? <span contenteditable="false" title="Surprised" type="(surprised)" class="animated-emoticon-20-surprised"><img itemscope itemtype="http://schema.skype.com/Emoji" itemid="surprised" src="https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/v2/assets/emoticons/surprised/default/20_f.png" title="Surprised" alt="😮" style="width:20px;height:20px"></span></p>`,
+		`what do you see? 😮`)
 }
 
 func TestMarkdown_PastedImageDropped(t *testing.T) {

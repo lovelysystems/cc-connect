@@ -12,9 +12,9 @@ requires a publicly reachable URL.
 - The connector validates each request's JWT, then forwards the message to the
   cc-connect engine.
 - The agent receives the message as plain text. When Teams' HTML version of the
-  message carries a link target or formatting the plain text lacks, the agent
-  receives that HTML converted to Markdown, mentions and reply quotes removed. A
-  command (`/…`) or shell shortcut (`!…`) keeps its plain text.
+  message carries a link target, a Teams emoji or formatting the plain text
+  lacks, the agent receives that HTML converted to Markdown, mentions and reply
+  quotes removed. A command (`/…`) or shell shortcut (`!…`) keeps its plain text.
 - Images pasted into a message (⌘V) do not reach the agent; attach them as a
   file instead.
 - Replies are sent back through the Bot Connector REST API and stream as an
