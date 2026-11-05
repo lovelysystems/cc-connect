@@ -17,6 +17,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+### 2026-11-05 / v1.5.0-ls.2
+
 #### Fix
 
 - **teams**: retry inbound attachment downloads that fail transiently
