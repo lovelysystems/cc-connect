@@ -21,33 +21,58 @@ var formatTags = map[string]bool{
 	"ul": true, "ol": true, "li": true, "pre": true, "code": true, "table": true,
 }
 
-var mdConverter = converter.NewConverter(
-	converter.WithPlugins(
-		base.NewBasePlugin(),
-		commonmark.NewCommonmarkPlugin(),
-		strikethrough.NewStrikethroughPlugin(),
-		table.NewTablePlugin(),
-	),
-	converter.WithEscapeMode(converter.EscapeModeDisabled),
-)
+var mdConverter = newMDConverter()
 
-// markdown returns the message's HTML version converted to Markdown, mentions removed, when it
-// carries a link target or formatting the plain text lacks; otherwise "".
+func newMDConverter() *converter.Converter {
+	conv := converter.NewConverter(
+		converter.WithPlugins(
+			base.NewBasePlugin(),
+			commonmark.NewCommonmarkPlugin(),
+			strikethrough.NewStrikethroughPlugin(),
+			table.NewTablePlugin(),
+		),
+		converter.WithEscapeMode(converter.EscapeModeDisabled),
+	)
+	conv.Register.Renderer(func(_ converter.Context, w converter.Writer, n *html.Node) converter.RenderStatus {
+		switch {
+		case isMention(n), isReplyQuote(n):
+			return converter.RenderSuccess
+		case isEmoji(n):
+			w.WriteString(attr(n, "alt"))
+			return converter.RenderSuccess
+		}
+		return converter.RenderTryNext
+	}, converter.PriorityEarly)
+	// The base plugin writes < and > in text as entities.
+	conv.Register.TextTransformer(func(_ converter.Context, s string) string {
+		return angleEntities.Replace(s)
+	}, converter.PriorityLate)
+	return conv
+}
+
+var angleEntities = strings.NewReplacer("&lt;", "<", "&gt;", ">")
+
+// markdown returns the message's HTML version converted to Markdown, mentions and reply quotes
+// removed, when it carries a link target or formatting the plain text lacks; otherwise "".
 func (a *activity) markdown() string {
 	body := a.htmlBody()
 	if body == "" {
 		return ""
 	}
-	kept, formatted := scanHTML(body)
-	if !formatted {
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		slog.Warn("teams: could not parse html", "error", err)
 		return ""
 	}
-	md, err := mdConverter.ConvertString(kept)
+	if !hasFormatting(doc) {
+		return ""
+	}
+	out, err := mdConverter.ConvertNode(doc)
 	if err != nil {
 		slog.Warn("teams: could not convert html to markdown", "error", err)
 		return ""
 	}
-	md = strings.TrimSpace(md)
+	md := strings.TrimSpace(string(out))
 	if md == "" {
 		slog.Warn("teams: html converted to empty markdown")
 	}
@@ -73,117 +98,61 @@ func (a *activity) htmlBody() string {
 	return ""
 }
 
-// scanHTML copies the HTML without mention elements and reports whether it carries formatting.
-func scanHTML(body string) (string, bool) {
-	z := html.NewTokenizer(strings.NewReader(body))
-	var out strings.Builder
-	formatted := false
-
-	// Elements whose contents are dropped (a mention) or not counted (a reply quote) are
-	// tracked by tag name and nesting depth.
-	skipTag, skipDepth := "", 0
-	replyTag, replyDepth := "", 0
-
-	inLink := false
-	var linkHref string
-	var linkText strings.Builder
-
-	for {
-		tt := z.Next()
-		if tt == html.ErrorToken {
-			break
-		}
-		// Raw must be copied before TagName, TagAttr or Text, which rewrite the buffer in place.
-		raw := string(z.Raw())
-
-		switch tt {
-		case html.StartTagToken, html.SelfClosingTagToken:
-			name, hasAttr := z.TagName()
-			tag := string(name)
-			attrs := map[string]string{}
-			for hasAttr {
-				var k, v []byte
-				k, v, hasAttr = z.TagAttr()
-				attrs[string(k)] = string(v)
-			}
-			opens := tt == html.StartTagToken
-
-			if skipDepth > 0 {
-				if opens && tag == skipTag {
-					skipDepth++
-				}
-				continue
-			}
-			if isMention(tag, attrs) {
-				if opens {
-					skipTag, skipDepth = tag, 1
-				}
-				continue
-			}
-			out.WriteString(raw)
-
-			if replyDepth > 0 {
-				if opens && tag == replyTag {
-					replyDepth++
-				}
-				continue
-			}
-			switch {
-			case tag == "blockquote" && hasSuffixFold(attrs["itemtype"], "/Reply"):
-				if opens {
-					replyTag, replyDepth = tag, 1
-				}
-			case tag == "blockquote", formatTags[tag]:
-				formatted = true
-			case tag == "a" && opens:
-				inLink, linkHref = true, attrs["href"]
-				linkText.Reset()
-			}
-
-		case html.EndTagToken:
-			name, _ := z.TagName()
-			tag := string(name)
-			if skipDepth > 0 {
-				if tag == skipTag {
-					skipDepth--
-				}
-				continue
-			}
-			out.WriteString(raw)
-			if replyDepth > 0 {
-				if tag == replyTag {
-					replyDepth--
-				}
-				continue
-			}
-			if tag == "a" && inLink {
-				inLink = false
-				href := strings.TrimSpace(linkHref)
-				if href != "" && strings.TrimSpace(linkText.String()) != href {
-					formatted = true
-				}
-			}
-
-		case html.TextToken:
-			if skipDepth > 0 {
-				continue
-			}
-			out.WriteString(raw)
-			if inLink {
-				linkText.Write(z.Text())
-			}
-
-		default:
-			if skipDepth == 0 {
-				out.WriteString(raw)
+// hasFormatting reports whether the HTML outside mentions and reply quotes carries formatting or
+// a link whose target differs from its text.
+func hasFormatting(n *html.Node) bool {
+	if n.Type == html.ElementNode {
+		switch {
+		case isMention(n), isReplyQuote(n):
+			return false
+		case formatTags[n.Data], n.Data == "blockquote":
+			return true
+		case n.Data == "a":
+			href := strings.TrimSpace(attr(n, "href"))
+			if href != "" && strings.TrimSpace(textContent(n)) != href {
+				return true
 			}
 		}
 	}
-	return out.String(), formatted
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if hasFormatting(c) {
+			return true
+		}
+	}
+	return false
 }
 
-func isMention(tag string, attrs map[string]string) bool {
-	return tag == "at" || hasSuffixFold(attrs["itemtype"], "schema.skype.com/Mention")
+func isMention(n *html.Node) bool {
+	return n.Type == html.ElementNode &&
+		(n.Data == "at" || hasSuffixFold(attr(n, "itemtype"), "schema.skype.com/Mention"))
+}
+
+func isReplyQuote(n *html.Node) bool {
+	return n.Type == html.ElementNode && n.Data == "blockquote" && hasSuffixFold(attr(n, "itemtype"), "/Reply")
+}
+
+func isEmoji(n *html.Node) bool {
+	return n.Type == html.ElementNode && n.Data == "img" && hasSuffixFold(attr(n, "itemtype"), "schema.skype.com/Emoji")
+}
+
+func attr(n *html.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+func textContent(n *html.Node) string {
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	var b strings.Builder
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		b.WriteString(textContent(c))
+	}
+	return b.String()
 }
 
 func hasSuffixFold(s, suffix string) bool {

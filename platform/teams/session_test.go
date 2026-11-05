@@ -1250,15 +1250,14 @@ func TestDispatch_MarkdownStartingWithBangIsEscaped(t *testing.T) {
 	p := teamsPlatform("thread")
 	h, got := collector()
 	p.handler = h
-	html := `<p><img alt="😀" src="https://statics.teams.cdn.office.net/x.png" itemtype="http://schema.skype.com/Emoji"> check <b>this</b></p>`
-	p.dispatch(nil, withHTML(t, messageActivity("conv-E", "user-1", "😀 check this", true), html))
+	html := `<p>!important: check <b>this</b></p>`
+	p.dispatch(nil, withHTML(t, messageActivity("conv-E", "user-1", "important: check this", true), html))
 
 	if len(*got) != 1 {
 		t.Fatalf("got %d messages, want 1", len(*got))
 	}
-	c := (*got)[0].Content
-	if !strings.HasPrefix(c, `\![😀](`) || !strings.HasSuffix(c, "check **this**") {
-		t.Errorf("Content = %q, want escaped emoji image then the Markdown", c)
+	if c := (*got)[0].Content; c != `\!important: check **this**` {
+		t.Errorf("Content = %q, want the Markdown behind a backslash", c)
 	}
 }
 

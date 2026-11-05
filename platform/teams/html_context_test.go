@@ -72,6 +72,21 @@ func TestMarkdown_TeamsMarkupAlone(t *testing.T) {
 	wantNoMarkdown(t, `<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="9"><strong itemprop="mri">Name</strong><p itemprop="preview">text</p></blockquote><p>yes</p>`)
 }
 
+func TestMarkdown_ReplyQuoteDropped(t *testing.T) {
+	wantMarkdown(t, `<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="9"><strong itemprop="mri">Content Bot</strong><span itemprop="time" itemid="9">5. Nov.</span><p itemprop="preview">⚠️ Waiting for permission response. Reply allow / deny / allow all.</p></blockquote><p>please <b>don't</b></p>`,
+		`please **don't**`)
+}
+
+func TestMarkdown_AngleBracketsAsTyped(t *testing.T) {
+	wantMarkdown(t, `<p>a -&gt; b <b>neu</b></p>`, `a -> b **neu**`)
+	wantMarkdown(t, `<p>Preis &lt; 5 CHF &gt; 3 <b>neu</b></p>`, `Preis < 5 CHF > 3 **neu**`)
+}
+
+func TestMarkdown_EmojiAsText(t *testing.T) {
+	wantMarkdown(t, `<p>Super <img alt="😀" src="https://statics.teams.cdn.office.net/emoji.png" itemtype="http://schema.skype.com/Emoji"> <b>danke</b></p>`,
+		`Super 😀 **danke**`)
+}
+
 func TestMarkdown_Blockquote(t *testing.T) {
 	wantMarkdown(t, `<blockquote>quoted text</blockquote>`, `> quoted text`)
 }
