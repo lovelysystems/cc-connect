@@ -62,7 +62,7 @@ func TestMarkdown_TypedURL(t *testing.T) {
 }
 
 func TestMarkdown_Styles(t *testing.T) {
-	wantMarkdown(t, `<p style="font-size:18pt">Heading</p>`, `Heading`)
+	wantNoMarkdown(t, `<p style="font-size:18pt">Heading</p>`)
 	wantNoMarkdown(t, `<p><span style="color:red">x</span></p>`)
 }
 

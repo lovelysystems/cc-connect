@@ -15,7 +15,7 @@ import (
 
 // formatTags count as formatting the plain text lacks.
 var formatTags = map[string]bool{
-	"b": true, "strong": true, "i": true, "em": true, "u": true,
+	"b": true, "strong": true, "i": true, "em": true,
 	"s": true, "strike": true, "del": true,
 	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
 	"ul": true, "ol": true, "li": true, "pre": true, "code": true, "table": true,
@@ -133,7 +133,7 @@ func scanHTML(body string) (string, bool) {
 				if opens {
 					replyTag, replyDepth = tag, 1
 				}
-			case tag == "blockquote", formatTags[tag], hasSizeOrWeight(attrs["style"]):
+			case tag == "blockquote", formatTags[tag]:
 				formatted = true
 			case tag == "a" && opens:
 				inLink, linkHref = true, attrs["href"]
@@ -184,11 +184,6 @@ func scanHTML(body string) (string, bool) {
 
 func isMention(tag string, attrs map[string]string) bool {
 	return tag == "at" || hasSuffixFold(attrs["itemtype"], "schema.skype.com/Mention")
-}
-
-func hasSizeOrWeight(style string) bool {
-	s := strings.ToLower(style)
-	return strings.Contains(s, "font-size") || strings.Contains(s, "font-weight")
 }
 
 func hasSuffixFold(s, suffix string) bool {
