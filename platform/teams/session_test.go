@@ -1312,11 +1312,45 @@ func TestDispatch_MarkdownWithDropNote(t *testing.T) {
 func TestDispatch_EmptyTextStaysEmpty(t *testing.T) {
 	fg := &fakeGraph{refs: nil}
 	p, got, _ := channelFilePlatform(true, fg)
-	p.dispatch(nil, withHTML(t, channelFileActivity(""), `<p><at>bot</at> <b>bold</b></p>`))
+	p.dispatch(nil, withHTML(t, channelFileActivity(""), `<p><at>bot</at></p>`))
 
 	for _, m := range *got {
 		if m.Content != "" {
 			t.Errorf("message with empty text should keep empty content, got %q", m.Content)
 		}
+	}
+}
+
+const thumbsUpHTML = `<img itemscope itemtype="http://schema.skype.com/Emoji" itemid="like" src="https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/v2/assets/emoticons/like/default/20_f.png" title="Like" alt="👍" style="width:20px;height:20px">`
+
+func TestDispatch_EmojiAloneInChannelThread(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	html := `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> ` + thumbsUpHTML + `</p>`
+	p.dispatch(nil, withHTML(t, messageActivity("19:chan@thread.tacv2;messageid=root-9", "user-1", "", true), html))
+
+	if len(*got) != 1 || (*got)[0].Content != "👍" {
+		t.Fatalf("lone emoji should reach the engine as 👍, got %+v", *got)
+	}
+}
+
+func TestDispatch_EmojiAloneInPersonalChat(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{outcome: fetchOK})
+	p.dispatch(nil, withHTML(t, personalActivity(""), `<p>`+thumbsUpHTML+`</p>`))
+
+	if len(*got) != 1 || (*got)[0].Content != "👍" {
+		t.Fatalf("lone emoji should reach the engine as 👍, got %+v", *got)
+	}
+}
+
+func TestDispatch_GIFAloneIsNotAShellShortcut(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{outcome: fetchOK})
+	html := `<p><img src="https://media1.giphy.com/media/x/giphy.gif" alt="Good Night GIF (GIF Image)"></p>`
+	p.dispatch(nil, withHTML(t, personalActivity(""), html))
+
+	want := `\![Good Night GIF (GIF Image)](https://media1.giphy.com/media/x/giphy.gif)`
+	if len(*got) != 1 || (*got)[0].Content != want {
+		t.Fatalf("lone GIF should reach the engine as %q, got %+v", want, *got)
 	}
 }

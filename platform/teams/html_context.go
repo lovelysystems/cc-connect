@@ -59,8 +59,8 @@ var (
 )
 
 // markdown returns the message's HTML version converted to Markdown, mentions, reply quotes and
-// pasted images removed, when it carries a link target, a Teams emoji or formatting the plain text
-// lacks; otherwise "".
+// pasted images removed, when it carries a link target, a Teams emoji, an image other than a pasted
+// one, or formatting the plain text lacks; otherwise "".
 func (a *activity) markdown() string {
 	body := a.htmlBody()
 	if body == "" {
@@ -106,13 +106,13 @@ func (a *activity) htmlBody() string {
 }
 
 // hasFormatting reports whether the HTML outside mentions and reply quotes carries formatting, a
-// Teams emoji, or a link whose target differs from its text.
+// Teams emoji, an image other than a pasted one, or a link whose target differs from its text.
 func hasFormatting(n *html.Node) bool {
 	if n.Type == html.ElementNode {
 		switch {
 		case isMention(n), isReplyQuote(n):
 			return false
-		case formatTags[n.Data], n.Data == "blockquote", isEmoji(n):
+		case formatTags[n.Data], n.Data == "blockquote", n.Data == "img" && !isPastedImage(n):
 			return true
 		case n.Data == "a":
 			href := strings.TrimSpace(attr(n, "href"))

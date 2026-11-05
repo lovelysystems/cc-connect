@@ -100,6 +100,15 @@ func TestMarkdown_PastedImageDropped(t *testing.T) {
 		`what **about** this?`)
 }
 
+func TestMarkdown_PastedImageAlone(t *testing.T) {
+	wantNoMarkdown(t, `<p><img src="https://at-prod.asyncgw.teams.microsoft.com/v1/objects/x/views/imgo" itemtype="http://schema.skype.com/AMSImage" alt="image"></p>`)
+}
+
+func TestMarkdown_GIFAlone(t *testing.T) {
+	wantMarkdown(t, `<p><img src="https://media1.giphy.com/media/x/giphy.gif" alt="Good Night GIF (GIF Image)"></p>`,
+		`![Good Night GIF (GIF Image)](https://media1.giphy.com/media/x/giphy.gif)`)
+}
+
 func TestMarkdown_Blockquote(t *testing.T) {
 	wantMarkdown(t, `<blockquote>quoted text</blockquote>`, `> quoted text`)
 }
