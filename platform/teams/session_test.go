@@ -1184,3 +1184,173 @@ func TestDispatch_NoteCoversRefsOverCap(t *testing.T) {
 		t.Errorf("a ref over the cap must not be downloaded")
 	}
 }
+
+// withHTML adds the Teams HTML version of the message to an encoded activity.
+func withHTML(t *testing.T, b []byte, body string) []byte {
+	t.Helper()
+	var a activity
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := json.Marshal(body)
+	a.Attachments = append(a.Attachments, inboundAttachment{ContentType: "text/html", Content: content})
+	return mustJSON(a)
+}
+
+const linkHTML = `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> read <a href="https://example.com/x">Example Page Title</a></p>`
+
+func TestDispatch_TitleLinkArrivesAsMarkdown(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	p.dispatch(nil, withHTML(t, messageActivity("conv-H", "user-1", "read Example Page Title", true), linkHTML))
+
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(*got))
+	}
+	m := (*got)[0]
+	if m.Content != "read [Example Page Title](https://example.com/x)" {
+		t.Errorf("Content = %q, want the Markdown link", m.Content)
+	}
+	if m.ExtraContent != "" {
+		t.Errorf("ExtraContent = %q, want none", m.ExtraContent)
+	}
+}
+
+func TestDispatch_PlainReplyKeepsPlainText(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	plain := `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> ok, publish it</p>`
+	p.dispatch(nil, withHTML(t, messageActivity("conv-P", "user-1", "ok, publish it", true), plain))
+
+	if len(*got) != 1 || (*got)[0].Content != "ok, publish it" || (*got)[0].ExtraContent != "" {
+		t.Fatalf("plain reply should arrive unchanged, got %+v", *got)
+	}
+}
+
+func TestDispatch_CommandKeepsPlainText(t *testing.T) {
+	cases := map[string]string{
+		"/new": `<p><at>bot</at> <b>/new</b></p>`,
+		"!ls":  `<p><at>bot</at> <b>!ls</b></p>`,
+	}
+	for text, html := range cases {
+		p := teamsPlatform("thread")
+		h, got := collector()
+		p.handler = h
+		p.dispatch(nil, withHTML(t, messageActivity("conv-N", "user-1", text, true), html))
+
+		if len(*got) != 1 || (*got)[0].Content != text {
+			t.Errorf("%s: content should stay plain, got %+v", text, *got)
+		}
+	}
+}
+
+func TestDispatch_MarkdownStartingWithBangIsEscaped(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	html := `<p>!important: check <b>this</b></p>`
+	p.dispatch(nil, withHTML(t, messageActivity("conv-E", "user-1", "important: check this", true), html))
+
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(*got))
+	}
+	if c := (*got)[0].Content; c != `\!important: check **this**` {
+		t.Errorf("Content = %q, want the Markdown behind a backslash", c)
+	}
+}
+
+func TestDispatch_NoHTMLKeepsPlainText(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	p.dispatch(nil, messageActivity("conv-I", "user-1", "single line", true))
+
+	if len(*got) != 1 || (*got)[0].ExtraContent != "" || (*got)[0].Content != "single line" {
+		t.Fatalf("message without HTML should be unchanged, got %+v", *got)
+	}
+}
+
+func TestDispatch_CardActionIgnoresHTML(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	a := activity{
+		Type:         "message",
+		ID:           "act-2",
+		From:         channelAccount{ID: "user-1"},
+		Recipient:    channelAccount{ID: "bot-1"},
+		Conversation: conversationAccount{ID: "conv-C"},
+		Value:        []byte(`{"action":"allow"}`),
+	}
+	p.dispatch(nil, withHTML(t, mustJSON(a), `<p><b>allow</b></p>`))
+
+	if len(*got) != 1 || (*got)[0].Content != "allow" || (*got)[0].ExtraContent != "" {
+		t.Fatalf("card action should arrive unchanged, got %+v", *got)
+	}
+}
+
+func TestDispatch_MarkdownWithDropNote(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{outcome: fetchFailed})
+	html := `<p>review <a href="https://example.com/x">Example Page Title</a></p>`
+	p.dispatch(nil, withHTML(t, personalActivity("review Example Page Title", fileDL("a.docx", "https://files.example/dl")), html))
+
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(*got))
+	}
+	m := (*got)[0]
+	if m.Content != "review [Example Page Title](https://example.com/x)" {
+		t.Errorf("Content = %q, want the Markdown link", m.Content)
+	}
+	extra := m.ExtraContent
+	if !strings.HasPrefix(extra, "[Attachments not received]") || !strings.Contains(extra, "a.docx") || strings.Contains(extra, "\n\n") {
+		t.Errorf("ExtraContent = %q, want only the drop note", extra)
+	}
+}
+
+func TestDispatch_EmptyTextStaysEmpty(t *testing.T) {
+	fg := &fakeGraph{refs: nil}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, withHTML(t, channelFileActivity(""), `<p><at>bot</at></p>`))
+
+	for _, m := range *got {
+		if m.Content != "" {
+			t.Errorf("message with empty text should keep empty content, got %q", m.Content)
+		}
+	}
+}
+
+const thumbsUpHTML = `<img itemscope itemtype="http://schema.skype.com/Emoji" itemid="like" src="https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/v2/assets/emoticons/like/default/20_f.png" title="Like" alt="👍" style="width:20px;height:20px">`
+
+func TestDispatch_EmojiAloneInChannelThread(t *testing.T) {
+	p := teamsPlatform("thread")
+	h, got := collector()
+	p.handler = h
+	html := `<p><span itemtype="http://schema.skype.com/Mention" itemscope itemid="0">bot</span> ` + thumbsUpHTML + `</p>`
+	p.dispatch(nil, withHTML(t, messageActivity("19:chan@thread.tacv2;messageid=root-9", "user-1", "", true), html))
+
+	if len(*got) != 1 || (*got)[0].Content != "👍" {
+		t.Fatalf("lone emoji should reach the engine as 👍, got %+v", *got)
+	}
+}
+
+func TestDispatch_EmojiAloneInPersonalChat(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{outcome: fetchOK})
+	p.dispatch(nil, withHTML(t, personalActivity(""), `<p>`+thumbsUpHTML+`</p>`))
+
+	if len(*got) != 1 || (*got)[0].Content != "👍" {
+		t.Fatalf("lone emoji should reach the engine as 👍, got %+v", *got)
+	}
+}
+
+func TestDispatch_GIFAloneIsNotAShellShortcut(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{outcome: fetchOK})
+	html := `<p><img src="https://media1.giphy.com/media/x/giphy.gif" alt="Good Night GIF (GIF Image)"></p>`
+	p.dispatch(nil, withHTML(t, personalActivity(""), html))
+
+	want := `\![Good Night GIF (GIF Image)](https://media1.giphy.com/media/x/giphy.gif)`
+	if len(*got) != 1 || (*got)[0].Content != want {
+		t.Fatalf("lone GIF should reach the engine as %q, got %+v", want, *got)
+	}
+}

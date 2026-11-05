@@ -130,7 +130,7 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 
 	action := a.cardAction()
 	isCardAction := action != ""
-	content := a.cleanText()
+	content := messageContent(a, a.cleanText())
 	// Inbound media is 1:1 only; a channel/group attachment is ignored (R5). A
 	// message carrying a handled attachment still dispatches even with empty text
 	// (R3); an unhandled-only attachment must not force an empty-content turn.
@@ -217,6 +217,27 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		}
 	}
 	p.handler(p, msg)
+}
+
+// messageContent returns the Markdown of the message's HTML version when it carries formatting the
+// plain text lacks, else the plain text. A plain text the engine reads as a command or shell
+// shortcut is kept, and Markdown that would read as one gets a backslash in front.
+func messageContent(a *activity, plain string) string {
+	if isEngineTrigger(plain) {
+		return plain
+	}
+	md := a.markdown()
+	if md == "" {
+		return plain
+	}
+	if isEngineTrigger(md) {
+		return `\` + md
+	}
+	return md
+}
+
+func isEngineTrigger(s string) bool {
+	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, "!")
 }
 
 // downloadInboundMedia downloads a 1:1 activity's file and image attachments,
