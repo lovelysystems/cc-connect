@@ -35,7 +35,7 @@ func newMDConverter() *converter.Converter {
 	)
 	conv.Register.Renderer(func(_ converter.Context, w converter.Writer, n *html.Node) converter.RenderStatus {
 		switch {
-		case isMention(n), isReplyQuote(n):
+		case isMention(n), isReplyQuote(n), isPastedImage(n):
 			return converter.RenderSuccess
 		case isEmoji(n):
 			w.WriteString(attr(n, "alt"))
@@ -133,6 +133,11 @@ func isReplyQuote(n *html.Node) bool {
 
 func isEmoji(n *html.Node) bool {
 	return n.Type == html.ElementNode && n.Data == "img" && hasSuffixFold(attr(n, "itemtype"), "schema.skype.com/Emoji")
+}
+
+// isPastedImage matches an image pasted into Teams; its URL needs the bot token to fetch.
+func isPastedImage(n *html.Node) bool {
+	return n.Type == html.ElementNode && n.Data == "img" && hasSuffixFold(attr(n, "itemtype"), "schema.skype.com/AMSImage")
 }
 
 func attr(n *html.Node, key string) string {

@@ -87,6 +87,11 @@ func TestMarkdown_EmojiAsText(t *testing.T) {
 		`Super 😀 **danke**`)
 }
 
+func TestMarkdown_PastedImageDropped(t *testing.T) {
+	wantMarkdown(t, `<p>what <strong>about</strong> this?</p><p><img src="https://at-prod.asyncgw.teams.microsoft.com/v1/objects/x/views/imgo" itemtype="http://schema.skype.com/AMSImage" alt="JB Lacroix/WireImage"></p>`,
+		`what **about** this?`)
+}
+
 func TestMarkdown_Blockquote(t *testing.T) {
 	wantMarkdown(t, `<blockquote>quoted text</blockquote>`, `> quoted text`)
 }
