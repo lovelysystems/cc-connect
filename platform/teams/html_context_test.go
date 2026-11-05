@@ -82,6 +82,10 @@ func TestMarkdown_AngleBracketsAsTyped(t *testing.T) {
 	wantMarkdown(t, `<p>Preis &lt; 5 CHF &gt; 3 <b>neu</b></p>`, `Preis < 5 CHF > 3 **neu**`)
 }
 
+func TestMarkdown_TypedEntityAsTyped(t *testing.T) {
+	wantMarkdown(t, `<p>typed &amp;lt;div&amp;gt; and <b>bold</b></p>`, `typed &lt;div&gt; and **bold**`)
+}
+
 func TestMarkdown_EmojiAsText(t *testing.T) {
 	wantMarkdown(t, `<p>Super <img alt="😀" src="https://statics.teams.cdn.office.net/emoji.png" itemtype="http://schema.skype.com/Emoji"> <b>danke</b></p>`,
 		`Super 😀 **danke**`)

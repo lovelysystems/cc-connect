@@ -43,17 +43,24 @@ func newMDConverter() *converter.Converter {
 		}
 		return converter.RenderTryNext
 	}, converter.PriorityEarly)
-	// The base plugin writes < and > in text as entities.
+	// The base plugin writes < and > in text as entities, so they pass it as private-use characters.
 	conv.Register.TextTransformer(func(_ converter.Context, s string) string {
-		return angleEntities.Replace(s)
+		return hideAngles.Replace(s)
+	}, converter.PriorityEarly)
+	conv.Register.TextTransformer(func(_ converter.Context, s string) string {
+		return showAngles.Replace(s)
 	}, converter.PriorityLate)
 	return conv
 }
 
-var angleEntities = strings.NewReplacer("&lt;", "<", "&gt;", ">")
+var (
+	hideAngles = strings.NewReplacer("<", "", ">", "")
+	showAngles = strings.NewReplacer("", "<", "", ">")
+)
 
-// markdown returns the message's HTML version converted to Markdown, mentions and reply quotes
-// removed, when it carries a link target or formatting the plain text lacks; otherwise "".
+// markdown returns the message's HTML version converted to Markdown, mentions, reply quotes and
+// pasted images removed, when it carries a link target or formatting the plain text lacks;
+// otherwise "".
 func (a *activity) markdown() string {
 	body := a.htmlBody()
 	if body == "" {
