@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	cloud.google.com/go/pubsub/v2 v2.4.0
 	github.com/BurntSushi/toml v1.6.0
+	github.com/JohannesKaufmann/dom v0.2.0
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.1
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/bwmarrin/discordgo v0.29.0
@@ -39,7 +40,6 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.3 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/JohannesKaufmann/dom v0.2.0 // indirect
 	github.com/MicahParks/jwkset v0.11.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

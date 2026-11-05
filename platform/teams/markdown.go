@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/JohannesKaufmann/dom"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
@@ -38,7 +39,7 @@ func newMDConverter() *converter.Converter {
 		case isMention(n), isReplyQuote(n), isPastedImage(n):
 			return converter.RenderSuccess
 		case isEmoji(n):
-			w.WriteString(attr(n, "alt"))
+			w.WriteString(dom.GetAttributeOr(n, "alt", ""))
 			return converter.RenderSuccess
 		}
 		return converter.RenderTryNext
@@ -54,8 +55,8 @@ func newMDConverter() *converter.Converter {
 }
 
 var (
-	hideAngles = strings.NewReplacer("<", "", ">", "")
-	showAngles = strings.NewReplacer("", "<", "", ">")
+	hideAngles = strings.NewReplacer("<", "\uE000", ">", "\uE001")
+	showAngles = strings.NewReplacer("\uE000", "<", "\uE001", ">")
 )
 
 // markdown returns the message's HTML version converted to Markdown, mentions, reply quotes and
@@ -115,8 +116,8 @@ func hasFormatting(n *html.Node) bool {
 		case formatTags[n.Data], n.Data == "blockquote", n.Data == "img" && !isPastedImage(n):
 			return true
 		case n.Data == "a":
-			href := strings.TrimSpace(attr(n, "href"))
-			if href != "" && strings.TrimSpace(textContent(n)) != href {
+			href := strings.TrimSpace(dom.GetAttributeOr(n, "href", ""))
+			if href != "" && strings.TrimSpace(dom.CollectText(n)) != href {
 				return true
 			}
 		}
@@ -131,40 +132,20 @@ func hasFormatting(n *html.Node) bool {
 
 func isMention(n *html.Node) bool {
 	return n.Type == html.ElementNode &&
-		(n.Data == "at" || hasSuffixFold(attr(n, "itemtype"), "schema.skype.com/Mention"))
+		(n.Data == "at" || hasSuffixFold(dom.GetAttributeOr(n, "itemtype", ""), "schema.skype.com/Mention"))
 }
 
 func isReplyQuote(n *html.Node) bool {
-	return n.Type == html.ElementNode && n.Data == "blockquote" && hasSuffixFold(attr(n, "itemtype"), "/Reply")
+	return n.Type == html.ElementNode && n.Data == "blockquote" && hasSuffixFold(dom.GetAttributeOr(n, "itemtype", ""), "/Reply")
 }
 
 func isEmoji(n *html.Node) bool {
-	return n.Type == html.ElementNode && n.Data == "img" && hasSuffixFold(attr(n, "itemtype"), "schema.skype.com/Emoji")
+	return n.Type == html.ElementNode && n.Data == "img" && hasSuffixFold(dom.GetAttributeOr(n, "itemtype", ""), "schema.skype.com/Emoji")
 }
 
 // isPastedImage matches an image pasted into Teams; its URL needs the bot token to fetch.
 func isPastedImage(n *html.Node) bool {
-	return n.Type == html.ElementNode && n.Data == "img" && hasSuffixFold(attr(n, "itemtype"), "schema.skype.com/AMSImage")
-}
-
-func attr(n *html.Node, key string) string {
-	for _, a := range n.Attr {
-		if a.Key == key {
-			return a.Val
-		}
-	}
-	return ""
-}
-
-func textContent(n *html.Node) string {
-	if n.Type == html.TextNode {
-		return n.Data
-	}
-	var b strings.Builder
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		b.WriteString(textContent(c))
-	}
-	return b.String()
+	return n.Type == html.ElementNode && n.Data == "img" && hasSuffixFold(dom.GetAttributeOr(n, "itemtype", ""), "schema.skype.com/AMSImage")
 }
 
 func hasSuffixFold(s, suffix string) bool {
