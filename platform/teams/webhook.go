@@ -197,9 +197,10 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		case mightHaveChannelFile:
 			// Channel: the file reference is not in the activity — read the engaged
 			// message via Graph to discover it, then download under Sites.Selected.
-			msg.Images = p.probeInlineImages(a)
 			var readFailed bool
-			msg.Files, dropped, readFailed = p.downloadChannelFiles(a)
+			var imageURLs []string
+			msg.Files, imageURLs, dropped, readFailed = p.downloadChannelFiles(a)
+			msg.Images = p.probeInlineImages(a, imageURLs)
 			if readFailed {
 				// Only the agent is told: every engaged channel message is read, so
 				// most failed reads concern a message without a file.
@@ -299,14 +300,14 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 
 // downloadChannelFiles reads the engaged channel message via Graph to discover
 // file attachments (which the inbound activity strips) and downloads them under
-// Sites.Selected. Returns the files, the ones that failed or were too large, and
-// whether the message itself could not be read. Runs on the async dispatch
-// goroutine, so the blocking Graph calls and retry waits never delay the webhook
-// ack. The Graph read runs for every engaged channel message (free, not
+// Sites.Selected. Returns the files, the hostedContents URLs of the images pasted
+// into the message, the files that failed or were too large, and whether the
+// message itself could not be read. Runs on the async dispatch goroutine, so the
+// blocking Graph calls and retry waits never delay the webhook ack. The Graph read runs for every engaged channel message (free, not
 // metered); the downloads only fire when a file reference is present.
-func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachment, dropped []droppedAttachment, readFailed bool) {
+func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachment, imageURLs []string, dropped []droppedAttachment, readFailed bool) {
 	if p.graph == nil {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	ctx := context.Background()
 	max := p.cfg.maxAttachmentBytes
@@ -315,10 +316,13 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 	}
 	deadline := time.Now().Add(retryBudget)
 	refs, outcome := retryFetch(deadline, "channel message", func() ([]channelFileRef, fetchOutcome) {
-		return p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+		var refs []channelFileRef
+		var outcome fetchOutcome
+		refs, imageURLs, outcome = p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+		return refs, outcome
 	})
 	if outcome != fetchOK {
-		return nil, nil, true
+		return nil, nil, nil, true
 	}
 	// Bound per-message downloads: each ref is a 3-call Graph sequence + up to
 	// maxAttachmentBytes buffered. Extra refs are reported as dropped so the user
@@ -352,7 +356,7 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 			FileName: ref.name,
 		})
 	}
-	return files, dropped, false
+	return files, imageURLs, dropped, false
 }
 
 // retryFetch runs fetch, retrying a fetchRetryable outcome after each of

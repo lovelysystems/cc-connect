@@ -32,7 +32,7 @@ func TestMessageFileRefs_ReplyPathAndParse(t *testing.T) {
 	defer srv.Close()
 
 	g := newTestGraph(srv.URL)
-	refs, outcome := g.messageFileRefs(context.Background(), "group-1", "19:chan@thread.tacv2", "root-9", "msg-1")
+	refs, _, outcome := g.messageFileRefs(context.Background(), "group-1", "19:chan@thread.tacv2", "root-9", "msg-1")
 
 	if outcome != fetchOK {
 		t.Errorf("outcome = %v, want fetchOK", outcome)
@@ -72,12 +72,12 @@ func TestMessageFileRefs_NoAttachmentsAndErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 	g := newTestGraph(srv.URL)
-	if refs, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != fetchOK {
+	if refs, _, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != fetchOK {
 		t.Errorf("no attachments should yield nil + fetchOK, got %+v %v", refs, outcome)
 	}
 
 	// missing ids → nil, no request, not a failed read
-	if refs, outcome := g.messageFileRefs(context.Background(), "", "c", "", "m"); refs != nil || outcome != fetchOK {
+	if refs, _, outcome := g.messageFileRefs(context.Background(), "", "c", "", "m"); refs != nil || outcome != fetchOK {
 		t.Errorf("missing aadGroupID should yield nil + fetchOK, got %+v %v", refs, outcome)
 	}
 }
@@ -100,7 +100,7 @@ func TestMessageFileRefs_ReadOutcome(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		g := newTestGraph(srv.URL)
-		if refs, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != tc.want {
+		if refs, _, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != tc.want {
 			t.Errorf("%s: refs=%+v outcome=%v, want nil + %v", tc.name, refs, outcome, tc.want)
 		}
 		srv.Close()

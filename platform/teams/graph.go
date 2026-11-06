@@ -42,10 +42,11 @@ type channelFileRef struct {
 // for testability (dispatch injects a fake in tests).
 type graphReader interface {
 	// messageFileRefs reads a channel message via Graph and returns its file
-	// (`reference`-type) attachments. aadGroupID is the Graph team id
+	// (`reference`-type) attachments and the hostedContents URLs of the images
+	// pasted into its body. aadGroupID is the Graph team id
 	// (channelData.team.aadGroupId — NOT the thread-style teamsTeamId). When rootID
 	// is non-empty and differs from msgID the message is a thread reply.
-	messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, fetchOutcome)
+	messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, []string, fetchOutcome)
 	// resolveContentURL maps a SharePoint file URL to the Graph URL of its content,
 	// under Sites.Selected. The site hosting the file must be admin-granted read.
 	resolveContentURL(ctx context.Context, sharepointURL string) (string, fetchOutcome)
@@ -69,6 +70,9 @@ var _ graphReader = (*graphClient)(nil)
 // graphMessage is the subset of a Graph chatMessage the connector consumes.
 type graphMessage struct {
 	Attachments []graphAttachment `json:"attachments"`
+	Body        struct {
+		Content string `json:"content"`
+	} `json:"body"`
 }
 
 type graphAttachment struct {
@@ -78,12 +82,12 @@ type graphAttachment struct {
 }
 
 // messageFileRefs GETs the channel message and returns its `reference` file
-// attachments. A failed GET keeps its outcome and a body that does not decode is
-// fetchFailed; either yields no refs. Missing ids yield no refs and fetchOK, with
-// no request.
-func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, fetchOutcome) {
+// attachments and the hostedContents URLs in its body. A failed GET keeps its
+// outcome and a body that does not decode is fetchFailed; either yields nothing.
+// Missing ids yield nothing and fetchOK, with no request.
+func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, []string, fetchOutcome) {
 	if aadGroupID == "" || channelID == "" || msgID == "" {
-		return nil, fetchOK
+		return nil, nil, fetchOK
 	}
 	// Escape every id path segment (they are opaque, never multi-segment) so a
 	// malformed/unexpected id can't restructure the Graph path.
@@ -98,7 +102,7 @@ func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID
 	}
 	var m graphMessage
 	if outcome := g.getJSON(ctx, u, &m); outcome != fetchOK {
-		return nil, outcome
+		return nil, nil, outcome
 	}
 	var refs []channelFileRef
 	for _, att := range m.Attachments {
@@ -106,7 +110,7 @@ func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID
 			refs = append(refs, channelFileRef{name: att.Name, contentURL: att.ContentURL})
 		}
 	}
-	return refs, fetchOK
+	return refs, hostedContentURLs(m.Body.Content), fetchOK
 }
 
 // site is the subset of a Graph site resource the connector consumes.

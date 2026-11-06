@@ -555,7 +555,7 @@ type fakeGraph struct {
 // fakeGraphPrefix marks the Graph content URL the fake resolves a SharePoint URL to.
 const fakeGraphPrefix = "graph:"
 
-func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) ([]channelFileRef, fetchOutcome) {
+func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) ([]channelFileRef, []string, fetchOutcome) {
 	f.readCalls++
 	f.lastGroup, f.lastChannel, f.lastRoot, f.lastMsg = group, channel, root, msg
 	outcome := f.readOutcome
@@ -563,9 +563,9 @@ func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg
 		outcome, f.readScript = f.readScript[0], f.readScript[1:]
 	}
 	if outcome != fetchOK {
-		return nil, outcome
+		return nil, nil, outcome
 	}
-	return f.refs, fetchOK
+	return f.refs, nil, fetchOK
 }
 
 func (f *fakeGraph) resolveContentURL(_ context.Context, sharepointURL string) (string, fetchOutcome) {

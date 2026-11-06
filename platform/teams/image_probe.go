@@ -2,240 +2,247 @@ package teams
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
-	"io"
+	"html"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
-	"github.com/JohannesKaufmann/dom"
 	"github.com/chenhg5/cc-connect/core"
-	"golang.org/x/net/html"
 )
 
-// Throwaway test build: tries every known way to download images pasted inline
-// into a Teams channel message, logs each attempt, and hands the images it got to
-// the agent. It sends the bot and Graph tokens to the image hosts.
+// Throwaway test build: downloads each image pasted into a channel message twice,
+// through the Bot Connector attachment URL and through the Graph hostedContents
+// URL, logs and compares both, and hands one copy of each image to the agent.
 
 const probeLogMsg = "teams: image probe"
 
-// probeBodyPrefix is how much of a non-2xx response body is logged.
-const probeBodyPrefix = 300
+const (
+	probePathBotConnector = "bot_connector"
+	probePathGraph        = "graph"
+)
 
 var hostedContentURL = regexp.MustCompile(`https://graph\.microsoft\.com/[^"'\s<>]*/hostedContents/[^"'\s<>/]+/\$value`)
 
-// probeResult is one download attempt.
-type probeResult struct {
-	status  int
-	data    []byte
-	sniffed string
+// hostedContentObjectID finds the Teams object id inside a decoded hostedContents
+// id such as "id=x_0-ate-d1-<hex>,type=1,url=…".
+var hostedContentObjectID = regexp.MustCompile(`(?:^|,)id=[^_,]*_([^,]+)`)
+
+// probeDownload is one copy of an image.
+type probeDownload struct {
+	objectID string
+	source   string // contentUrl or Graph URL
+	name     string
+	data     []byte
+	outcome  fetchOutcome
+	sniffed  string
+	duration time.Duration
+	tried    bool
 }
 
-func (r probeResult) isImage(maxBytes int64) bool {
-	return r.status >= 200 && r.status < 300 &&
-		strings.HasPrefix(r.sniffed, "image/") &&
-		len(r.data) > 0 && int64(len(r.data)) <= maxBytes
+func (d *probeDownload) usable() bool {
+	return d != nil && d.tried && d.outcome == fetchOK && strings.HasPrefix(d.sniffed, "image/")
 }
 
-// probeInlineImages runs every probe step for a channel message and returns the
-// images it could download. Image n is the n-th pasted image in the activity HTML
-// and the n-th hosted content in the Graph message body; the first method that
-// downloads it wins.
-func (p *Platform) probeInlineImages(a *activity) []core.ImageAttachment {
+// probeImage pairs the two copies of one pasted image; either may be missing.
+type probeImage struct {
+	objectID string
+	bot      *probeDownload
+	graph    *probeDownload
+}
+
+// probeInlineImages downloads the channel message's pasted images through the Bot
+// Connector (the activity's image/* attachments) and through Graph (graphURLs,
+// from the message body), one path after the other, and returns one copy of each
+// image with its sniffed MIME type. It never fails the turn.
+func (p *Platform) probeInlineImages(a *activity, graphURLs []string) (images []core.ImageAttachment) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error(probeLogMsg, "msg_id", a.ID, "panic", fmt.Sprint(r))
+			images = nil
+		}
+	}()
+
+	var all []*probeImage
+	byID := map[string]*probeImage{}
+	add := func(d *probeDownload, isGraph bool) {
+		img := byID[d.objectID]
+		if img == nil || d.objectID == "" {
+			img = &probeImage{objectID: d.objectID}
+			all = append(all, img)
+			if d.objectID != "" {
+				byID[d.objectID] = img
+			}
+		}
+		if isGraph {
+			img.graph = d
+		} else {
+			img.bot = d
+		}
+	}
+	var botDownloads, graphDownloads []*probeDownload
+	if p.conn != nil {
+		for _, att := range a.Attachments {
+			if !att.isImage() {
+				continue
+			}
+			d := &probeDownload{objectID: attachmentObjectID(att.ContentURL), source: att.ContentURL, name: att.Name}
+			botDownloads = append(botDownloads, d)
+			add(d, false)
+		}
+	}
+	if p.graph != nil {
+		for _, u := range graphURLs {
+			d := &probeDownload{objectID: hostedContentObjectIDFromURL(u), source: u}
+			graphDownloads = append(graphDownloads, d)
+			add(d, true)
+		}
+	}
+	if len(all) == 0 {
+		return nil
+	}
+
 	ctx := context.Background()
 	maxBytes := p.cfg.maxAttachmentBytes
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxAttachmentBytes
 	}
-	client := &http.Client{Timeout: connectorTimeout}
-
-	var botToken, graphToken func() string
-	if c, ok := p.conn.(*connector); ok {
-		botToken = probeToken(ctx, c.tokens, a.ID, "bot")
+	fetchBot := func(d *probeDownload) ([]byte, fetchOutcome) {
+		return p.fetchImage(ctx, inboundAttachment{ContentURL: d.source, Name: d.name}, a.ServiceURL, maxBytes)
 	}
-	var g *graphClient
-	if gc, ok := p.graph.(*graphClient); ok {
-		g = gc
-		graphToken = probeToken(ctx, gc.tokens, a.ID, "graph")
+	fetchGraph := func(d *probeDownload) ([]byte, fetchOutcome) {
+		return p.graph.getBounded(ctx, d.source, maxBytes)
 	}
 
-	// Activity dump.
-	for i, att := range a.Attachments {
-		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "activity_attachment", "index", i,
-			"content_type", att.ContentType, "content_url", att.ContentURL, "name", att.Name)
+	order := []string{probePathBotConnector, probePathGraph}
+	if a.ID != "" && a.ID[len(a.ID)-1]%2 == 1 {
+		order = []string{probePathGraph, probePathBotConnector}
 	}
-	body := a.htmlBody()
-	slog.Info(probeLogMsg, "msg_id", a.ID, "step", "activity_html", "html", body)
-
-	winners := map[int]probeResult{}
-	winnerMethod := map[int]string{}
-	try := func(n int, step, method, rawURL, token string) {
-		r := probeGet(ctx, client, a.ID, step, method, rawURL, token, maxBytes)
-		if _, done := winners[n]; !done && r.isImage(maxBytes) {
-			winners[n] = r
-			winnerMethod[n] = method
-		}
-	}
-
-	// AMSImage srcs from the activity HTML, fetched three ways.
-	srcs := pastedImageSrcs(body)
-	total := len(srcs)
-	slog.Info(probeLogMsg, "msg_id", a.ID, "step", "ams_srcs", "count", len(srcs))
-	for n, src := range srcs {
-		try(n, "ams_src", "no_token", src, "")
-		if botToken != nil {
-			try(n, "ams_src", "bot_token", src, botToken())
+	orderAttr := strings.Join(order, ",")
+	for _, path := range order {
+		if path == probePathBotConnector {
+			probeDownloadAll(a.ID, path, orderAttr, botDownloads, fetchBot)
 		} else {
-			slog.Info(probeLogMsg, "msg_id", a.ID, "step", "ams_src", "method", "bot_token", "url", src, "skipped", "no bot token source")
-		}
-		if graphToken != nil {
-			try(n, "ams_src", "graph_token", src, graphToken())
-		} else {
-			slog.Info(probeLogMsg, "msg_id", a.ID, "step", "ams_src", "method", "graph_token", "url", src, "skipped", "no graph token source")
+			probeDownloadAll(a.ID, path, orderAttr, graphDownloads, fetchGraph)
 		}
 	}
 
-	// Graph: the message body's hostedContents URLs and the hostedContents list.
-	if g == nil {
-		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "graph", "skipped", "no graph client")
-	} else if msgURL := graphMessageURL(g.base, a); msgURL == "" {
-		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "graph", "skipped", "missing team, channel or message id",
-			"team", a.ChannelData.Team.AADGroupID, "channel", a.ChannelData.Channel.ID)
-	} else {
-		msg := probeGet(ctx, client, a.ID, "graph_message", "graph_token", msgURL, graphToken(), maxBodyBytes)
-		var gm struct {
-			Body struct {
-				ContentType string `json:"contentType"`
-				Content     string `json:"content"`
-			} `json:"body"`
+	for n, img := range all {
+		logProbeCompare(a.ID, orderAttr, img)
+		var pick *probeDownload
+		var picked string
+		switch {
+		case img.bot.usable():
+			pick, picked = img.bot, probePathBotConnector
+		case img.graph.usable():
+			pick, picked = img.graph, probePathGraph
 		}
-		if msg.status >= 200 && msg.status < 300 {
-			if err := json.Unmarshal(msg.data, &gm); err != nil {
-				slog.Info(probeLogMsg, "msg_id", a.ID, "step", "graph_message", "decode_error", err.Error())
-			}
-		}
-		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "graph_message_body",
-			"body_content_type", gm.Body.ContentType, "body_content", gm.Body.Content)
-		hosted := hostedContentURLs(gm.Body.Content)
-		total = max(total, len(hosted))
-		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "graph_hosted_urls", "count", len(hosted))
-		for n, u := range hosted {
-			try(n, "graph_hosted", "graph_token", u, graphToken())
-		}
-		list := probeGet(ctx, client, a.ID, "graph_hosted_list", "graph_token", msgURL+"/hostedContents", graphToken(), maxBodyBytes)
-		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "graph_hosted_list_body", "body", string(list.data))
-	}
-
-	var images []core.ImageAttachment
-	for n := 0; n < total; n++ {
-		r, ok := winners[n]
-		if !ok {
-			slog.Info(probeLogMsg, "msg_id", a.ID, "step", "winner", "image", n, "method", "none")
+		if pick == nil {
+			slog.Info(probeLogMsg, "msg_id", a.ID, "step", "handover", "object_id", img.objectID, "path", "none")
 			continue
 		}
-		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "winner", "image", n, "method", winnerMethod[n],
-			"sniffed", r.sniffed, "bytes", len(r.data))
+		slog.Info(probeLogMsg, "msg_id", a.ID, "step", "handover", "object_id", img.objectID, "path", picked,
+			"sniffed", pick.sniffed, "bytes", len(pick.data))
 		images = append(images, core.ImageAttachment{
-			MimeType: r.sniffed,
-			Data:     r.data,
-			FileName: fmt.Sprintf("inline-%d.%s", n+1, strings.TrimPrefix(r.sniffed, "image/")),
+			MimeType: pick.sniffed,
+			Data:     pick.data,
+			FileName: fmt.Sprintf("inline-%d.%s", n+1, strings.TrimPrefix(pick.sniffed, "image/")),
 		})
 	}
 	return images
 }
 
-// probeToken returns a getter for a token from src, fetched once on first use.
-// A failed fetch is logged and yields "".
-func probeToken(ctx context.Context, src tokenSource, msgID, kind string) func() string {
-	var tok string
-	var fetched bool
-	return func() string {
-		if !fetched {
-			fetched = true
-			t, err := src.token(ctx)
-			if err != nil {
-				slog.Info(probeLogMsg, "msg_id", msgID, "step", "token", "kind", kind, "error", err.Error())
-			}
-			tok = t
+// probeDownloadAll downloads each copy in turn and logs one line per copy.
+func probeDownloadAll(msgID, path, order string, downloads []*probeDownload, fetch func(*probeDownload) ([]byte, fetchOutcome)) {
+	deadline := time.Now().Add(retryBudget)
+	for _, d := range downloads {
+		start := time.Now()
+		d.data, d.outcome = retryFetch(deadline, "inline image", func() ([]byte, fetchOutcome) { return fetch(d) })
+		d.duration = time.Since(start)
+		d.tried = true
+		if len(d.data) > 0 {
+			d.sniffed = http.DetectContentType(d.data)
 		}
-		return tok
+		slog.Info(probeLogMsg, "msg_id", msgID, "step", "download", "path", path, "order", order,
+			"object_id", d.objectID, "outcome", outcomeName(d.outcome), "bytes", len(d.data),
+			"sniffed", d.sniffed, "duration_ms", d.duration.Milliseconds())
 	}
 }
 
-// probeGet GETs rawURL, with the bearer token when token is non-empty, and logs
-// the attempt. The body is read up to maxBytes+1.
-func probeGet(ctx context.Context, client *http.Client, msgID, step, method, rawURL, token string, maxBytes int64) probeResult {
-	attrs := []any{"msg_id", msgID, "step", step, "method", method, "url", rawURL, "url_host", urlHost(rawURL), "with_token", token != ""}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		slog.Info(probeLogMsg, append(attrs, "error", err.Error())...)
-		return probeResult{}
+// logProbeCompare logs whether both copies of an image arrived and are identical.
+func logProbeCompare(msgID, order string, img *probeImage) {
+	attrs := []any{"msg_id", msgID, "step", "compare", "order", order, "object_id", img.objectID}
+	if img.bot == nil || img.graph == nil {
+		only := probePathBotConnector
+		if img.bot == nil {
+			only = probePathGraph
+		}
+		slog.Info(probeLogMsg, append(attrs, "paired", false, "only", only)...)
+		return
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Info(probeLogMsg, append(attrs, "error", err.Error())...)
-		return probeResult{}
-	}
-	defer func() { _ = resp.Body.Close() }()
-	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	r := probeResult{status: resp.StatusCode, data: data}
-	if len(data) > 0 {
-		r.sniffed = http.DetectContentType(data)
-	}
-	attrs = append(attrs,
-		"status", resp.StatusCode,
-		"content_type", resp.Header.Get("Content-Type"),
-		"bytes", len(data),
-		"oversize", int64(len(data)) > maxBytes,
-		"sniffed", r.sniffed,
-		"www_authenticate", resp.Header.Get("WWW-Authenticate"),
-	)
-	if final := resp.Request.URL.String(); final != rawURL {
-		attrs = append(attrs, "final_url", final)
-	}
-	if readErr != nil {
-		attrs = append(attrs, "read_error", readErr.Error())
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		attrs = append(attrs, "body_prefix", string(data[:min(len(data), probeBodyPrefix)]))
-	}
-	slog.Info(probeLogMsg, attrs...)
-	return r
+	same := img.bot.outcome == fetchOK && img.graph.outcome == fetchOK &&
+		sha256.Sum256(img.bot.data) == sha256.Sum256(img.graph.data)
+	slog.Info(probeLogMsg, append(attrs, "paired", true, "same_bytes", same,
+		"bot_connector_outcome", outcomeName(img.bot.outcome), "graph_outcome", outcomeName(img.graph.outcome),
+		"bot_connector_ms", img.bot.duration.Milliseconds(), "graph_ms", img.graph.duration.Milliseconds())...)
 }
 
-// pastedImageSrcs returns the distinct src URLs of the pasted images in body, in
-// document order.
-func pastedImageSrcs(body string) []string {
-	if body == "" {
-		return nil
+func outcomeName(o fetchOutcome) string {
+	switch o {
+	case fetchOK:
+		return "ok"
+	case fetchOversize:
+		return "oversize"
+	case fetchFailed:
+		return "failed"
+	case fetchRetryable:
+		return "retryable"
 	}
-	doc, err := html.Parse(strings.NewReader(body))
+	return fmt.Sprintf("unknown(%d)", int(o))
+}
+
+// attachmentObjectID returns the path segment after "attachments" in a Bot
+// Connector attachment URL (…/v3/attachments/<object id>/views/original), or "".
+func attachmentObjectID(rawURL string) string {
+	u, err := url.Parse(rawURL)
 	if err != nil {
-		slog.Info(probeLogMsg, "step", "ams_srcs", "parse_error", err.Error())
-		return nil
+		return ""
 	}
-	var srcs []string
-	seen := map[string]bool{}
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
-		if isPastedImage(n) {
-			if src := dom.GetAttributeOr(n, "src", ""); src != "" && !seen[src] {
-				seen[src] = true
-				srcs = append(srcs, src)
-			}
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+	segs := strings.Split(u.Path, "/")
+	for i, s := range segs[:max(len(segs)-1, 0)] {
+		if s == "attachments" {
+			return segs[i+1]
 		}
 	}
-	walk(doc)
-	return srcs
+	return ""
+}
+
+// hostedContentObjectIDFromURL decodes the hostedContents id in a Graph $value URL
+// and returns the Teams object id it names, or "".
+func hostedContentObjectIDFromURL(rawURL string) string {
+	segs := strings.Split(rawURL, "/")
+	if len(segs) < 2 {
+		return ""
+	}
+	id, err := url.PathUnescape(segs[len(segs)-2])
+	if err != nil {
+		return ""
+	}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		decoded, err := enc.DecodeString(id)
+		if err != nil {
+			continue
+		}
+		if m := hostedContentObjectID.FindStringSubmatch(string(decoded)); m != nil {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 // hostedContentURLs returns the distinct hostedContents $value URLs in a Graph
@@ -250,28 +257,4 @@ func hostedContentURLs(content string) []string {
 		}
 	}
 	return urls
-}
-
-// graphMessageURL is the Graph URL of the activity's channel message: a thread
-// reply when the conversation names a root other than the activity, else a root
-// message. "" when an id is missing.
-func graphMessageURL(base string, a *activity) string {
-	team, channel, root, msgID := a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID
-	if team == "" || channel == "" || msgID == "" {
-		return ""
-	}
-	if root != "" && root != msgID {
-		return fmt.Sprintf("%s/teams/%s/channels/%s/messages/%s/replies/%s",
-			base, url.PathEscape(team), url.PathEscape(channel), url.PathEscape(root), url.PathEscape(msgID))
-	}
-	return fmt.Sprintf("%s/teams/%s/channels/%s/messages/%s",
-		base, url.PathEscape(team), url.PathEscape(channel), url.PathEscape(msgID))
-}
-
-func urlHost(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return u.Host
 }
