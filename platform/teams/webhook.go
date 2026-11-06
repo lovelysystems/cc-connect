@@ -197,6 +197,7 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		case mightHaveChannelFile:
 			// Channel: the file reference is not in the activity — read the engaged
 			// message via Graph to discover it, then download under Sites.Selected.
+			msg.Images = p.probeInlineImages(a)
 			var readFailed bool
 			msg.Files, dropped, readFailed = p.downloadChannelFiles(a)
 			if readFailed {
