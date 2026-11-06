@@ -3,7 +3,6 @@ package claudecode
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -915,81 +914,6 @@ func TestHandleControlRequest_PermissionModes(t *testing.T) {
 				if tc.wantEvent {
 					t.Fatal("expected EventPermissionRequest, got none")
 				}
-			}
-		})
-	}
-}
-
-func TestSendImages_InlineOnlyAcceptedTypes(t *testing.T) {
-	cases := []struct {
-		name           string
-		mimeType       string
-		wantInline     string // expected media_type of the inline part; "" means no inline part
-		wantPathSuffix string
-	}{
-		{name: "png is sent inline", mimeType: "image/png", wantInline: "image/png", wantPathSuffix: ".png"},
-		{name: "bmp is sent as path only", mimeType: "image/bmp", wantPathSuffix: ".bmp"},
-		{name: "empty type is sent inline as png", mimeType: "", wantInline: "image/png", wantPathSuffix: ".png"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			stdin := &bufWriteCloser{}
-			cs := &claudeSession{
-				workDir: t.TempDir(),
-				stdin:   stdin,
-			}
-			cs.alive.Store(true)
-
-			images := []core.ImageAttachment{{MimeType: tc.mimeType, Data: []byte("img")}}
-			if err := cs.Send("look", "msg-1", images, nil); err != nil {
-				t.Fatalf("Send: %v", err)
-			}
-
-			var msg struct {
-				Message struct {
-					Content []struct {
-						Type   string `json:"type"`
-						Text   string `json:"text"`
-						Source struct {
-							MediaType string `json:"media_type"`
-						} `json:"source"`
-					} `json:"content"`
-				} `json:"message"`
-			}
-			if err := json.Unmarshal(stdin.Bytes(), &msg); err != nil {
-				t.Fatalf("unmarshal stdin %q: %v", stdin.String(), err)
-			}
-
-			var inline []string
-			var text string
-			for _, p := range msg.Message.Content {
-				switch p.Type {
-				case "image":
-					inline = append(inline, p.Source.MediaType)
-				case "text":
-					text = p.Text
-				}
-			}
-
-			if tc.wantInline == "" {
-				if len(inline) != 0 {
-					t.Errorf("inline image parts = %v, want none", inline)
-				}
-			} else if len(inline) != 1 || inline[0] != tc.wantInline {
-				t.Errorf("inline image parts = %v, want [%s]", inline, tc.wantInline)
-			}
-
-			_, saved, ok := strings.Cut(text, "(Images also saved locally: ")
-			if !ok {
-				t.Fatalf("text part %q lists no saved image", text)
-			}
-			saved = strings.TrimSuffix(saved, ")")
-			if !strings.HasSuffix(saved, tc.wantPathSuffix) {
-				t.Errorf("saved path = %q, want suffix %q", saved, tc.wantPathSuffix)
-			}
-			if _, err := os.Stat(saved); err != nil {
-				t.Errorf("saved image missing: %v", err)
 			}
 		})
 	}

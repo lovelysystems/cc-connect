@@ -21,8 +21,6 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 - **teams**: give inbound images the type their bytes sniff as, never `image/*`
   (upstream: pending)
-- **claudecode**: send only API-accepted image types inline; others go as a saved
-  file path (upstream: pending)
 
 #### Feature
 

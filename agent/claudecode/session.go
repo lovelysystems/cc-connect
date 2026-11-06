@@ -989,10 +989,6 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 		if mimeType == "" {
 			mimeType = "image/png"
 		}
-		if !inlineImageTypes[mimeType] {
-			slog.Warn("claudeSession: image type not accepted inline, sending saved path only", "mime_type", mimeType, "path", fpath)
-			continue
-		}
 		parts = append(parts, map[string]any{
 			"type": "image",
 			"source": map[string]any{
@@ -1027,14 +1023,6 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 	})
 }
 
-// inlineImageTypes are the image media types the Claude API accepts in an image content block.
-var inlineImageTypes = map[string]bool{
-	"image/jpeg": true,
-	"image/png":  true,
-	"image/gif":  true,
-	"image/webp": true,
-}
-
 func extFromMime(mime string) string {
 	switch mime {
 	case "image/jpeg":
@@ -1043,10 +1031,6 @@ func extFromMime(mime string) string {
 		return ".gif"
 	case "image/webp":
 		return ".webp"
-	case "image/bmp":
-		return ".bmp"
-	case "image/x-icon", "image/vnd.microsoft.icon":
-		return ".ico"
 	default:
 		return ".png"
 	}
