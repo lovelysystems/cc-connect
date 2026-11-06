@@ -21,7 +21,7 @@ import (
 const maxChannelFileRefs = 10
 
 // maxChannelImages bounds how many pasted images the connector downloads from a
-// single channel message, for the same reasons as maxChannelFileRefs.
+// single channel message. Each one buffers up to maxAttachmentBytes.
 const maxChannelImages = 10
 
 // graphBase is the Microsoft Graph v1.0 root.
@@ -53,11 +53,10 @@ type channelMessage struct {
 }
 
 // graphReader reads channel messages and downloads their files and pasted images.
-// Abstracted for testability (dispatch injects a fake in tests).
 type graphReader interface {
 	// readMessage reads a channel message via Graph and returns its file
 	// (`reference`-type) attachments and pasted-image URLs. aadGroupID is the Graph
-	// team id (channelData.team.aadGroupId — NOT the thread-style teamsTeamId). When
+	// team id from channelData.team.aadGroupId. When
 	// rootID is non-empty and differs from msgID the message is a thread reply.
 	readMessage(ctx context.Context, aadGroupID, channelID, rootID, msgID string) (channelMessage, fetchOutcome)
 	// resolveContentURL maps a SharePoint file URL to the Graph URL of its content,
