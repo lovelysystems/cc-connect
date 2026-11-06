@@ -81,9 +81,8 @@ func (att inboundAttachment) isImage() bool {
 	return strings.HasPrefix(strings.ToLower(att.ContentType), "image/")
 }
 
-// isPersonal reports whether the activity is a 1:1 (personal) chat. Attachment
-// handling is gated to this context: channel/group files require Microsoft Graph
-// and are out of scope.
+// isPersonal reports whether the activity is a 1:1 (personal) chat, the only
+// context whose activity attachments are downloaded.
 func (a *activity) isPersonal() bool {
 	return strings.EqualFold(a.Conversation.ConversationType, "personal")
 }

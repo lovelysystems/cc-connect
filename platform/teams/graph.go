@@ -20,6 +20,10 @@ import (
 // memory; a real message attaches only a handful of files.
 const maxChannelFileRefs = 10
 
+// maxChannelImages bounds how many pasted images the connector downloads from a
+// single channel message, for the same reasons as maxChannelFileRefs.
+const maxChannelImages = 10
+
 // graphBase is the Microsoft Graph v1.0 root.
 const graphBase = "https://graph.microsoft.com/v1.0"
 
