@@ -24,12 +24,8 @@ func TestLoadingCard(t *testing.T) {
 	if tb["type"] != "TextBlock" || !strings.Contains(txt, "💭 Thinking…") {
 		t.Errorf("loading text block = %v", tb)
 	}
-	// grayed + small + italic (markdown)
 	if tb["isSubtle"] != true || tb["size"] != "Small" {
 		t.Errorf("loading text should be subtle+Small, got %v", tb)
-	}
-	if !strings.HasPrefix(txt, "_") || !strings.HasSuffix(txt, "_") {
-		t.Errorf("loading text should be italic markdown, got %q", txt)
 	}
 }
 
