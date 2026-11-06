@@ -185,6 +185,18 @@ func TestReadMessage_PastedImageIDEscaped(t *testing.T) {
 	}
 }
 
+func TestReadMessage_DotSegmentIDIgnored(t *testing.T) {
+	base := "https://graph.microsoft.com/v1.0/teams/g/channels/c/messages/m/hostedContents/"
+	srv := pastedImagesServer(t, hostedImg(base+"../$value")+hostedImg(base+"%2E%2E/$value")+hostedImg(base+"./$value"))
+	g := newTestGraph(srv.URL)
+
+	msg, _ := g.readMessage(context.Background(), "g", "c", "m", "m")
+
+	if len(msg.images) != 0 {
+		t.Errorf("images = %q, want none", msg.images)
+	}
+}
+
 func TestReadMessage_PastedImageRepeatedOnce(t *testing.T) {
 	src := "https://graph.microsoft.com/v1.0/teams/g/channels/c/messages/m/hostedContents/aWQ9MQ==/$value"
 	srv := pastedImagesServer(t, hostedImg(src)+hostedImg(src))

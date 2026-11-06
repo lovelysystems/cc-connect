@@ -154,6 +154,7 @@ func hostedContentIDs(body string) []string {
 }
 
 // hostedContentID returns the id in a URL path ending in hostedContents/{id}/$value, or "".
+// A "." or ".." id is refused, since it would step out of the message's own path.
 func hostedContentID(src string) string {
 	u, err := url.Parse(src)
 	if err != nil {
@@ -165,7 +166,7 @@ func hostedContentID(src string) string {
 		return ""
 	}
 	id, err := url.PathUnescape(segs[n-2])
-	if err != nil {
+	if err != nil || id == "." || id == ".." {
 		return ""
 	}
 	return id
