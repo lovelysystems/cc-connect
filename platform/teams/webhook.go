@@ -286,8 +286,13 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 				dropped = append(dropped, droppedAttachment{name: att.Name, reason: dropReason(outcome)})
 				continue
 			}
+			mime, ok := imageMIME(data)
+			if !ok {
+				dropped = append(dropped, droppedAttachment{name: att.Name, reason: dropUnavailable})
+				continue
+			}
 			images = append(images, core.ImageAttachment{
-				MimeType: att.ContentType,
+				MimeType: mime,
 				Data:     data,
 				FileName: att.Name,
 			})
@@ -353,6 +358,13 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 		})
 	}
 	return files, dropped, false
+}
+
+// imageMIME returns the image type the bytes sniff as. Teams declares some
+// images only as "image/*".
+func imageMIME(data []byte) (string, bool) {
+	mime := http.DetectContentType(data)
+	return mime, strings.HasPrefix(mime, "image/")
 }
 
 // retryFetch runs fetch, retrying a fetchRetryable outcome after each of

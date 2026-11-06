@@ -390,9 +390,15 @@ func TestDispatch_PersonalFileAttachmentDelivered(t *testing.T) {
 	}
 }
 
+// Image bytes that sniff as their format.
+var (
+	pngBytes  = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	jpegBytes = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+)
+
 func TestDispatch_PersonalImageDelivered(t *testing.T) {
-	p, got, fs := personalPlatform(fetchResult{data: []byte("PNG"), outcome: fetchOK})
-	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/png", ContentURL: "https://smba.example/v3/attachments/x"}))
+	p, got, fs := personalPlatform(fetchResult{data: pngBytes, outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/*", ContentURL: "https://smba.example/v3/attachments/x"}))
 
 	if len(*got) != 1 {
 		t.Fatalf("image 1:1 message must dispatch, got %d", len(*got))
@@ -401,7 +407,7 @@ func TestDispatch_PersonalImageDelivered(t *testing.T) {
 	if len(m.Images) != 1 || len(m.Files) != 0 {
 		t.Fatalf("want 1 image, 0 files; got images=%d files=%d", len(m.Images), len(m.Files))
 	}
-	if m.Images[0].MimeType != "image/png" || string(m.Images[0].Data) != "PNG" {
+	if m.Images[0].MimeType != "image/png" || string(m.Images[0].Data) != string(pngBytes) {
 		t.Errorf("image attachment = %+v", m.Images[0])
 	}
 	// contentUrl host == serviceURL host -> the bot token is attached.
@@ -410,8 +416,33 @@ func TestDispatch_PersonalImageDelivered(t *testing.T) {
 	}
 }
 
+func TestDispatch_PersonalImageTypeFromBytes(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{data: jpegBytes, outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/png", ContentURL: "https://smba.example/v3/attachments/x"}))
+
+	if m := (*got)[0]; len(m.Images) != 1 || m.Images[0].MimeType != "image/jpeg" {
+		t.Errorf("images = %+v, want one image/jpeg", m.Images)
+	}
+}
+
+func TestDispatch_PersonalNonImageBytesDropped(t *testing.T) {
+	p, got, fs := personalPlatform(fetchResult{data: []byte("<html><body>error</body></html>"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/*", ContentURL: "https://smba.example/v3/attachments/x", Name: "shot.png"}))
+
+	m := (*got)[0]
+	if len(m.Images) != 0 {
+		t.Errorf("non-image bytes must not reach the agent as an image, got %+v", m.Images)
+	}
+	if !strings.Contains(m.ExtraContent, "shot.png") || !strings.Contains(m.ExtraContent, "unavailable") {
+		t.Errorf("note should name the image and say it was unavailable, got %q", m.ExtraContent)
+	}
+	if len(fs.replied) != 1 || fs.replied[0].Text != attachmentFailureNotice {
+		t.Errorf("user must get the attachment notice, replied=%+v", fs.replied)
+	}
+}
+
 func TestDispatch_ForeignHostImageOmitsToken(t *testing.T) {
-	p, _, fs := personalPlatform(fetchResult{data: []byte("PNG"), outcome: fetchOK})
+	p, _, fs := personalPlatform(fetchResult{data: jpegBytes, outcome: fetchOK})
 	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/jpeg", ContentURL: "https://cdn.foreign.example/img.jpg"}))
 	if len(fs.fetchwithToken) != 1 || fs.fetchwithToken[0] {
 		t.Errorf("a foreign-host image URL must NOT receive the bot token, withToken=%v", fs.fetchwithToken)
