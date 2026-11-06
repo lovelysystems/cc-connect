@@ -313,12 +313,13 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 		max = defaultMaxAttachmentBytes
 	}
 	deadline := time.Now().Add(retryBudget)
-	refs, outcome := retryFetch(deadline, "channel message", func() ([]channelFileRef, fetchOutcome) {
-		return p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+	cm, outcome := retryFetch(deadline, "channel message", func() (channelMessage, fetchOutcome) {
+		return p.graph.readMessage(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
 	})
 	if outcome != fetchOK {
 		return nil, nil, true
 	}
+	refs := cm.files
 	// Bound per-message downloads: each ref is a 3-call Graph sequence + up to
 	// maxAttachmentBytes buffered. Extra refs are reported as dropped so the user
 	// and the agent are told.

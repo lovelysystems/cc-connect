@@ -38,7 +38,7 @@ type Platform struct {
 	engaged     *engagement
 	convRefs    *convRefStore // conversation → reply reference, addresses proactive sends
 	conn        sender
-	graph       graphReader // Microsoft Graph reader for channel files (nil unless channel_files_enabled)
+	graph       graphReader // Microsoft Graph reader for channel files and pasted images (nil unless channel_files_enabled)
 	server      *http.Server
 	dispatchSem chan struct{} // bounds concurrent async dispatch goroutines
 }

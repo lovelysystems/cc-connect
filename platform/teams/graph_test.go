@@ -2,6 +2,7 @@ package teams
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,7 +33,8 @@ func TestMessageFileRefs_ReplyPathAndParse(t *testing.T) {
 	defer srv.Close()
 
 	g := newTestGraph(srv.URL)
-	refs, outcome := g.messageFileRefs(context.Background(), "group-1", "19:chan@thread.tacv2", "root-9", "msg-1")
+	msg, outcome := g.readMessage(context.Background(), "group-1", "19:chan@thread.tacv2", "root-9", "msg-1")
+	refs := msg.files
 
 	if outcome != fetchOK {
 		t.Errorf("outcome = %v, want fetchOK", outcome)
@@ -59,7 +61,7 @@ func TestMessageFileRefs_RootPath(t *testing.T) {
 
 	g := newTestGraph(srv.URL)
 	// rootID == msgID → root message, no /replies segment
-	g.messageFileRefs(context.Background(), "group-1", "19:chan@thread.tacv2", "msg-1", "msg-1")
+	g.readMessage(context.Background(), "group-1", "19:chan@thread.tacv2", "msg-1", "msg-1")
 	if gotPath != "/teams/group-1/channels/19:chan@thread.tacv2/messages/msg-1" {
 		t.Errorf("path = %q, want root path", gotPath)
 	}
@@ -72,13 +74,13 @@ func TestMessageFileRefs_NoAttachmentsAndErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 	g := newTestGraph(srv.URL)
-	if refs, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != fetchOK {
-		t.Errorf("no attachments should yield nil + fetchOK, got %+v %v", refs, outcome)
+	if msg, outcome := g.readMessage(context.Background(), "g", "c", "", "m"); msg.files != nil || outcome != fetchOK {
+		t.Errorf("no attachments should yield nil + fetchOK, got %+v %v", msg, outcome)
 	}
 
 	// missing ids → nil, no request, not a failed read
-	if refs, outcome := g.messageFileRefs(context.Background(), "", "c", "", "m"); refs != nil || outcome != fetchOK {
-		t.Errorf("missing aadGroupID should yield nil + fetchOK, got %+v %v", refs, outcome)
+	if msg, outcome := g.readMessage(context.Background(), "", "c", "", "m"); msg.files != nil || outcome != fetchOK {
+		t.Errorf("missing aadGroupID should yield nil + fetchOK, got %+v %v", msg, outcome)
 	}
 }
 
@@ -100,10 +102,129 @@ func TestMessageFileRefs_ReadOutcome(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		g := newTestGraph(srv.URL)
-		if refs, outcome := g.messageFileRefs(context.Background(), "g", "c", "", "m"); refs != nil || outcome != tc.want {
-			t.Errorf("%s: refs=%+v outcome=%v, want nil + %v", tc.name, refs, outcome, tc.want)
+		if msg, outcome := g.readMessage(context.Background(), "g", "c", "", "m"); msg.files != nil || outcome != tc.want {
+			t.Errorf("%s: msg=%+v outcome=%v, want nil + %v", tc.name, msg, outcome, tc.want)
 		}
 		srv.Close()
+	}
+}
+
+// pastedImagesServer answers every Graph read with a message whose body is html.
+func pastedImagesServer(t *testing.T, html string) *httptest.Server {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"body": map[string]string{"contentType": "html", "content": html}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func hostedImg(src string) string {
+	return `<img src="` + src + `" itemtype="http://schema.skype.com/AMSImage">`
+}
+
+func TestReadMessage_PastedImagesOnRoot(t *testing.T) {
+	const teamPath = "https://graph.microsoft.com/v1.0/teams/group-1/channels/19:chan@thread.tacv2/messages/msg-1"
+	srv := pastedImagesServer(t, "<p>look "+hostedImg(teamPath+"/hostedContents/aWQ9MQ==/$value")+
+		hostedImg(teamPath+"/hostedContents/aWQ9Mg==/$value")+"</p>")
+	g := newTestGraph(srv.URL)
+
+	msg, outcome := g.readMessage(context.Background(), "group-1", "19:chan@thread.tacv2", "msg-1", "msg-1")
+
+	if outcome != fetchOK {
+		t.Fatalf("outcome = %v, want fetchOK", outcome)
+	}
+	base := srv.URL + "/teams/group-1/channels/19:chan@thread.tacv2/messages/msg-1/hostedContents/"
+	want := []string{base + "aWQ9MQ==/$value", base + "aWQ9Mg==/$value"}
+	if strings.Join(msg.images, " ") != strings.Join(want, " ") {
+		t.Errorf("images = %q, want %q", msg.images, want)
+	}
+}
+
+func TestReadMessage_PastedImageOnReply(t *testing.T) {
+	srv := pastedImagesServer(t, hostedImg("https://graph.microsoft.com/v1.0/teams/group-1/channels/c/messages/root-9/replies/msg-1/hostedContents/aWQ9MQ==/$value"))
+	g := newTestGraph(srv.URL)
+
+	msg, _ := g.readMessage(context.Background(), "group-1", "c", "root-9", "msg-1")
+
+	want := srv.URL + "/teams/group-1/channels/c/messages/root-9/replies/msg-1/hostedContents/aWQ9MQ==/$value"
+	if len(msg.images) != 1 || msg.images[0] != want {
+		t.Errorf("images = %q, want [%q]", msg.images, want)
+	}
+}
+
+func TestReadMessage_PastedImageURLBuiltOnThisMessage(t *testing.T) {
+	// A src on another host, or under another team's message, only lends its id.
+	srv := pastedImagesServer(t,
+		hostedImg("https://evil.example/teams/other-team/channels/x/messages/y/hostedContents/aWQ9MQ==/$value")+
+			hostedImg("https://graph.microsoft.com/v1.0/teams/other-team/channels/x/messages/y/hostedContents/aWQ9Mg==/$value"))
+	g := newTestGraph(srv.URL)
+
+	msg, _ := g.readMessage(context.Background(), "group-1", "c", "msg-1", "msg-1")
+
+	base := srv.URL + "/teams/group-1/channels/c/messages/msg-1/hostedContents/"
+	want := []string{base + "aWQ9MQ==/$value", base + "aWQ9Mg==/$value"}
+	if strings.Join(msg.images, " ") != strings.Join(want, " ") {
+		t.Errorf("images = %q, want %q", msg.images, want)
+	}
+}
+
+func TestReadMessage_PastedImageIDEscaped(t *testing.T) {
+	srv := pastedImagesServer(t, hostedImg("https://graph.microsoft.com/v1.0/teams/g/channels/c/messages/m/hostedContents/a%2Fb%3Fc/$value"))
+	g := newTestGraph(srv.URL)
+
+	msg, _ := g.readMessage(context.Background(), "g", "c", "m", "m")
+
+	want := srv.URL + "/teams/g/channels/c/messages/m/hostedContents/a%2Fb%3Fc/$value"
+	if len(msg.images) != 1 || msg.images[0] != want {
+		t.Errorf("images = %q, want [%q]", msg.images, want)
+	}
+}
+
+func TestReadMessage_PastedImageRepeatedOnce(t *testing.T) {
+	src := "https://graph.microsoft.com/v1.0/teams/g/channels/c/messages/m/hostedContents/aWQ9MQ==/$value"
+	srv := pastedImagesServer(t, hostedImg(src)+hostedImg(src))
+	g := newTestGraph(srv.URL)
+
+	msg, _ := g.readMessage(context.Background(), "g", "c", "m", "m")
+
+	if len(msg.images) != 1 {
+		t.Errorf("images = %q, want one", msg.images)
+	}
+}
+
+func TestReadMessage_OtherImagesIgnored(t *testing.T) {
+	srv := pastedImagesServer(t, `<p>hi `+
+		`<img src="https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/v2/assets/emoticons/smile/default/20_f.png" itemtype="http://schema.skype.com/Emoji">`+
+		`<img src="https://media4.giphy.com/media/abc/giphy.gif">`+
+		hostedImg("https://us-api.asm.skype.com/v1/objects/0-wus-d1-abc/views/imgo")+
+		`<img itemtype="http://schema.skype.com/AMSImage">`+
+		`</p>`)
+	g := newTestGraph(srv.URL)
+
+	msg, outcome := g.readMessage(context.Background(), "g", "c", "m", "m")
+
+	if outcome != fetchOK || len(msg.images) != 0 {
+		t.Errorf("images = %q outcome = %v, want none + fetchOK", msg.images, outcome)
+	}
+}
+
+func TestReadMessage_TextBodyKeepsFiles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"body":{"contentType":"html","content":"<p>just text</p>"},"attachments":[
+			{"contentType":"reference","name":"a.pdf","contentUrl":"https://ex.sharepoint.com/sites/T/Shared Documents/a.pdf"}]}`))
+	}))
+	defer srv.Close()
+	g := newTestGraph(srv.URL)
+
+	msg, outcome := g.readMessage(context.Background(), "g", "c", "m", "m")
+
+	if outcome != fetchOK || len(msg.images) != 0 || len(msg.files) != 1 {
+		t.Errorf("msg = %+v outcome = %v, want one file, no images", msg, outcome)
 	}
 }
 
