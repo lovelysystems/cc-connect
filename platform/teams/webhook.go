@@ -45,7 +45,10 @@ const (
 	dropUnavailable = "unavailable"
 )
 
-var dropOverLimit = fmt.Sprintf("%s, over the %d-file limit", dropUnavailable, maxChannelFileRefs)
+var (
+	dropOverLimit      = fmt.Sprintf("%s, over the %d-file limit", dropUnavailable, maxChannelFileRefs)
+	dropOverImageLimit = fmt.Sprintf("%s, over the %d-image limit", dropUnavailable, maxChannelImages)
+)
 
 // droppedAttachment is an inbound attachment that could not be handed to the agent.
 type droppedAttachment struct {
@@ -131,15 +134,16 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	action := a.cardAction()
 	isCardAction := action != ""
 	content := messageContent(a, a.cleanText())
-	// Inbound media is 1:1 only; a channel/group attachment is ignored (R5). A
-	// message carrying a handled attachment still dispatches even with empty text
-	// (R3); an unhandled-only attachment must not force an empty-content turn.
+	// Activity attachments are read in 1:1 chats only; a channel's files and pasted
+	// images come from the Graph read below. A message carrying a handled
+	// attachment still dispatches even with empty text; an unhandled-only
+	// attachment must not force an empty-content turn.
 	hasMedia := a.isPersonal() && a.hasProcessableAttachment()
-	// A channel message might carry a file the activity doesn't reveal (the
-	// reference is stripped; it's discovered via a Graph read after the engagement
-	// gate). So don't drop an empty-text channel message when the feature is on —
-	// shouldHandle still gates engagement, and a fileless engaged turn is dropped
-	// downstream by the engine.
+	// A channel message might carry a file or pasted image the activity doesn't
+	// reveal (both are discovered via a Graph read after the engagement gate). So
+	// don't drop an empty-text channel message when the feature is on —
+	// shouldHandle still gates engagement, and an engaged turn with nothing to
+	// hand over is dropped downstream by the engine.
 	mightHaveChannelFile := p.cfg.channelFilesEnabled && !a.isPersonal()
 	if content == "" && !isCardAction && !hasMedia && !mightHaveChannelFile {
 		return // empty message with no card action and no attachment
@@ -195,10 +199,10 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 			// 1:1: file/image references arrive in the activity.
 			msg.Images, msg.Files, dropped = p.downloadInboundMedia(a)
 		case mightHaveChannelFile:
-			// Channel: the file reference is not in the activity — read the engaged
-			// message via Graph to discover it, then download under Sites.Selected.
+			// Channel: files and pasted images are not in the activity — read the
+			// engaged message via Graph to discover them, then download them.
 			var readFailed bool
-			msg.Files, dropped, readFailed = p.downloadChannelFiles(a)
+			msg.Images, msg.Files, dropped, readFailed = p.downloadChannelAttachments(a)
 			if readFailed {
 				// Only the agent is told: every engaged channel message is read, so
 				// most failed reads concern a message without a file.
@@ -286,8 +290,13 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 				dropped = append(dropped, droppedAttachment{name: att.Name, reason: dropReason(outcome)})
 				continue
 			}
+			mime, ok := imageMIME(data)
+			if !ok {
+				dropped = append(dropped, droppedAttachment{name: att.Name, reason: dropUnavailable})
+				continue
+			}
 			images = append(images, core.ImageAttachment{
-				MimeType: att.ContentType,
+				MimeType: mime,
 				Data:     data,
 				FileName: att.Name,
 			})
@@ -296,16 +305,18 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 	return images, files, dropped
 }
 
-// downloadChannelFiles reads the engaged channel message via Graph to discover
-// file attachments (which the inbound activity strips) and downloads them under
-// Sites.Selected. Returns the files, the ones that failed or were too large, and
-// whether the message itself could not be read. Runs on the async dispatch
-// goroutine, so the blocking Graph calls and retry waits never delay the webhook
-// ack. The Graph read runs for every engaged channel message (free, not
-// metered); the downloads only fire when a file reference is present.
-func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachment, dropped []droppedAttachment, readFailed bool) {
+// downloadChannelAttachments reads the engaged channel message via Graph to
+// discover its file attachments (which the inbound activity strips) and pasted
+// images, then downloads the files under Sites.Selected and the images from the
+// message's hosted content. Returns the images, the files, the ones that failed
+// or were too large, and whether the message itself could not be read. Runs on
+// the async dispatch goroutine, so the blocking Graph calls and retry waits never
+// delay the webhook ack. The Graph read runs for every engaged channel message
+// (free, not metered); the downloads only fire when the message carries a file
+// or a pasted image.
+func (p *Platform) downloadChannelAttachments(a *activity) (images []core.ImageAttachment, files []core.FileAttachment, dropped []droppedAttachment, readFailed bool) {
 	if p.graph == nil {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	ctx := context.Background()
 	max := p.cfg.maxAttachmentBytes
@@ -313,12 +324,22 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 		max = defaultMaxAttachmentBytes
 	}
 	deadline := time.Now().Add(retryBudget)
-	refs, outcome := retryFetch(deadline, "channel message", func() ([]channelFileRef, fetchOutcome) {
-		return p.graph.messageFileRefs(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
+	cm, outcome := retryFetch(deadline, "channel message", func() (channelMessage, fetchOutcome) {
+		return p.graph.readMessage(ctx, a.ChannelData.Team.AADGroupID, a.ChannelData.Channel.ID, a.rootMessageID(), a.ID)
 	})
 	if outcome != fetchOK {
-		return nil, nil, true
+		return nil, nil, nil, true
 	}
+	// Files go first: a file SharePoint is still saving needs the retry budget,
+	// while hosted content is ready when the message arrives.
+	files, dropped = p.downloadChannelFiles(ctx, cm.files, deadline, max)
+	images, imageDrops := p.downloadPastedImages(ctx, cm.images, deadline, max)
+	return images, files, append(dropped, imageDrops...), false
+}
+
+// downloadChannelFiles downloads a channel message's file references under
+// Sites.Selected, returning the files and the ones that failed or were too large.
+func (p *Platform) downloadChannelFiles(ctx context.Context, refs []channelFileRef, deadline time.Time, max int64) (files []core.FileAttachment, dropped []droppedAttachment) {
 	// Bound per-message downloads: each ref is a 3-call Graph sequence + up to
 	// maxAttachmentBytes buffered. Extra refs are reported as dropped so the user
 	// and the agent are told.
@@ -351,7 +372,42 @@ func (p *Platform) downloadChannelFiles(a *activity) (files []core.FileAttachmen
 			FileName: ref.name,
 		})
 	}
-	return files, dropped, false
+	return files, dropped
+}
+
+// downloadPastedImages downloads a channel message's pasted images, returning
+// them and the ones that failed, were too large or did not hold an image. A
+// pasted image has no name, so it is reported as "image N" by its place in the
+// message.
+func (p *Platform) downloadPastedImages(ctx context.Context, urls []string, deadline time.Time, max int64) (images []core.ImageAttachment, dropped []droppedAttachment) {
+	for i, u := range urls {
+		name := fmt.Sprintf("image %d", i+1)
+		if i >= maxChannelImages {
+			dropped = append(dropped, droppedAttachment{name: name, reason: dropOverImageLimit})
+			continue
+		}
+		data, outcome := retryFetch(deadline, name, func() ([]byte, fetchOutcome) {
+			return p.graph.getBounded(ctx, u, max)
+		})
+		if outcome != fetchOK {
+			dropped = append(dropped, droppedAttachment{name: name, reason: dropReason(outcome)})
+			continue
+		}
+		mime, ok := imageMIME(data)
+		if !ok {
+			dropped = append(dropped, droppedAttachment{name: name, reason: dropUnavailable})
+			continue
+		}
+		images = append(images, core.ImageAttachment{MimeType: mime, Data: data})
+	}
+	return images, dropped
+}
+
+// imageMIME returns the image type the bytes sniff as. Teams declares some
+// images only as "image/*".
+func imageMIME(data []byte) (string, bool) {
+	mime := http.DetectContentType(data)
+	return mime, strings.HasPrefix(mime, "image/")
 }
 
 // retryFetch runs fetch, retrying a fetchRetryable outcome after each of
