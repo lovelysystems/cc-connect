@@ -21,6 +21,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 - **teams**: give inbound images the type their bytes sniff as, never `image/*`
   (upstream: pending)
+- **teams**: send `card_loading_text` as written, without the added italic underscores
+  (upstream: pending; follow-up to chenhg5/cc-connect#1518)
 
 #### Feature
 
@@ -39,7 +41,7 @@ entry that graduated upstream at the re-base keeps its final marker there.
 #### Feature
 
 - **teams**: send a message with links or formatting to the agent as Markdown
-  (upstream: pending)
+  (upstream: pending; follow-up to chenhg5/cc-connect#1518)
 
 ### 2026-10-06 / v1.5.0-ls.1
 

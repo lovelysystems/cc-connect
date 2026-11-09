@@ -7,15 +7,14 @@ package teams
 const adaptiveCardContentType = "application/vnd.microsoft.card.adaptive"
 
 // loadingCard is the placeholder card shown immediately while the agent thinks,
-// carrying the configured card_loading_text. The text is rendered italic
-// (markdown) and subtle/small — a quiet, grayed cue. An empty text yields a
-// label-less (empty-body) card rather than an empty TextBlock.
+// carrying the configured card_loading_text unchanged as markdown, subtle and
+// small. An empty text yields a label-less (empty-body) card.
 func loadingCard(text string) map[string]any {
 	if text == "" {
 		return adaptiveCard(nil)
 	}
 	return adaptiveCard([]map[string]any{
-		{"type": "TextBlock", "text": "_" + text + "_", "wrap": true, "isSubtle": true, "size": "Small"},
+		{"type": "TextBlock", "text": text, "wrap": true, "isSubtle": true, "size": "Small"},
 	})
 }
 

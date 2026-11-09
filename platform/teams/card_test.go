@@ -2,7 +2,6 @@ package teams
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -15,21 +14,22 @@ func firstTextBlock(card map[string]any) map[string]any {
 }
 
 func TestLoadingCard(t *testing.T) {
-	c := loadingCard("💭 Thinking…")
-	if c["type"] != "AdaptiveCard" || c["version"] != "1.5" {
-		t.Fatalf("not an AdaptiveCard 1.5: %v", c)
-	}
-	tb := firstTextBlock(c)
-	txt, _ := tb["text"].(string)
-	if tb["type"] != "TextBlock" || !strings.Contains(txt, "💭 Thinking…") {
-		t.Errorf("loading text block = %v", tb)
-	}
-	// grayed + small + italic (markdown)
-	if tb["isSubtle"] != true || tb["size"] != "Small" {
-		t.Errorf("loading text should be subtle+Small, got %v", tb)
-	}
-	if !strings.HasPrefix(txt, "_") || !strings.HasSuffix(txt, "_") {
-		t.Errorf("loading text should be italic markdown, got %q", txt)
+	for _, text := range []string{
+		"💭 Thinking…",
+		"💭 _Thinking_",
+		"![loading](https://example.com/spinner.gif)",
+	} {
+		c := loadingCard(text)
+		if c["type"] != "AdaptiveCard" || c["version"] != "1.5" {
+			t.Fatalf("not an AdaptiveCard 1.5: %v", c)
+		}
+		tb := firstTextBlock(c)
+		if tb["type"] != "TextBlock" || tb["text"] != text {
+			t.Errorf("loading text block = %v, want text %q unchanged", tb, text)
+		}
+		if tb["isSubtle"] != true || tb["size"] != "Small" {
+			t.Errorf("loading text should be subtle+Small, got %v", tb)
+		}
 	}
 }
 
