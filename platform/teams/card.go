@@ -7,9 +7,8 @@ package teams
 const adaptiveCardContentType = "application/vnd.microsoft.card.adaptive"
 
 // loadingCard is the placeholder card shown immediately while the agent thinks,
-// carrying the configured card_loading_text as markdown, subtle and small. The
-// text may carry its own formatting or an image (e.g. an animated GIF). An
-// empty text yields a label-less (empty-body) card.
+// carrying the configured card_loading_text unchanged as markdown, subtle and
+// small. An empty text yields a label-less (empty-body) card.
 func loadingCard(text string) map[string]any {
 	if text == "" {
 		return adaptiveCard(nil)
