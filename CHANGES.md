@@ -58,7 +58,7 @@ entry that graduated upstream at the re-base keeps its final marker there.
   NO_REPLY on streaming cards; `[display].prepend_pre_tool_text = true` keeps the text
   before it (upstream: submitted chenhg5/cc-connect#1919; completes chenhg5/cc-connect#1320)
 - **slack**: ignore edited @mentions instead of re-running the agent
-  (upstream: submitted chenhg5/cc-connect#1579)
+  (upstream: merged)
 - **slack**: working-indicator reactions target the summoning message, not the
   thread root (backport: chenhg5/cc-connect#1523, merged)
 
