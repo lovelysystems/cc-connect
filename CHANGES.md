@@ -17,6 +17,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+### 2026-11-09 / v1.5.0-ls.3
+
 #### Fix
 
 - **teams**: give inbound images the type their bytes sniff as, never `image/*`
