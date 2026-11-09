@@ -53,11 +53,11 @@ type config struct {
 	// buffered unbounded. Defaults to defaultMaxAttachmentBytes.
 	maxAttachmentBytes int64
 
-	// channelFilesEnabled opts into reading files a user attaches to the bot in a
-	// channel (via Microsoft Graph + Sites.Selected). Off by default: enabling it
-	// requires the RSC ChannelMessage.Read.Group manifest permission and per-site
-	// Sites.Selected admin grants (see docs/teams.md). Disabled = channel
-	// attachments are ignored, no Graph call.
+	// channelFilesEnabled opts into reading the files and pasted images a user
+	// sends the bot in a channel, via Microsoft Graph. Off by default. Pasted
+	// images need the RSC ChannelMessage.Read.Group manifest permission; files
+	// also need per-site Sites.Selected admin grants (see docs/teams.md).
+	// Disabled = channel attachments are ignored, no Graph call.
 	channelFilesEnabled bool
 
 	// dataDir and project are injected by cc-connect (cc_data_dir / cc_project)

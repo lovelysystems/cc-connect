@@ -3,6 +3,9 @@ package teams
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -390,9 +393,15 @@ func TestDispatch_PersonalFileAttachmentDelivered(t *testing.T) {
 	}
 }
 
+// Image bytes that sniff as their format.
+var (
+	pngBytes  = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	jpegBytes = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+)
+
 func TestDispatch_PersonalImageDelivered(t *testing.T) {
-	p, got, fs := personalPlatform(fetchResult{data: []byte("PNG"), outcome: fetchOK})
-	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/png", ContentURL: "https://smba.example/v3/attachments/x"}))
+	p, got, fs := personalPlatform(fetchResult{data: pngBytes, outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/*", ContentURL: "https://smba.example/v3/attachments/x"}))
 
 	if len(*got) != 1 {
 		t.Fatalf("image 1:1 message must dispatch, got %d", len(*got))
@@ -401,7 +410,7 @@ func TestDispatch_PersonalImageDelivered(t *testing.T) {
 	if len(m.Images) != 1 || len(m.Files) != 0 {
 		t.Fatalf("want 1 image, 0 files; got images=%d files=%d", len(m.Images), len(m.Files))
 	}
-	if m.Images[0].MimeType != "image/png" || string(m.Images[0].Data) != "PNG" {
+	if m.Images[0].MimeType != "image/png" || string(m.Images[0].Data) != string(pngBytes) {
 		t.Errorf("image attachment = %+v", m.Images[0])
 	}
 	// contentUrl host == serviceURL host -> the bot token is attached.
@@ -410,8 +419,47 @@ func TestDispatch_PersonalImageDelivered(t *testing.T) {
 	}
 }
 
+func TestDispatch_PersonalImageTypeFromBytes(t *testing.T) {
+	p, got, _ := personalPlatform(fetchResult{data: jpegBytes, outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/png", ContentURL: "https://smba.example/v3/attachments/x"}))
+
+	if m := (*got)[0]; len(m.Images) != 1 || m.Images[0].MimeType != "image/jpeg" {
+		t.Errorf("images = %+v, want one image/jpeg", m.Images)
+	}
+}
+
+func TestDispatch_PersonalNonImageBytesDropped(t *testing.T) {
+	p, got, fs := personalPlatform(fetchResult{data: []byte("<html><body>error</body></html>"), outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/*", ContentURL: "https://smba.example/v3/attachments/x", Name: "shot.png"}))
+
+	m := (*got)[0]
+	if len(m.Images) != 0 {
+		t.Errorf("non-image bytes must not reach the agent as an image, got %+v", m.Images)
+	}
+	if !strings.Contains(m.ExtraContent, "shot.png") || !strings.Contains(m.ExtraContent, "unavailable") {
+		t.Errorf("note should name the image and say it was unavailable, got %q", m.ExtraContent)
+	}
+	if len(fs.replied) != 1 || fs.replied[0].Text != attachmentFailureNotice {
+		t.Errorf("user must get the attachment notice, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_PersonalUnsupportedImageTypeNamed(t *testing.T) {
+	bmp := []byte("BM\x36\x00\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00")
+	p, got, _ := personalPlatform(fetchResult{data: bmp, outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/*", ContentURL: "https://smba.example/v3/attachments/x", Name: "shot.bmp"}))
+
+	m := (*got)[0]
+	if len(m.Images) != 0 {
+		t.Errorf("an image type the agent does not take must not reach it, got %+v", m.Images)
+	}
+	if want := `[Attachments not received] "shot.bmp" (unsupported type (image/bmp))`; m.ExtraContent != want {
+		t.Errorf("note = %q, want %q", m.ExtraContent, want)
+	}
+}
+
 func TestDispatch_ForeignHostImageOmitsToken(t *testing.T) {
-	p, _, fs := personalPlatform(fetchResult{data: []byte("PNG"), outcome: fetchOK})
+	p, _, fs := personalPlatform(fetchResult{data: jpegBytes, outcome: fetchOK})
 	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/jpeg", ContentURL: "https://cdn.foreign.example/img.jpg"}))
 	if len(fs.fetchwithToken) != 1 || fs.fetchwithToken[0] {
 		t.Errorf("a foreign-host image URL must NOT receive the bot token, withToken=%v", fs.fetchwithToken)
@@ -540,6 +588,8 @@ func TestDispatch_NoNoticeOnSuccess(t *testing.T) {
 // per SharePoint URL for content GETs, then data/outcome.
 type fakeGraph struct {
 	refs                                      []channelFileRef
+	images                                    []string
+	calls                                     []string // lookups and content GETs, in order
 	readScript                                []fetchOutcome
 	readOutcome                               fetchOutcome
 	lookupScript                              map[string][]fetchOutcome
@@ -555,7 +605,7 @@ type fakeGraph struct {
 // fakeGraphPrefix marks the Graph content URL the fake resolves a SharePoint URL to.
 const fakeGraphPrefix = "graph:"
 
-func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg string) ([]channelFileRef, fetchOutcome) {
+func (f *fakeGraph) readMessage(_ context.Context, group, channel, root, msg string) (channelMessage, fetchOutcome) {
 	f.readCalls++
 	f.lastGroup, f.lastChannel, f.lastRoot, f.lastMsg = group, channel, root, msg
 	outcome := f.readOutcome
@@ -563,9 +613,9 @@ func (f *fakeGraph) messageFileRefs(_ context.Context, group, channel, root, msg
 		outcome, f.readScript = f.readScript[0], f.readScript[1:]
 	}
 	if outcome != fetchOK {
-		return nil, outcome
+		return channelMessage{}, outcome
 	}
-	return f.refs, fetchOK
+	return channelMessage{files: f.refs, images: f.images}, fetchOK
 }
 
 func (f *fakeGraph) resolveContentURL(_ context.Context, sharepointURL string) (string, fetchOutcome) {
@@ -573,6 +623,7 @@ func (f *fakeGraph) resolveContentURL(_ context.Context, sharepointURL string) (
 		f.lookups = map[string]int{}
 	}
 	f.lookups[sharepointURL]++
+	f.calls = append(f.calls, "lookup "+sharepointURL)
 	if seq := f.lookupScript[sharepointURL]; len(seq) > 0 {
 		f.lookupScript[sharepointURL] = seq[1:]
 		if seq[0] != fetchOK {
@@ -582,12 +633,13 @@ func (f *fakeGraph) resolveContentURL(_ context.Context, sharepointURL string) (
 	return fakeGraphPrefix + sharepointURL, fetchOK
 }
 
-func (f *fakeGraph) getBounded(_ context.Context, graphURL string, _ int64) ([]byte, fetchOutcome) {
+func (f *fakeGraph) getBounded(_ context.Context, graphURL string, _ int64, _ ...int) ([]byte, fetchOutcome) {
 	sharepointURL := strings.TrimPrefix(graphURL, fakeGraphPrefix)
 	if f.downloads == nil {
 		f.downloads = map[string]int{}
 	}
 	f.downloads[sharepointURL]++
+	f.calls = append(f.calls, "get "+sharepointURL)
 	if seq := f.script[sharepointURL]; len(seq) > 0 {
 		f.script[sharepointURL] = seq[1:]
 		return seq[0].data, seq[0].outcome
@@ -653,15 +705,15 @@ func TestDispatch_ChannelFileDelivered(t *testing.T) {
 }
 
 func TestDispatch_ChannelFileDisabledNoGraphCall(t *testing.T) {
-	fg := &fakeGraph{refs: []channelFileRef{{name: "x", contentURL: "u"}}, data: []byte("X"), outcome: fetchOK}
+	fg := &fakeGraph{refs: []channelFileRef{{name: "x", contentURL: "u"}}, images: []string{"img-1"}, data: pngBytes, outcome: fetchOK}
 	p, got, _ := channelFilePlatform(false, fg) // feature OFF
 	p.dispatch(nil, channelFileActivity("hello"))
 
 	if fg.readCalls != 0 {
 		t.Errorf("feature disabled must not call Graph, got %d calls", fg.readCalls)
 	}
-	if len(*got) != 1 || len((*got)[0].Files) != 0 {
-		t.Errorf("feature off: text dispatched, no files; got %+v", *got)
+	if len(*got) != 1 || len((*got)[0].Files) != 0 || len((*got)[0].Images) != 0 {
+		t.Errorf("feature off: text dispatched, no files or images; got %+v", *got)
 	}
 }
 
@@ -738,6 +790,204 @@ func TestDispatch_ChannelFileRefCap(t *testing.T) {
 	}
 	if len(fs.replied) != 1 {
 		t.Errorf("exceeding the per-message ref cap should notify the user, replied=%d", len(fs.replied))
+	}
+}
+
+func TestDispatch_ChannelPastedImagesDelivered(t *testing.T) {
+	fg := &fakeGraph{images: []string{"img-1", "img-2"}, data: pngBytes, outcome: fetchOK}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("what is this"))
+
+	if len(*got) != 1 {
+		t.Fatalf("got %d messages", len(*got))
+	}
+	m := (*got)[0]
+	if m.Content != "what is this" || len(m.Images) != 2 || len(m.Files) != 0 {
+		t.Fatalf("content=%q images=%d files=%d, want text + 2 images", m.Content, len(m.Images), len(m.Files))
+	}
+	for i, img := range m.Images {
+		if img.MimeType != "image/png" || string(img.Data) != string(pngBytes) {
+			t.Errorf("image %d = %+v", i, img)
+		}
+	}
+	if strings.Join(fg.calls, ",") != "get img-1,get img-2" {
+		t.Errorf("calls = %v, want body order", fg.calls)
+	}
+	if m.ExtraContent != "" || len(fs.replied) != 0 {
+		t.Errorf("no drops expected: note=%q replied=%+v", m.ExtraContent, fs.replied)
+	}
+}
+
+func TestDispatch_ChannelImageOnlyReply(t *testing.T) {
+	fg := &fakeGraph{images: []string{"img-1"}, data: jpegBytes, outcome: fetchOK}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity(""))
+
+	if len(*got) != 1 {
+		t.Fatalf("an image-only message must dispatch, got %d", len(*got))
+	}
+	if m := (*got)[0]; m.Content != "" || len(m.Images) != 1 || m.Images[0].MimeType != "image/jpeg" {
+		t.Errorf("content=%q images=%+v, want one image/jpeg and no text", m.Content, m.Images)
+	}
+	if fg.lastRoot != "root-9" || fg.lastMsg != "msg-1" {
+		t.Errorf("read root=%q msg=%q, want the reply in its thread", fg.lastRoot, fg.lastMsg)
+	}
+}
+
+func TestDispatch_ChannelImageRetriedUntilAvailable(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	fg := &fakeGraph{
+		images: []string{"img-1"},
+		script: map[string][]fetchResult{"img-1": {{outcome: fetchRetryable}, {data: pngBytes, outcome: fetchOK}}},
+	}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	if fg.downloads["img-1"] != 2 || len((*got)[0].Images) != 1 {
+		t.Errorf("downloads=%d images=%d, want a retry then the image", fg.downloads["img-1"], len((*got)[0].Images))
+	}
+	if len(fs.replied) != 0 {
+		t.Errorf("a recovered image must not notify the user, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_ChannelImageDropsNamedByPosition(t *testing.T) {
+	fg := &fakeGraph{
+		images: []string{"img-1", "img-2", "img-3"},
+		script: map[string][]fetchResult{
+			"img-1": {{outcome: fetchOversize}},
+			"img-3": {{data: []byte("<html>denied</html>"), outcome: fetchOK}},
+		},
+		data:    pngBytes,
+		outcome: fetchOK,
+	}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	m := (*got)[0]
+	if len(m.Images) != 1 {
+		t.Errorf("images = %d, want only image 2", len(m.Images))
+	}
+	if want := `[Attachments not received] "image 1" (too large), "image 3" (unavailable)`; m.ExtraContent != want {
+		t.Errorf("note = %q, want %q", m.ExtraContent, want)
+	}
+	if len(fs.replied) != 1 || fs.replied[0].Text != attachmentFailureNotice {
+		t.Errorf("user must get the attachment notice, replied=%+v", fs.replied)
+	}
+}
+
+func TestDispatch_ChannelImageCap(t *testing.T) {
+	var images []string
+	for i := 1; i <= maxChannelImages+2; i++ {
+		images = append(images, fmt.Sprintf("img-%d", i))
+	}
+	fg := &fakeGraph{images: images, data: pngBytes, outcome: fetchOK}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("many"))
+
+	m := (*got)[0]
+	if len(m.Images) != maxChannelImages {
+		t.Errorf("images = %d, want capped at %d", len(m.Images), maxChannelImages)
+	}
+	for _, n := range []int{maxChannelImages + 1, maxChannelImages + 2} {
+		if want := fmt.Sprintf(`"image %d" (unavailable, over the %d-image limit)`, n, maxChannelImages); !strings.Contains(m.ExtraContent, want) {
+			t.Errorf("note %q should contain %q", m.ExtraContent, want)
+		}
+	}
+	if len(fs.replied) != 1 {
+		t.Errorf("exceeding the image cap should notify the user, replied=%d", len(fs.replied))
+	}
+}
+
+func TestDispatch_ChannelImageTypeAllowlist(t *testing.T) {
+	bmp := []byte("BM\x36\x00\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00")
+	webp := []byte("RIFF\x24\x00\x00\x00WEBPVP8 ")
+	fg := &fakeGraph{
+		images: []string{"img-1", "img-2", "img-3"},
+		script: map[string][]fetchResult{
+			"img-1": {{data: bmp, outcome: fetchOK}},
+			"img-2": {{data: webp, outcome: fetchOK}},
+			"img-3": {{data: pngBytes, outcome: fetchOK}},
+		},
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	m := (*got)[0]
+	if len(m.Images) != 2 || m.Images[0].MimeType != "image/webp" || m.Images[1].MimeType != "image/png" {
+		t.Errorf("images = %+v, want webp then png", m.Images)
+	}
+	if want := `[Attachments not received] "image 1" (unsupported type (image/bmp))`; m.ExtraContent != want {
+		t.Errorf("note = %q, want %q", m.ExtraContent, want)
+	}
+}
+
+func TestDispatch_ChannelPastedImageNotFoundFetchedOnce(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	var imageGets int
+	body, err := json.Marshal(map[string]any{"body": map[string]string{
+		"contentType": "html",
+		"content":     hostedImg("https://graph.microsoft.com/v1.0/teams/group-1/channels/c/messages/root-9/replies/msg-1/hostedContents/aWQ9MQ==/$value"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/hostedContents/") {
+			imageGets++
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	p, got, fs := channelFilePlatform(true, nil)
+	p.graph = newTestGraph(srv.URL)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	if imageGets != 1 {
+		t.Errorf("image GETs = %d, want one", imageGets)
+	}
+	if m := (*got)[0]; len(m.Images) != 0 || m.ExtraContent != `[Attachments not received] "image 1" (unavailable)` {
+		t.Errorf("images=%d note=%q", len(m.Images), m.ExtraContent)
+	}
+	if len(fs.replied) != 1 {
+		t.Errorf("user must get the attachment notice, replied=%d", len(fs.replied))
+	}
+}
+
+func TestDispatch_ChannelImageAndFileFilesFirst(t *testing.T) {
+	fg := &fakeGraph{
+		refs:    []channelFileRef{{name: "a.jpg", contentURL: sharepointA}},
+		images:  []string{"img-1"},
+		data:    pngBytes,
+		outcome: fetchOK,
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("both"))
+
+	if m := (*got)[0]; len(m.Images) != 1 || len(m.Files) != 1 {
+		t.Fatalf("images=%d files=%d, want one of each", len(m.Images), len(m.Files))
+	}
+	want := "lookup " + sharepointA + ",get " + sharepointA + ",get img-1"
+	if strings.Join(fg.calls, ",") != want {
+		t.Errorf("calls = %v, want the file before the image", fg.calls)
+	}
+}
+
+func TestDispatch_ChannelImageOnlyAllFailedStillReachesAgent(t *testing.T) {
+	fg := &fakeGraph{images: []string{"img-1"}, outcome: fetchFailed}
+	p, got, fs := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity(""))
+
+	if len(*got) != 1 {
+		t.Fatalf("the turn must reach the agent with the drop note, got %d", len(*got))
+	}
+	if m := (*got)[0]; len(m.Images) != 0 || m.ExtraContent != `[Attachments not received] "image 1" (unavailable)` {
+		t.Errorf("images=%d note=%q", len(m.Images), m.ExtraContent)
+	}
+	if len(fs.replied) != 1 {
+		t.Errorf("user must get the attachment notice, replied=%d", len(fs.replied))
 	}
 }
 
@@ -986,9 +1236,13 @@ func TestDispatch_ChannelMessageReadFailedNotesAgentOnly(t *testing.T) {
 		{fetchRetryable, len(retryWaits) + 1},
 		{fetchFailed, 1},
 	} {
-		fg := &fakeGraph{refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}}, readOutcome: tc.outcome}
+		fg := &fakeGraph{refs: []channelFileRef{{name: "a.jpg", contentURL: sharepointA}}, images: []string{"img-1"}, readOutcome: tc.outcome}
 		p, got, fs := channelFilePlatform(true, fg)
 		p.dispatch(nil, channelFileActivity("look"))
+
+		if len(fg.calls) != 0 {
+			t.Errorf("outcome %v: a failed message read must not download anything, calls=%v", tc.outcome, fg.calls)
+		}
 
 		if fg.readCalls != tc.reads {
 			t.Errorf("outcome %v: message reads = %d, want %d", tc.outcome, fg.readCalls, tc.reads)

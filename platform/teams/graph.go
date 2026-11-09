@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/JohannesKaufmann/dom"
+	"golang.org/x/net/html"
 )
 
 // maxChannelFileRefs bounds how many file references the connector downloads from
@@ -16,6 +19,10 @@ import (
 // to maxAttachmentBytes, so an unbounded count would amplify Graph calls and
 // memory; a real message attaches only a handful of files.
 const maxChannelFileRefs = 10
+
+// maxChannelImages bounds how many pasted images the connector downloads from a
+// single channel message. Each one buffers up to maxAttachmentBytes.
+const maxChannelImages = 10
 
 // graphBase is the Microsoft Graph v1.0 root.
 const graphBase = "https://graph.microsoft.com/v1.0"
@@ -38,19 +45,26 @@ type channelFileRef struct {
 	contentURL string
 }
 
-// graphReader reads channel-message file references and downloads them. Abstracted
-// for testability (dispatch injects a fake in tests).
+// channelMessage is what a channel message carries for the agent beyond its text:
+// its file references and the Graph URLs of the images pasted into its body.
+type channelMessage struct {
+	files  []channelFileRef
+	images []string
+}
+
+// graphReader reads channel messages and downloads their files and pasted images.
 type graphReader interface {
-	// messageFileRefs reads a channel message via Graph and returns its file
-	// (`reference`-type) attachments. aadGroupID is the Graph team id
-	// (channelData.team.aadGroupId — NOT the thread-style teamsTeamId). When rootID
-	// is non-empty and differs from msgID the message is a thread reply.
-	messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, fetchOutcome)
+	// readMessage reads a channel message via Graph and returns its file
+	// (`reference`-type) attachments and pasted-image URLs. aadGroupID is the Graph
+	// team id from channelData.team.aadGroupId. When
+	// rootID is non-empty and differs from msgID the message is a thread reply.
+	readMessage(ctx context.Context, aadGroupID, channelID, rootID, msgID string) (channelMessage, fetchOutcome)
 	// resolveContentURL maps a SharePoint file URL to the Graph URL of its content,
 	// under Sites.Selected. The site hosting the file must be admin-granted read.
 	resolveContentURL(ctx context.Context, sharepointURL string) (string, fetchOutcome)
-	// getBounded GETs a Graph content URL, bounded by maxBytes.
-	getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome)
+	// getBounded GETs a Graph content URL, bounded by maxBytes. extraRetryable
+	// lists the statuses that may clear on a later attempt for this URL.
+	getBounded(ctx context.Context, rawURL string, maxBytes int64, extraRetryable ...int) ([]byte, fetchOutcome)
 }
 
 // graphClient is the concrete Graph reader: an app-only Graph token + HTTP client.
@@ -69,6 +83,9 @@ var _ graphReader = (*graphClient)(nil)
 // graphMessage is the subset of a Graph chatMessage the connector consumes.
 type graphMessage struct {
 	Attachments []graphAttachment `json:"attachments"`
+	Body        struct {
+		Content string `json:"content"`
+	} `json:"body"`
 }
 
 type graphAttachment struct {
@@ -77,13 +94,13 @@ type graphAttachment struct {
 	Name        string `json:"name"`
 }
 
-// messageFileRefs GETs the channel message and returns its `reference` file
-// attachments. A failed GET keeps its outcome and a body that does not decode is
-// fetchFailed; either yields no refs. Missing ids yield no refs and fetchOK, with
-// no request.
-func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID, rootID, msgID string) ([]channelFileRef, fetchOutcome) {
+// readMessage GETs the channel message and returns its `reference` file
+// attachments and the content URLs of its pasted images. A failed GET keeps its
+// outcome and a body that does not decode is fetchFailed; either yields nothing.
+// Missing ids yield nothing and fetchOK, with no request.
+func (g *graphClient) readMessage(ctx context.Context, aadGroupID, channelID, rootID, msgID string) (channelMessage, fetchOutcome) {
 	if aadGroupID == "" || channelID == "" || msgID == "" {
-		return nil, fetchOK
+		return channelMessage{}, fetchOK
 	}
 	// Escape every id path segment (they are opaque, never multi-segment) so a
 	// malformed/unexpected id can't restructure the Graph path.
@@ -98,15 +115,62 @@ func (g *graphClient) messageFileRefs(ctx context.Context, aadGroupID, channelID
 	}
 	var m graphMessage
 	if outcome := g.getJSON(ctx, u, &m); outcome != fetchOK {
-		return nil, outcome
+		return channelMessage{}, outcome
 	}
-	var refs []channelFileRef
+	var msg channelMessage
 	for _, att := range m.Attachments {
 		if strings.EqualFold(att.ContentType, "reference") && att.ContentURL != "" {
-			refs = append(refs, channelFileRef{name: att.Name, contentURL: att.ContentURL})
+			msg.files = append(msg.files, channelFileRef{name: att.Name, contentURL: att.ContentURL})
 		}
 	}
-	return refs, fetchOK
+	// Only the hosted-content id comes from the body: the URL that gets the Graph
+	// token is always built on this message's own path.
+	for _, id := range hostedContentIDs(m.Body.Content) {
+		msg.images = append(msg.images, u+"/hostedContents/"+url.PathEscape(id)+"/$value")
+	}
+	return msg, fetchOK
+}
+
+// hostedContentIDs returns, in body order and without repeats, the ids of the
+// images whose src points at a Graph hostedContents/{id}/$value resource.
+func hostedContentIDs(body string) []string {
+	if body == "" {
+		return nil
+	}
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		slog.Warn("teams: could not parse channel message html", "error", err)
+		return nil
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, img := range dom.FindAllNodes(doc, func(n *html.Node) bool { return n.Type == html.ElementNode && n.Data == "img" }) {
+		id := hostedContentID(dom.GetAttributeOr(img, "src", ""))
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// hostedContentID returns the id in a URL path ending in hostedContents/{id}/$value, or "".
+// A "." or ".." id is refused, since it would step out of the message's own path.
+func hostedContentID(src string) string {
+	u, err := url.Parse(src)
+	if err != nil {
+		return ""
+	}
+	segs := strings.Split(u.EscapedPath(), "/")
+	n := len(segs)
+	if n < 3 || segs[n-1] != "$value" || !strings.EqualFold(segs[n-3], "hostedContents") {
+		return ""
+	}
+	id, err := url.PathUnescape(segs[n-2])
+	if err != nil || id == "." || id == ".." {
+		return ""
+	}
+	return id
 }
 
 // site is the subset of a Graph site resource the connector consumes.
@@ -245,8 +309,8 @@ func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) fetch
 // Authorization header on the cross-host hop, which is fine — the redirect target
 // is pre-authenticated). A payload over the cap is reported oversize, never
 // truncated. Token, transport and read errors are fetchRetryable; a non-2xx status
-// is classified per statusOutcome, with 404 retryable.
-func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome) {
+// is classified per statusOutcome, with extraRetryable added to its retryable set.
+func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes int64, extraRetryable ...int) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fetchFailed
@@ -264,8 +328,7 @@ func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes in
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("teams: graph content GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		// A file SharePoint is still saving answers 404 for a while.
-		return nil, statusOutcome(resp.StatusCode, http.StatusNotFound)
+		return nil, statusOutcome(resp.StatusCode, extraRetryable...)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {

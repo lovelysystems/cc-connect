@@ -16,8 +16,9 @@ requires a publicly reachable URL.
   one (a GIF) or formatting the plain text lacks, the agent receives that HTML
   converted to Markdown, mentions and reply quotes removed. A command (`/…`) or
   shell shortcut (`!…`) keeps its plain text.
-- Images pasted into a message (⌘V) do not reach the agent; attach them as a
-  file instead.
+- Images pasted into a channel message (⌘V) reach the agent when
+  `channel_files_enabled` is on (see "Reading files from a channel"). In group
+  chats neither pasted images nor files reach the agent.
 - Replies are sent back through the Bot Connector REST API and stream as an
   **Adaptive Card**: a "working" card is posted immediately, then edited in place
   as the answer grows. Every card — the working card included — carries the native
@@ -97,7 +98,7 @@ message — Teams does not allow @mentioning a bot there.
 | `card_loading_text` | no | `""` | Label on the placeholder card shown while the agent works (e.g. `💭 Thinking…`); empty renders a label-less card |
 | `service_url_allowlist` | no | `""` | Comma-separated hosts the bot may send replies to. Empty = any JWT-validated host (default). Set it to pin the bot to your cloud's Bot Connector host(s) as defense-in-depth. See "serviceURL allowlist" below |
 | `max_attachment_bytes` | no | `20971520` (20 MiB) | Cap per inbound file/image download (1:1 and channel). A larger attachment is skipped with a notice rather than buffered. See "Receiving files and images" below |
-| `channel_files_enabled` | no | `false` | Opt into reading files attached to the bot in a **channel** (via Graph + `Sites.Selected`). Needs the RSC manifest permission and per-site grants. See "Reading files from a channel" below |
+| `channel_files_enabled` | no | `false` | Opt into reading files attached to, and images pasted into, a **channel** message (via Graph). Needs the RSC manifest permission; files also need per-site `Sites.Selected` grants. See "Reading files from a channel" below |
 
 ## serviceURL allowlist
 
@@ -144,7 +145,9 @@ Without `supportsFiles: true`, Teams does not deliver file attachments to the bo
 **Size limit:** each download is capped by `max_attachment_bytes` (default
 20 MiB). An oversized attachment, or one whose download fails, is skipped and the
 user gets a brief notice; the turn still proceeds with any text and other
-attachments.
+attachments. An image of a type the agent does not take (such as BMP) is skipped
+the same way and named to the agent as an unsupported type, so it can ask for a
+PNG or JPEG.
 
 ## Sending images
 
@@ -168,7 +171,9 @@ requires a separate file consent / SharePoint flow.
 Optional (**off by default**). When enabled, a file a user attaches to the bot in
 a **channel** message — with a `@mention` of the bot, or in a thread the bot is
 already following — is downloaded and handed to the agent, alongside any text in
-the same message.
+the same message. Images pasted into the message are handed over as images; they
+come from the message's Graph hosted content, so they need only the RSC
+permission (step 1), not a `Sites.Selected` grant. Group chats are not covered.
 
 This path differs from 1:1: Teams does **not** put a channel file's reference in
 the bot's inbound message, so the connector reads the message through Microsoft
@@ -219,7 +224,11 @@ Notes:
 - The Graph message read is **not metered** (Microsoft retired Teams API metering);
   it runs under normal Graph rate limits.
 - A file on a site the app was not granted, or an oversized/failed download, is
-  skipped with a brief user notice (bounded by `max_attachment_bytes`).
+  skipped with a brief user notice (bounded by `max_attachment_bytes`). A pasted
+  image that fails, is too large or holds no image is skipped the same way and
+  named to the agent as `image N`, by its place in the message. An image of a
+  type the agent does not take is named with that type, e.g.
+  `"image 1" (unsupported type (image/bmp))`.
 - Same limits as 1:1: file cards only; outbound send is not implemented.
 
 
@@ -240,9 +249,9 @@ which POSTs to your endpoint.
   multiSelect questions also render as buttons and resolve on the **first tap**
   (no multi-pick) — reply with comma-separated numbers as text to pick several.
 - Inbound files and images are supported in **1:1 chats** (see "Receiving files
-  and images"); **channel** files are supported via the opt-in
-  `channel_files_enabled` path (see "Reading files from a channel"). Inbound audio
-  is not supported.
+  and images"); **channel** files and pasted images are supported via the opt-in
+  `channel_files_enabled` path (see "Reading files from a channel"). **Group
+  chats** get neither files nor pasted images. Inbound audio is not supported.
 - Proactive messages (cron/timer/heartbeat → Teams) require the bot to have seen
   the conversation before: the per-conversation `serviceURL` is captured from
   inbound activities and persisted, then reconstructed at send time. A
