@@ -18,7 +18,7 @@ requires a publicly reachable URL.
   shell shortcut (`!…`) keeps its plain text.
 - Images pasted into a channel message (⌘V) reach the agent when
   `channel_files_enabled` is on (see "Reading files from a channel"). In group
-  chats they do not; attach them as a file instead.
+  chats neither pasted images nor files reach the agent.
 - Replies are sent back through the Bot Connector REST API and stream as an
   **Adaptive Card**: a "working" card is posted immediately, then edited in place
   as the answer grows. Every card — the working card included — carries the native
@@ -246,8 +246,8 @@ which POSTs to your endpoint.
   (no multi-pick) — reply with comma-separated numbers as text to pick several.
 - Inbound files and images are supported in **1:1 chats** (see "Receiving files
   and images"); **channel** files and pasted images are supported via the opt-in
-  `channel_files_enabled` path (see "Reading files from a channel"). Inbound audio
-  is not supported.
+  `channel_files_enabled` path (see "Reading files from a channel"). **Group
+  chats** get neither files nor pasted images. Inbound audio is not supported.
 - Proactive messages (cron/timer/heartbeat → Teams) require the bot to have seen
   the conversation before: the per-conversation `serviceURL` is captured from
   inbound activities and persisted, then reconstructed at send time. A

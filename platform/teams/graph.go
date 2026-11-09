@@ -62,8 +62,9 @@ type graphReader interface {
 	// resolveContentURL maps a SharePoint file URL to the Graph URL of its content,
 	// under Sites.Selected. The site hosting the file must be admin-granted read.
 	resolveContentURL(ctx context.Context, sharepointURL string) (string, fetchOutcome)
-	// getBounded GETs a Graph content URL, bounded by maxBytes.
-	getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome)
+	// getBounded GETs a Graph content URL, bounded by maxBytes. extraRetryable
+	// lists the statuses that may clear on a later attempt for this URL.
+	getBounded(ctx context.Context, rawURL string, maxBytes int64, extraRetryable ...int) ([]byte, fetchOutcome)
 }
 
 // graphClient is the concrete Graph reader: an app-only Graph token + HTTP client.
@@ -308,8 +309,8 @@ func (g *graphClient) getJSON(ctx context.Context, rawURL string, out any) fetch
 // Authorization header on the cross-host hop, which is fine — the redirect target
 // is pre-authenticated). A payload over the cap is reported oversize, never
 // truncated. Token, transport and read errors are fetchRetryable; a non-2xx status
-// is classified per statusOutcome, with 404 retryable.
-func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes int64) ([]byte, fetchOutcome) {
+// is classified per statusOutcome, with extraRetryable added to its retryable set.
+func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes int64, extraRetryable ...int) ([]byte, fetchOutcome) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fetchFailed
@@ -327,8 +328,7 @@ func (g *graphClient) getBounded(ctx context.Context, rawURL string, maxBytes in
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("teams: graph content GET non-2xx", "status", resp.StatusCode, "url", rawURL)
-		// A file SharePoint is still saving answers 404 for a while.
-		return nil, statusOutcome(resp.StatusCode, http.StatusNotFound)
+		return nil, statusOutcome(resp.StatusCode, extraRetryable...)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {

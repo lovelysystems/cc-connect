@@ -92,8 +92,9 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	if p.conn == nil {
 		p.conn = newConnector(newTokenSource(p.cfg))
 	}
-	// Channel file reading uses a separate app-only Graph token (Sites.Selected +
-	// RSC ChannelMessage.Read.Group). Wired only when opted in.
+	// A separate app-only Graph token reads channel messages, their files and
+	// pasted images (RSC ChannelMessage.Read.Group, plus Sites.Selected for
+	// files). Wired only when opted in.
 	if p.cfg.channelFilesEnabled && p.graph == nil {
 		p.graph = newGraphClient(newGraphTokenSource(p.cfg))
 	}

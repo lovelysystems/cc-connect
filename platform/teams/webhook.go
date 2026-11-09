@@ -144,8 +144,8 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	// don't drop an empty-text channel message when the feature is on —
 	// shouldHandle still gates engagement, and an engaged turn with nothing to
 	// hand over is dropped downstream by the engine.
-	mightHaveChannelFile := p.cfg.channelFilesEnabled && !a.isPersonal()
-	if content == "" && !isCardAction && !hasMedia && !mightHaveChannelFile {
+	mightHaveChannelAttachment := p.cfg.channelFilesEnabled && !a.isPersonal()
+	if content == "" && !isCardAction && !hasMedia && !mightHaveChannelAttachment {
 		return // empty message with no card action and no attachment
 	}
 	// Authorize before touching engagement so an unauthorized @mention cannot
@@ -198,7 +198,7 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		case hasMedia:
 			// 1:1: file/image references arrive in the activity.
 			msg.Images, msg.Files, dropped = p.downloadInboundMedia(a)
-		case mightHaveChannelFile:
+		case mightHaveChannelAttachment:
 			// Channel: files and pasted images are not in the activity — read the
 			// engaged message via Graph to discover them, then download them.
 			var readFailed bool
@@ -292,6 +292,7 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 			}
 			mime, ok := imageMIME(data)
 			if !ok {
+				slog.Warn("teams: attachment is not an image", "name", att.Name, "sniffed", mime)
 				dropped = append(dropped, droppedAttachment{name: att.Name, reason: dropUnavailable})
 				continue
 			}
@@ -359,8 +360,9 @@ func (p *Platform) downloadChannelFiles(ctx context.Context, refs []channelFileR
 			dropped = append(dropped, droppedAttachment{name: ref.name, reason: dropReason(outcome)})
 			continue
 		}
+		// A file SharePoint is still saving answers 404 for a while.
 		data, outcome := retryFetch(deadline, ref.name, func() ([]byte, fetchOutcome) {
-			return p.graph.getBounded(ctx, graphURL, max)
+			return p.graph.getBounded(ctx, graphURL, max, http.StatusNotFound)
 		})
 		if outcome != fetchOK {
 			dropped = append(dropped, droppedAttachment{name: ref.name, reason: dropReason(outcome)})
@@ -380,12 +382,14 @@ func (p *Platform) downloadChannelFiles(ctx context.Context, refs []channelFileR
 // pasted image has no name, so it is reported as "image N" by its place in the
 // message.
 func (p *Platform) downloadPastedImages(ctx context.Context, urls []string, deadline time.Time, max int64) (images []core.ImageAttachment, dropped []droppedAttachment) {
+	if len(urls) > maxChannelImages {
+		for i := maxChannelImages; i < len(urls); i++ {
+			dropped = append(dropped, droppedAttachment{name: fmt.Sprintf("image %d", i+1), reason: dropOverImageLimit})
+		}
+		urls = urls[:maxChannelImages]
+	}
 	for i, u := range urls {
 		name := fmt.Sprintf("image %d", i+1)
-		if i >= maxChannelImages {
-			dropped = append(dropped, droppedAttachment{name: name, reason: dropOverImageLimit})
-			continue
-		}
 		data, outcome := retryFetch(deadline, name, func() ([]byte, fetchOutcome) {
 			return p.graph.getBounded(ctx, u, max)
 		})
@@ -395,6 +399,7 @@ func (p *Platform) downloadPastedImages(ctx context.Context, urls []string, dead
 		}
 		mime, ok := imageMIME(data)
 		if !ok {
+			slog.Warn("teams: attachment is not an image", "name", name, "sniffed", mime)
 			dropped = append(dropped, droppedAttachment{name: name, reason: dropUnavailable})
 			continue
 		}
@@ -403,11 +408,14 @@ func (p *Platform) downloadPastedImages(ctx context.Context, urls []string, dead
 	return images, dropped
 }
 
-// imageMIME returns the image type the bytes sniff as. Teams declares some
-// images only as "image/*".
+// agentImageTypes are the image types the agent accepts inline.
+var agentImageTypes = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
+
+// imageMIME returns the type the bytes sniff as, and whether the agent accepts
+// it as an image. Teams declares some images only as "image/*".
 func imageMIME(data []byte) (string, bool) {
 	mime := http.DetectContentType(data)
-	return mime, strings.HasPrefix(mime, "image/")
+	return mime, agentImageTypes[mime]
 }
 
 // retryFetch runs fetch, retrying a fetchRetryable outcome after each of

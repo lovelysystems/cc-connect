@@ -124,7 +124,7 @@ func pastedImagesServer(t *testing.T, html string) *httptest.Server {
 }
 
 func hostedImg(src string) string {
-	return `<img src="` + src + `" itemtype="http://schema.skype.com/AMSImage">`
+	return `<img src="` + src + `" alt="Ohlala Show" width="444.44444444444446" height="250" itemid="0-ate-d1-2806362967dbf35976f27c0abc8004c5">`
 }
 
 func TestReadMessage_PastedImagesOnRoot(t *testing.T) {
@@ -245,7 +245,7 @@ func fetchFile(g *graphClient, sharepointURL string, maxBytes int64) ([]byte, fe
 	if outcome != fetchOK {
 		return nil, outcome
 	}
-	return g.getBounded(context.Background(), graphURL, maxBytes)
+	return g.getBounded(context.Background(), graphURL, maxBytes, http.StatusNotFound)
 }
 
 func TestDownloadFile_ResolvesSiteDriveContent(t *testing.T) {

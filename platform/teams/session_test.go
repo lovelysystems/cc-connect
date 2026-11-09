@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -617,7 +619,7 @@ func (f *fakeGraph) resolveContentURL(_ context.Context, sharepointURL string) (
 	return fakeGraphPrefix + sharepointURL, fetchOK
 }
 
-func (f *fakeGraph) getBounded(_ context.Context, graphURL string, _ int64) ([]byte, fetchOutcome) {
+func (f *fakeGraph) getBounded(_ context.Context, graphURL string, _ int64, _ ...int) ([]byte, fetchOutcome) {
 	sharepointURL := strings.TrimPrefix(graphURL, fakeGraphPrefix)
 	if f.downloads == nil {
 		f.downloads = map[string]int{}
@@ -880,6 +882,63 @@ func TestDispatch_ChannelImageCap(t *testing.T) {
 	}
 	if len(fs.replied) != 1 {
 		t.Errorf("exceeding the image cap should notify the user, replied=%d", len(fs.replied))
+	}
+}
+
+func TestDispatch_ChannelImageTypeAllowlist(t *testing.T) {
+	bmp := []byte("BM\x36\x00\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00")
+	webp := []byte("RIFF\x24\x00\x00\x00WEBPVP8 ")
+	fg := &fakeGraph{
+		images: []string{"img-1", "img-2", "img-3"},
+		script: map[string][]fetchResult{
+			"img-1": {{data: bmp, outcome: fetchOK}},
+			"img-2": {{data: webp, outcome: fetchOK}},
+			"img-3": {{data: pngBytes, outcome: fetchOK}},
+		},
+	}
+	p, got, _ := channelFilePlatform(true, fg)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	m := (*got)[0]
+	if len(m.Images) != 2 || m.Images[0].MimeType != "image/webp" || m.Images[1].MimeType != "image/png" {
+		t.Errorf("images = %+v, want webp then png", m.Images)
+	}
+	if want := `[Attachments not received] "image 1" (unavailable)`; m.ExtraContent != want {
+		t.Errorf("note = %q, want %q", m.ExtraContent, want)
+	}
+}
+
+func TestDispatch_ChannelPastedImageNotFoundFetchedOnce(t *testing.T) {
+	fastRetries(t, time.Millisecond, time.Second)
+	var imageGets int
+	body, err := json.Marshal(map[string]any{"body": map[string]string{
+		"contentType": "html",
+		"content":     hostedImg("https://graph.microsoft.com/v1.0/teams/group-1/channels/c/messages/root-9/replies/msg-1/hostedContents/aWQ9MQ==/$value"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/hostedContents/") {
+			imageGets++
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	p, got, fs := channelFilePlatform(true, nil)
+	p.graph = newTestGraph(srv.URL)
+	p.dispatch(nil, channelFileActivity("look"))
+
+	if imageGets != 1 {
+		t.Errorf("image GETs = %d, want one", imageGets)
+	}
+	if m := (*got)[0]; len(m.Images) != 0 || m.ExtraContent != `[Attachments not received] "image 1" (unavailable)` {
+		t.Errorf("images=%d note=%q", len(m.Images), m.ExtraContent)
+	}
+	if len(fs.replied) != 1 {
+		t.Errorf("user must get the attachment notice, replied=%d", len(fs.replied))
 	}
 }
 
