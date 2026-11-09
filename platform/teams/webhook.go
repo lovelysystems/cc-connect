@@ -292,8 +292,8 @@ func (p *Platform) downloadInboundMedia(a *activity) (images []core.ImageAttachm
 			}
 			mime, ok := imageMIME(data)
 			if !ok {
-				slog.Warn("teams: attachment is not an image", "name", att.Name, "sniffed", mime)
-				dropped = append(dropped, droppedAttachment{name: att.Name, reason: dropUnavailable})
+				slog.Warn("teams: attachment is not an image the agent takes", "name", att.Name, "sniffed", mime)
+				dropped = append(dropped, droppedAttachment{name: att.Name, reason: rejectedImageReason(mime)})
 				continue
 			}
 			images = append(images, core.ImageAttachment{
@@ -378,9 +378,9 @@ func (p *Platform) downloadChannelFiles(ctx context.Context, refs []channelFileR
 }
 
 // downloadPastedImages downloads a channel message's pasted images, returning
-// them and the ones that failed, were too large or did not hold an image. A
-// pasted image has no name, so it is reported as "image N" by its place in the
-// message.
+// them and the ones that failed, were too large or did not hold an image the
+// agent takes. A pasted image has no name, so it is reported as "image N" by its
+// place in the message.
 func (p *Platform) downloadPastedImages(ctx context.Context, urls []string, deadline time.Time, max int64) (images []core.ImageAttachment, dropped []droppedAttachment) {
 	if len(urls) > maxChannelImages {
 		for i := maxChannelImages; i < len(urls); i++ {
@@ -399,8 +399,8 @@ func (p *Platform) downloadPastedImages(ctx context.Context, urls []string, dead
 		}
 		mime, ok := imageMIME(data)
 		if !ok {
-			slog.Warn("teams: attachment is not an image", "name", name, "sniffed", mime)
-			dropped = append(dropped, droppedAttachment{name: name, reason: dropUnavailable})
+			slog.Warn("teams: attachment is not an image the agent takes", "name", name, "sniffed", mime)
+			dropped = append(dropped, droppedAttachment{name: name, reason: rejectedImageReason(mime)})
 			continue
 		}
 		images = append(images, core.ImageAttachment{MimeType: mime, Data: data})
@@ -416,6 +416,16 @@ var agentImageTypes = map[string]bool{"image/png": true, "image/jpeg": true, "im
 func imageMIME(data []byte) (string, bool) {
 	mime := http.DetectContentType(data)
 	return mime, agentImageTypes[mime]
+}
+
+// rejectedImageReason is the reason the agent is given for bytes imageMIME
+// rejects. An image type is named so the agent can ask for the image in
+// another type.
+func rejectedImageReason(mime string) string {
+	if strings.HasPrefix(mime, "image/") {
+		return "unsupported type (" + mime + ")"
+	}
+	return dropUnavailable
 }
 
 // retryFetch runs fetch, retrying a fetchRetryable outcome after each of

@@ -145,7 +145,9 @@ Without `supportsFiles: true`, Teams does not deliver file attachments to the bo
 **Size limit:** each download is capped by `max_attachment_bytes` (default
 20 MiB). An oversized attachment, or one whose download fails, is skipped and the
 user gets a brief notice; the turn still proceeds with any text and other
-attachments.
+attachments. An image of a type the agent does not take (such as BMP) is skipped
+the same way and named to the agent as an unsupported type, so it can ask for a
+PNG or JPEG.
 
 ## Sending images
 
@@ -224,7 +226,9 @@ Notes:
 - A file on a site the app was not granted, or an oversized/failed download, is
   skipped with a brief user notice (bounded by `max_attachment_bytes`). A pasted
   image that fails, is too large or holds no image is skipped the same way and
-  named to the agent as `image N`, by its place in the message.
+  named to the agent as `image N`, by its place in the message. An image of a
+  type the agent does not take is named with that type, e.g.
+  `"image 1" (unsupported type (image/bmp))`.
 - Same limits as 1:1: file cards only; outbound send is not implemented.
 
 

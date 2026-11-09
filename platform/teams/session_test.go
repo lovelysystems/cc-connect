@@ -444,6 +444,20 @@ func TestDispatch_PersonalNonImageBytesDropped(t *testing.T) {
 	}
 }
 
+func TestDispatch_PersonalUnsupportedImageTypeNamed(t *testing.T) {
+	bmp := []byte("BM\x36\x00\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00")
+	p, got, _ := personalPlatform(fetchResult{data: bmp, outcome: fetchOK})
+	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/*", ContentURL: "https://smba.example/v3/attachments/x", Name: "shot.bmp"}))
+
+	m := (*got)[0]
+	if len(m.Images) != 0 {
+		t.Errorf("an image type the agent does not take must not reach it, got %+v", m.Images)
+	}
+	if want := `[Attachments not received] "shot.bmp" (unsupported type (image/bmp))`; m.ExtraContent != want {
+		t.Errorf("note = %q, want %q", m.ExtraContent, want)
+	}
+}
+
 func TestDispatch_ForeignHostImageOmitsToken(t *testing.T) {
 	p, _, fs := personalPlatform(fetchResult{data: jpegBytes, outcome: fetchOK})
 	p.dispatch(nil, personalActivity("", inboundAttachment{ContentType: "image/jpeg", ContentURL: "https://cdn.foreign.example/img.jpg"}))
@@ -903,7 +917,7 @@ func TestDispatch_ChannelImageTypeAllowlist(t *testing.T) {
 	if len(m.Images) != 2 || m.Images[0].MimeType != "image/webp" || m.Images[1].MimeType != "image/png" {
 		t.Errorf("images = %+v, want webp then png", m.Images)
 	}
-	if want := `[Attachments not received] "image 1" (unavailable)`; m.ExtraContent != want {
+	if want := `[Attachments not received] "image 1" (unsupported type (image/bmp))`; m.ExtraContent != want {
 		t.Errorf("note = %q, want %q", m.ExtraContent, want)
 	}
 }
