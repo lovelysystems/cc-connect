@@ -41,7 +41,7 @@ entry that graduated upstream at the re-base keeps its final marker there.
 #### Feature
 
 - **teams**: send a message with links or formatting to the agent as Markdown
-  (upstream: pending)
+  (upstream: pending; follow-up to chenhg5/cc-connect#1518)
 
 ### 2026-10-06 / v1.5.0-ls.1
 
