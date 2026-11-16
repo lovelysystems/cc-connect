@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
@@ -27,15 +26,6 @@ type openGate struct {
 	rc         replyContext
 	activityID string
 	onClick    core.GateClick
-}
-
-// gateClick is a valid click on an open gate card, which it has taken out of
-// the open set.
-type gateClick struct {
-	gate    *openGate
-	nonce   string
-	cancel  bool
-	clicker gateClicker
 }
 
 // gateClicker is who clicked, as handed to the gate command.
@@ -89,18 +79,22 @@ func gatePromptCard(card core.GateCard) map[string]any {
 	value := gateActionPrefix + card.RequestID + ":" + card.Nonce
 	c := gateCardBody(card, "")
 	c["actions"] = []map[string]any{
-		gateExecuteAction(gateConfirmLabel(card), value),
-		gateExecuteAction("Cancel", value+gateCancelSuffix),
+		gateSubmitAction(gateConfirmLabel(card), value),
+		gateSubmitAction("Cancel", value+gateCancelSuffix),
 	}
 	return c
 }
 
-func gateExecuteAction(title, value string) map[string]any {
+// gateSubmitAction is a gate button. msteams.feedback.hide keeps Teams from
+// showing its "response was sent" note under the card on click.
+func gateSubmitAction(title, value string) map[string]any {
 	return map[string]any{
-		"type":  "Action.Execute",
+		"type":  "Action.Submit",
 		"title": title,
-		"verb":  value,
-		"data":  map[string]any{"action": value},
+		"data": map[string]any{
+			"action":  value,
+			"msteams": map[string]any{"feedback": map[string]any{"hide": true}},
+		},
 	}
 }
 
@@ -112,38 +106,27 @@ func gateCardBody(card core.GateCard, status string) map[string]any {
 	if status != "" {
 		body = append(body, map[string]any{"type": "TextBlock", "text": status, "wrap": true, "separator": true})
 	}
-	c := adaptiveCard(body)
-	// Action.Execute needs version 1.4 or later.
-	c["version"] = "1.4"
-	return c
+	return adaptiveCard(body)
 }
 
-// clickedCard is the gate card after c: the action taken and who took it, no buttons.
-func (c *gateClick) clickedCard() map[string]any {
-	label := gateConfirmLabel(c.gate.card)
-	if c.cancel {
-		label = "Cancel"
-	}
-	return gateCardBody(c.gate.card, "**"+label+"** — by "+c.clicker.Name)
-}
-
-// claimGate validates a gate action and takes its card out of the open set.
-// isGate is false for any other action; click is nil for a gate action that is
-// malformed, unauthorized, or for a card that is unknown or already resolved.
-func (p *Platform) claimGate(a *activity, action string) (click *gateClick, isGate bool) {
+// handleGateClick consumes a gate button click. It reports false for any other
+// action, and true for every gate: value, valid or not, so a gate click never
+// becomes a message for the engine. A valid click holds the card's session
+// through onClick before anything else, until the outcome turn is done.
+func (p *Platform) handleGateClick(a *activity, action string) bool {
 	rest, ok := strings.CutPrefix(action, gateActionPrefix)
 	if !ok {
-		return nil, false
+		return false
 	}
 	rest, cancel := strings.CutSuffix(rest, gateCancelSuffix)
 	requestID, nonce, ok := strings.Cut(rest, ":")
 	if !ok || strings.Contains(nonce, ":") {
 		slog.Warn("teams: malformed gate action", "action", action)
-		return nil, true
+		return true
 	}
 	if !core.AllowList(p.cfg.allowFrom, userID(a)) {
 		slog.Warn("teams: gate click from unauthorized user", "user", userID(a))
-		return nil, true
+		return true
 	}
 
 	p.gatesMu.Lock()
@@ -151,92 +134,41 @@ func (p *Platform) claimGate(a *activity, action string) (click *gateClick, isGa
 	if g == nil || g.card.Nonce != nonce {
 		p.gatesMu.Unlock()
 		slog.Warn("teams: gate click for unknown or resolved card", "request_id", requestID)
-		return nil, true
+		return true
 	}
 	delete(p.gates, requestID)
 	p.gatesMu.Unlock()
 
 	clicker := gateClicker{EntraObjectID: a.From.AADObjectID, Name: a.From.Name}
 	slog.Info("teams: gate click", "request_id", requestID, "cancel", cancel, "clicked_by", clicker.EntraObjectID)
-	return &gateClick{gate: g, nonce: nonce, cancel: cancel, clicker: clicker}, true
-}
 
-// handleGateClick consumes an Action.Submit gate button click. It reports false
-// for any other action, and true for every gate: value, valid or not, so a gate
-// click never becomes a message for the engine.
-func (p *Platform) handleGateClick(a *activity, action string) bool {
-	c, isGate := p.claimGate(a, action)
-	if c == nil {
-		return isGate
+	var onOutcome func(string, core.StreamingCard)
+	if g.onClick != nil {
+		onOutcome = g.onClick()
 	}
-	onOutcome := c.hold()
-	g := c.gate
-	if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, c.clickedCard())); err != nil {
-		slog.Error("teams: gate card edit failed", "request_id", g.card.RequestID, "activity_id", g.activityID, "error", err)
-	}
-	p.resolveGate(c, onOutcome)
-	return true
-}
 
-// gateInvokeResponse answers an adaptiveCard/action invoke.
-type gateInvokeResponse struct {
-	StatusCode int    `json:"statusCode"`
-	Type       string `json:"type"`
-	Value      any    `json:"value"`
-}
-
-const gateInvokeIgnoredText = "This card no longer takes this action."
-
-// handleCardInvoke answers an adaptiveCard/action invoke from an Action.Execute
-// button. ok is false for any other activity. A click on an open gate card is
-// answered with the clicked card, and then resolves the click; anything else
-// gets a message and leaves the card as it is.
-func (p *Platform) handleCardInvoke(claims jwt.MapClaims, body []byte) (response gateInvokeResponse, then func(), ok bool) {
-	a, err := parseActivity(body)
-	if err != nil || !strings.EqualFold(a.Type, "invoke") || !strings.EqualFold(a.Name, "adaptiveCard/action") {
-		return gateInvokeResponse{}, nil, false
+	status := "Confirmed by " + clicker.Name
+	if cancel {
+		status = "Cancelled by " + clicker.Name
 	}
-	ignored := gateInvokeResponse{StatusCode: 200, Type: "application/vnd.microsoft.activity.message", Value: gateInvokeIgnoredText}
-	if !p.serviceURLTrusted(claims, a) {
-		return ignored, nil, true
+	if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, status))); err != nil {
+		slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
 	}
-	c, _ := p.claimGate(a, a.invokeAction())
-	if c == nil {
-		return ignored, nil, true
-	}
-	onOutcome := c.hold()
-	return gateInvokeResponse{StatusCode: 200, Type: adaptiveCardContentType, Value: c.clickedCard()},
-		func() { p.resolveGate(c, onOutcome) }, true
-}
-
-// hold tells the engine about the click, which holds the card's session until
-// the outcome turn is done. It returns the outcome callback, nil when the card
-// has none.
-func (c *gateClick) hold() func(string, core.StreamingCard) {
-	if c.gate.onClick == nil {
-		return nil
-	}
-	return c.gate.onClick()
-}
-
-// resolveGate posts the outcome turn's placeholder, runs the gate command on
-// Confirm, and hands the outcome to onOutcome.
-func (p *Platform) resolveGate(c *gateClick, onOutcome func(string, core.StreamingCard)) {
 	if onOutcome == nil {
-		return
+		return true
 	}
-	g := c.gate
-	requestID := g.card.RequestID
+
 	placeholder, err := p.createCardStream(context.Background(), g.rc)
 	if err != nil {
 		slog.Error("teams: gate placeholder post failed", "request_id", requestID, "error", err)
 	}
-	outcome, message := "cancelled", "Cancelled by "+c.clicker.Name+"."
-	if !c.cancel {
-		outcome, message = p.runGateCommand(gateCommandInput{RequestID: requestID, Nonce: c.nonce, ClickedBy: c.clicker})
+	outcome, message := "cancelled", "Cancelled by "+clicker.Name+"."
+	if !cancel {
+		outcome, message = p.runGateCommand(gateCommandInput{RequestID: requestID, Nonce: nonce, ClickedBy: clicker})
 	}
 	onOutcome(fmt.Sprintf("Gate report for request %s: outcome %q, clicked by %s. Message: %s",
-		requestID, outcome, c.clicker.Name, message), placeholder)
+		requestID, outcome, clicker.Name, message), placeholder)
+	return true
 }
 
 // runGateCommand runs gate_command with in as JSON on stdin and reads the

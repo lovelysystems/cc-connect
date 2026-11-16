@@ -3,7 +3,6 @@ package teams
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,7 +62,6 @@ type droppedAttachment struct {
 // on timeout; a slow turn (e.g. a cold agent start) under a synchronous ack would
 // trigger a retry and a duplicate dispatch. Acking before dispatch matches the
 // M365 Agents SDK, which queues activities to a background worker and returns 202.
-// An adaptiveCard/action invoke is answered with 200 and its invoke response.
 func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -88,21 +86,8 @@ func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// An Action.Execute click is answered in the response body; the click's
-	// work runs after the answer is written.
-	if response, then, ok := p.handleCardInvoke(claims, body); ok {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			slog.Warn("teams: invoke response write failed", "error", err)
-		}
-		if then != nil {
-			go then()
-		}
-		return
-	}
-
-	// Ack first, process the turn asynchronously. Only the invoke above needs a
-	// synchronous body.
+	// Ack first, process the turn asynchronously (the card-only connector never
+	// returns Invoke/ExpectReplies responses, so nothing needs a synchronous body).
 	// A bounded semaphore caps concurrent turns; at capacity we shed with 503 so
 	// the Bot Connector retries rather than letting turns spawn unbounded.
 	select {
