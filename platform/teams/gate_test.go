@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -91,9 +92,7 @@ func TestGateCard_ClickResolvesOnceAndNeverReachesEngine(t *testing.T) {
 	if clicks != 1 {
 		t.Errorf("onClick must run once, ran %d times", clicks)
 	}
-	if status := gateCardStatus(t, fs.updates[0]); status != "Confirmed by Ada" {
-		t.Errorf("card status = %q", status)
-	}
+	checkGateCardStatus(t, fs.updates[0], "✓ Confirmed by Ada")
 	if _, ok := fs.updates[0].Attachments[0].Content.(map[string]any)["actions"]; ok {
 		t.Errorf("clicked card must have no buttons")
 	}
@@ -117,14 +116,29 @@ func TestGateCard_ClickResolvesOnceAndNeverReachesEngine(t *testing.T) {
 	}
 }
 
-// gateCardStatus returns the status line of an edited gate card.
-func gateCardStatus(t *testing.T, a outboundActivity) string {
+// checkGateCardStatus checks that an edited gate card ends in a small, subtle
+// status line under a divider that reads decision, then the click time as
+// Teams date and time functions.
+func checkGateCardStatus(t *testing.T, a outboundActivity, decision string) {
 	t.Helper()
 	body := a.Attachments[0].Content.(map[string]any)["body"].([]map[string]any)
 	if len(body) != 3 {
 		t.Fatalf("edited card has no status line, body = %v", body)
 	}
-	return body[2]["text"].(string)
+	status := body[2]
+	if status["size"] != "Small" || status["isSubtle"] != true || status["separator"] != true || status["wrap"] != true {
+		t.Errorf("status block = %v, want small, subtle, separated and wrapped", status)
+	}
+	when := `(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`
+	want := regexp.MustCompile(`^` + regexp.QuoteMeta(decision) + ` · \{\{DATE\(` + when + `, SHORT\)\}\}, \{\{TIME\(` + when + `\)\}\}$`)
+	text, _ := status["text"].(string)
+	m := want.FindStringSubmatch(text)
+	if m == nil {
+		t.Fatalf("status text = %q, want %q followed by the click date and time", text, decision)
+	}
+	if m[1] != m[2] {
+		t.Errorf("status date and time name different instants: %q", text)
+	}
 }
 
 func TestGateCard_PromptButtonsAreActionSubmitWithTeamsFeedbackHidden(t *testing.T) {
@@ -171,9 +185,7 @@ func TestGateCard_CancelClickEditsTheCardAndSkipsTheCommand(t *testing.T) {
 	if len(fs.updates) != 1 {
 		t.Fatalf("card must be edited exactly once, updates = %d", len(fs.updates))
 	}
-	if status := gateCardStatus(t, fs.updates[0]); status != "Cancelled by Ada" {
-		t.Errorf("card status = %q", status)
-	}
+	checkGateCardStatus(t, fs.updates[0], "✕ Cancelled by Ada")
 	if len(reports) != 1 || !strings.Contains(reports[0], `"cancelled"`) {
 		t.Errorf("reports = %v", reports)
 	}

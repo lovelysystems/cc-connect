@@ -104,7 +104,7 @@ func gateCardBody(card core.GateCard, status string) map[string]any {
 		{"type": "TextBlock", "text": card.Body, "wrap": true},
 	}
 	if status != "" {
-		body = append(body, map[string]any{"type": "TextBlock", "text": status, "wrap": true, "separator": true})
+		body = append(body, map[string]any{"type": "TextBlock", "text": status, "wrap": true, "separator": true, "size": "Small", "isSubtle": true})
 	}
 	return adaptiveCard(body)
 }
@@ -147,10 +147,13 @@ func (p *Platform) handleGateClick(a *activity, action string) bool {
 		onOutcome = g.onClick()
 	}
 
-	status := "Confirmed by " + clicker.Name
+	// Teams renders DATE and TIME in the viewer's local time zone.
+	at := time.Now().UTC().Format(time.RFC3339)
+	status := "✓ Confirmed by " + clicker.Name
 	if cancel {
-		status = "Cancelled by " + clicker.Name
+		status = "✕ Cancelled by " + clicker.Name
 	}
+	status += " · {{DATE(" + at + ", SHORT)}}, {{TIME(" + at + ")}}"
 	if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, status))); err != nil {
 		slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
 	}
