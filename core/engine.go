@@ -552,6 +552,7 @@ type interactiveState struct {
 	pendingMessages          []queuedMessage // messages queued while session was busy
 	approveAll               bool            // when true, auto-approve all permission requests for this session
 	fromVoice                bool            // true if current turn originated from voice transcription
+	placeholder              StreamingCard   // loading card already posted for the next turn; the turn streams into it
 	sideText                 string
 	deleteMode               *deleteModeState
 	modelSwitch              *modelSwitchState
@@ -1780,6 +1781,7 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		Content:      content,
 		ReplyCtx:     replyCtx,
 		ModeOverride: job.Mode,
+		Placeholder:  job.Placeholder,
 	}
 
 	agent := e.agent
@@ -3824,6 +3826,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.currentMessageID = msg.MessageID
 	state.fromVoice = msg.FromVoice
 	state.sideText = ""
+	state.placeholder = msg.Placeholder
 	as := state.agentSession // capture under lock to avoid race with cleanup
 	state.mu.Unlock()
 
@@ -4830,7 +4833,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var cardThinkingText string        // latest thinking text
 	var cardAnswerText strings.Builder // accumulated answer text
 
-	if scp, ok := state.platform.(StreamingCardPlatform); ok {
+	if state.placeholder != nil {
+		streamCard = state.placeholder
+		state.placeholder = nil
+		slog.Info("streaming card adopted for turn", "session", sessionKey)
+	} else if scp, ok := state.platform.(StreamingCardPlatform); ok {
 		if sc, err := scp.CreateStreamingCard(e.ctx, state.replyCtx); err != nil {
 			slog.Warn("streaming card creation failed, falling back to normal messages", "error", err)
 		} else {

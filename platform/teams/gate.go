@@ -25,7 +25,7 @@ type openGate struct {
 	sessionKey string
 	rc         replyContext
 	activityID string
-	onOutcome  func(report string)
+	onOutcome  func(report string, placeholder core.StreamingCard)
 }
 
 // gateClicker is who clicked, as handed to the gate command.
@@ -46,7 +46,7 @@ type gateCommandOutput struct {
 }
 
 // PostGateCard implements core.GateCardPoster.
-func (p *Platform) PostGateCard(ctx context.Context, sessionKey string, replyCtx any, card core.GateCard, onOutcome func(string)) error {
+func (p *Platform) PostGateCard(ctx context.Context, sessionKey string, replyCtx any, card core.GateCard, onOutcome func(string, core.StreamingCard)) error {
 	rc, ok := replyCtx.(replyContext)
 	if !ok {
 		return fmt.Errorf("teams: invalid reply context %T", replyCtx)
@@ -68,15 +68,18 @@ func (p *Platform) PostGateCard(ctx context.Context, sessionKey string, replyCtx
 	return nil
 }
 
-func gatePromptCard(card core.GateCard) map[string]any {
-	label := card.ConfirmLabel
-	if label == "" {
-		label = "Confirm"
+func gateConfirmLabel(card core.GateCard) string {
+	if card.ConfirmLabel == "" {
+		return "Confirm"
 	}
+	return card.ConfirmLabel
+}
+
+func gatePromptCard(card core.GateCard) map[string]any {
 	value := gateActionPrefix + card.RequestID + ":" + card.Nonce
 	c := gateCardBody(card, "")
 	c["actions"] = actionSet([]cardButton{
-		{title: label, action: value},
+		{title: gateConfirmLabel(card), action: value},
 		{title: "Cancel", action: value + gateCancelSuffix},
 	})
 	return c
@@ -125,30 +128,28 @@ func (p *Platform) handleGateClick(a *activity, action string) bool {
 	clicker := gateClicker{EntraObjectID: a.From.AADObjectID, Name: a.From.Name}
 	slog.Info("teams: gate click", "request_id", requestID, "cancel", cancel, "clicked_by", clicker.EntraObjectID)
 
-	outcome, message := "cancelled", "Cancelled by "+clicker.Name+"."
-	if !cancel {
-		if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, "Publishing…"))); err != nil {
-			slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
-		}
-		outcome, message = p.runGateCommand(gateCommandInput{RequestID: requestID, Nonce: nonce, ClickedBy: clicker})
+	label := gateConfirmLabel(g.card)
+	if cancel {
+		label = "Cancel"
 	}
-
-	var status string
-	switch outcome {
-	case "published":
-		status = "Published by " + clicker.Name + "."
-	case "cancelled":
-		status = "Cancelled by " + clicker.Name + "."
-	default:
-		status = "Not published: " + message
-	}
+	status := "**" + label + "** — by " + clicker.Name
 	if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, status))); err != nil {
 		slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
 	}
-	if g.onOutcome != nil {
-		g.onOutcome(fmt.Sprintf("Gate report for request %s: outcome %q, clicked by %s. Message: %s",
-			requestID, outcome, clicker.Name, message))
+	if g.onOutcome == nil {
+		return true
 	}
+
+	placeholder, err := p.createCardStream(context.Background(), g.rc)
+	if err != nil {
+		slog.Error("teams: gate placeholder post failed", "request_id", requestID, "error", err)
+	}
+	outcome, message := "cancelled", "Cancelled by "+clicker.Name+"."
+	if !cancel {
+		outcome, message = p.runGateCommand(gateCommandInput{RequestID: requestID, Nonce: nonce, ClickedBy: clicker})
+	}
+	g.onOutcome(fmt.Sprintf("Gate report for request %s: outcome %q, clicked by %s. Message: %s",
+		requestID, outcome, clicker.Name, message), placeholder)
 	return true
 }
 

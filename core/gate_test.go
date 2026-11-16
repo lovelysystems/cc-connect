@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -11,7 +12,8 @@ import (
 // gatePlatform records sends and posted gate cards in one ordered list.
 type gatePlatform struct {
 	stubPlatformEngine
-	posted chan struct{}
+	posted    chan struct{}
+	onOutcome func(string, StreamingCard)
 }
 
 func newGatePlatform() *gatePlatform {
@@ -20,9 +22,10 @@ func newGatePlatform() *gatePlatform {
 
 func (p *gatePlatform) ReconstructReplyCtx(string) (any, error) { return "ctx", nil }
 
-func (p *gatePlatform) PostGateCard(_ context.Context, _ string, _ any, card GateCard, _ func(string)) error {
+func (p *gatePlatform) PostGateCard(_ context.Context, _ string, _ any, card GateCard, onOutcome func(string, StreamingCard)) error {
 	p.mu.Lock()
 	p.sent = append(p.sent, "card:"+card.Title)
+	p.onOutcome = onOutcome
 	p.mu.Unlock()
 	p.posted <- struct{}{}
 	return nil
@@ -133,5 +136,100 @@ func TestPostGateCard_PostsWhenSessionIsReleasedWithoutAReply(t *testing.T) {
 	case <-p.posted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("card not posted after the session was released")
+	}
+}
+
+// gateStreamPlatform is a gatePlatform whose turns stream into cards; it counts
+// the cards a turn creates itself.
+type gateStreamPlatform struct {
+	*gatePlatform
+	created atomic.Int32
+}
+
+func (p *gateStreamPlatform) CreateStreamingCard(context.Context, any) (StreamingCard, error) {
+	p.created.Add(1)
+	return &recordingStreamCard{}, nil
+}
+
+// sendSignalSession signals sent once the turn has handed its prompt to the agent.
+type sendSignalSession struct {
+	*controllableAgentSession
+	sent chan struct{}
+}
+
+func (s *sendSignalSession) Send(prompt, msgID string, images []ImageAttachment, files []FileAttachment) error {
+	s.sent <- struct{}{}
+	return s.controllableAgentSession.Send(prompt, msgID, images, files)
+}
+
+// postGateCardForOutcome posts a gate card into an idle session and returns
+// the outcome callback the platform received.
+func postGateCardForOutcome(t *testing.T, e *Engine, p *gateStreamPlatform, key string) func(string, StreamingCard) {
+	t.Helper()
+	if err := e.PostGateCard(context.Background(), key, "confirm", GateCard{RequestID: "r1", Title: "Publish?"}); err != nil {
+		t.Fatalf("PostGateCard: %v", err)
+	}
+	select {
+	case <-p.posted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("card not posted")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.onOutcome
+}
+
+func waitFinalized(t *testing.T, card *recordingStreamCard) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !card.finalized() {
+		if time.Now().After(deadline) {
+			t.Fatal("placeholder was never finalized")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestPostGateCard_OutcomeTurnFillsThePostedPlaceholder(t *testing.T) {
+	p := &gateStreamPlatform{gatePlatform: newGatePlatform()}
+	as := &sendSignalSession{controllableAgentSession: newControllableSession("s1"), sent: make(chan struct{}, 1)}
+	agent := &controllableAgent{nextSession: as}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	key := "test:chat:user1"
+	onOutcome := postGateCardForOutcome(t, e, p, key)
+
+	placeholder := &recordingStreamCard{}
+	onOutcome(`Gate report for request r1: outcome "published"`, placeholder)
+	select {
+	case <-as.sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("outcome turn did not start")
+	}
+	as.events <- Event{Type: EventResult, Content: "Published, all good.", Done: true}
+
+	waitFinalized(t, placeholder)
+	if !strings.Contains(placeholder.finalContent(), "Published, all good.") {
+		t.Errorf("placeholder content = %q", placeholder.finalContent())
+	}
+	if n := p.created.Load(); n != 0 {
+		t.Errorf("outcome turn created %d streaming cards of its own", n)
+	}
+}
+
+func TestPostGateCard_FailedOutcomeTurnClosesThePlaceholder(t *testing.T) {
+	p := &gateStreamPlatform{gatePlatform: newGatePlatform()}
+	e := NewEngine("test", &controllableAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	key := "test:chat:user1"
+	onOutcome := postGateCardForOutcome(t, e, p, key)
+	if !e.sessions.GetOrCreateActive(key).TryLock() {
+		t.Fatal("session already locked")
+	}
+
+	placeholder := &recordingStreamCard{}
+	onOutcome(`Gate report for request r1: outcome "published"`, placeholder)
+
+	waitFinalized(t, placeholder)
+	if placeholder.finalContent() != gateOutcomeFailedText {
+		t.Errorf("placeholder content = %q", placeholder.finalContent())
 	}
 }

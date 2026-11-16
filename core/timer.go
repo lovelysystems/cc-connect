@@ -32,6 +32,8 @@ type TimerJob struct {
 	Fired       bool      `json:"fired"`
 	FiredAt     time.Time `json:"fired_at,omitempty"`
 	LastError   string    `json:"last_error,omitempty"`
+	// Placeholder is a loading card already posted for this run's turn.
+	Placeholder StreamingCard `json:"-"`
 }
 
 // IsShellJob returns true if the job runs a shell command directly.
