@@ -45,8 +45,9 @@ type Session struct {
 	// so that automated activity cannot prevent idle session rotation.
 	LastUserActivity time.Time `json:"last_user_activity,omitempty"`
 
-	mu   sync.Mutex `json:"-"`
-	busy bool       `json:"-"`
+	mu       sync.Mutex    `json:"-"`
+	busy     bool          `json:"-"`
+	released chan struct{} `json:"-"`
 }
 
 func (s *Session) TryLock() bool {
@@ -67,6 +68,22 @@ func (s *Session) Busy() bool {
 	return s.busy
 }
 
+// Released returns a channel that is closed once the in-flight turn releases
+// the session. When no turn holds the session it is already closed.
+func (s *Session) Released() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.busy {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	if s.released == nil {
+		s.released = make(chan struct{})
+	}
+	return s.released
+}
+
 func (s *Session) Unlock() {
 	s.unlock(true)
 }
@@ -79,6 +96,10 @@ func (s *Session) unlock(update bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.busy = false
+	if s.released != nil {
+		close(s.released)
+		s.released = nil
+	}
 	if update {
 		s.UpdatedAt = time.Now()
 	}

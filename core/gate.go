@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-const (
-	gateTurnPoll  = 500 * time.Millisecond
-	gateTurnLimit = 15 * time.Minute
-)
+const gateTurnLimit = 15 * time.Minute
 
 // GateCard is a confirmation card posted into a session's thread by a process
 // outside the agent. Its buttons resolve on the platform side and never reach
@@ -32,8 +30,9 @@ type GateCardPoster interface {
 }
 
 // PostGateCard posts a confirm card (or, for kind "notice", plain text) into
-// the thread of sessionKey. A confirm card is posted in the background once the
-// session's running turn has ended; a failure there is only logged.
+// the thread of sessionKey. While a turn holds the session, the confirm card is
+// held and posted in the background right after that turn's final reply has
+// been sent, or once the session is released; a failure there is only logged.
 func (e *Engine) PostGateCard(ctx context.Context, sessionKey, kind string, card GateCard) error {
 	platformName, _, _ := strings.Cut(sessionKey, ":")
 	var p Platform
@@ -79,33 +78,84 @@ func (e *Engine) PostGateCard(ctx context.Context, sessionKey, kind string, card
 			}
 		}()
 	}
-	go func() {
-		if !e.waitTurnEnd(sessionKey) {
-			slog.Error("gate: turn still running, card not posted", "session", sessionKey, "request_id", card.RequestID)
-			return
-		}
+	post := func() {
 		if err := poster.PostGateCard(context.Background(), sessionKey, replyCtx, card, onOutcome); err != nil {
 			slog.Error("gate: post card failed", "session", sessionKey, "request_id", card.RequestID, "error", err)
 		}
-	}()
-	return nil
-}
-
-// waitTurnEnd blocks until the session of sessionKey is no longer busy, so the
-// card lands below the reply of the turn that asked for it. It reports false
-// when the turn is still running after gateTurnLimit.
-func (e *Engine) waitTurnEnd(sessionKey string) bool {
+	}
 	_, sessions := e.sessionContextForKey(sessionKey)
 	session := sessions.FindByID(sessions.ActiveSessionID(sessionKey))
 	if session == nil {
-		return true
+		go post()
+		return nil
 	}
-	deadline := time.Now().Add(gateTurnLimit)
-	for session.Busy() {
-		if time.Now().After(deadline) {
-			return false
+	e.holdGateCard(session, &heldGateCard{post: post}, func() {
+		slog.Error("gate: turn still running, card not posted", "session", sessionKey, "request_id", card.RequestID)
+	})
+	return nil
+}
+
+// heldGateCard is a confirm card waiting for the turn that holds its session.
+// Whichever of final reply, session release or time limit comes first claims it.
+type heldGateCard struct {
+	post    func()
+	claimed atomic.Bool
+}
+
+func (h *heldGateCard) claim() bool { return h.claimed.CompareAndSwap(false, true) }
+
+// holdGateCard keeps h until postHeldGateCards runs for session, the session is
+// released, or gateTurnLimit passes; on the time limit h is dropped and
+// onDrop runs. A session no turn holds gets the card at once.
+func (e *Engine) holdGateCard(session *Session, h *heldGateCard, onDrop func()) {
+	released := session.Released()
+	e.gateMu.Lock()
+	if e.gateHeld == nil {
+		e.gateHeld = make(map[*Session][]*heldGateCard)
+	}
+	e.gateHeld[session] = append(e.gateHeld[session], h)
+	e.gateMu.Unlock()
+
+	go func() {
+		limit := time.NewTimer(gateTurnLimit)
+		defer limit.Stop()
+		select {
+		case <-released:
+			if h.claim() {
+				h.post()
+			}
+		case <-limit.C:
+			if h.claim() {
+				onDrop()
+			}
 		}
-		time.Sleep(gateTurnPoll)
+		e.gateMu.Lock()
+		defer e.gateMu.Unlock()
+		held := e.gateHeld[session]
+		for i, candidate := range held {
+			if candidate == h {
+				held = append(held[:i], held[i+1:]...)
+				break
+			}
+		}
+		if len(held) == 0 {
+			delete(e.gateHeld, session)
+		} else {
+			e.gateHeld[session] = held
+		}
+	}()
+}
+
+// postHeldGateCards posts the cards held for session. The turn calls it right
+// after its final reply has been sent.
+func (e *Engine) postHeldGateCards(session *Session) {
+	e.gateMu.Lock()
+	held := e.gateHeld[session]
+	delete(e.gateHeld, session)
+	e.gateMu.Unlock()
+	for _, h := range held {
+		if h.claim() {
+			go h.post()
+		}
 	}
-	return true
 }
