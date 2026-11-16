@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -12,8 +13,8 @@ import (
 // gatePlatform records sends and posted gate cards in one ordered list.
 type gatePlatform struct {
 	stubPlatformEngine
-	posted    chan struct{}
-	onOutcome func(string, StreamingCard)
+	posted  chan struct{}
+	onClick GateClick
 }
 
 func newGatePlatform() *gatePlatform {
@@ -22,10 +23,10 @@ func newGatePlatform() *gatePlatform {
 
 func (p *gatePlatform) ReconstructReplyCtx(string) (any, error) { return "ctx", nil }
 
-func (p *gatePlatform) PostGateCard(_ context.Context, _ string, _ any, card GateCard, onOutcome func(string, StreamingCard)) error {
+func (p *gatePlatform) PostGateCard(_ context.Context, _ string, _ any, card GateCard, onClick GateClick) error {
 	p.mu.Lock()
 	p.sent = append(p.sent, "card:"+card.Title)
-	p.onOutcome = onOutcome
+	p.onClick = onClick
 	p.mu.Unlock()
 	p.posted <- struct{}{}
 	return nil
@@ -151,20 +152,20 @@ func (p *gateStreamPlatform) CreateStreamingCard(context.Context, any) (Streamin
 	return &recordingStreamCard{}, nil
 }
 
-// sendSignalSession signals sent once the turn has handed its prompt to the agent.
+// sendSignalSession passes each prompt a turn hands to the agent to sent.
 type sendSignalSession struct {
 	*controllableAgentSession
-	sent chan struct{}
+	sent chan string
 }
 
 func (s *sendSignalSession) Send(prompt, msgID string, images []ImageAttachment, files []FileAttachment) error {
-	s.sent <- struct{}{}
+	s.sent <- prompt
 	return s.controllableAgentSession.Send(prompt, msgID, images, files)
 }
 
-// postGateCardForOutcome posts a gate card into an idle session and returns
-// the outcome callback the platform received.
-func postGateCardForOutcome(t *testing.T, e *Engine, p *gateStreamPlatform, key string) func(string, StreamingCard) {
+// postGateCardForClick posts a gate card into an idle session and returns
+// the click callback the platform received.
+func postGateCardForClick(t *testing.T, e *Engine, p *gateStreamPlatform, key string) GateClick {
 	t.Helper()
 	if err := e.PostGateCard(context.Background(), key, "confirm", GateCard{RequestID: "r1", Title: "Publish?"}); err != nil {
 		t.Fatalf("PostGateCard: %v", err)
@@ -176,7 +177,7 @@ func postGateCardForOutcome(t *testing.T, e *Engine, p *gateStreamPlatform, key 
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.onOutcome
+	return p.onClick
 }
 
 func waitFinalized(t *testing.T, card *recordingStreamCard) {
@@ -192,11 +193,11 @@ func waitFinalized(t *testing.T, card *recordingStreamCard) {
 
 func TestPostGateCard_OutcomeTurnFillsThePostedPlaceholder(t *testing.T) {
 	p := &gateStreamPlatform{gatePlatform: newGatePlatform()}
-	as := &sendSignalSession{controllableAgentSession: newControllableSession("s1"), sent: make(chan struct{}, 1)}
+	as := &sendSignalSession{controllableAgentSession: newControllableSession("s1"), sent: make(chan string, 1)}
 	agent := &controllableAgent{nextSession: as}
 	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
 	key := "test:chat:user1"
-	onOutcome := postGateCardForOutcome(t, e, p, key)
+	onOutcome := postGateCardForClick(t, e, p, key)()
 
 	placeholder := &recordingStreamCard{}
 	onOutcome(`Gate report for request r1: outcome "published"`, placeholder)
@@ -216,14 +217,14 @@ func TestPostGateCard_OutcomeTurnFillsThePostedPlaceholder(t *testing.T) {
 	}
 }
 
-func TestPostGateCard_FailedOutcomeTurnClosesThePlaceholder(t *testing.T) {
+func TestPostGateCard_FailedOutcomeTurnClosesThePlaceholderAndReleasesTheSession(t *testing.T) {
 	p := &gateStreamPlatform{gatePlatform: newGatePlatform()}
-	e := NewEngine("test", &controllableAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	agent := &controllableAgent{startSessionFn: func(context.Context, string) (AgentSession, error) {
+		return nil, errors.New("agent did not start")
+	}}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
 	key := "test:chat:user1"
-	onOutcome := postGateCardForOutcome(t, e, p, key)
-	if !e.sessions.GetOrCreateActive(key).TryLock() {
-		t.Fatal("session already locked")
-	}
+	onOutcome := postGateCardForClick(t, e, p, key)()
 
 	placeholder := &recordingStreamCard{}
 	onOutcome(`Gate report for request r1: outcome "published"`, placeholder)
@@ -232,4 +233,114 @@ func TestPostGateCard_FailedOutcomeTurnClosesThePlaceholder(t *testing.T) {
 	if placeholder.finalContent() != gateOutcomeFailedText {
 		t.Errorf("placeholder content = %q", placeholder.finalContent())
 	}
+	waitReleased(t, e.sessions.GetOrCreateActive(key))
+}
+
+func waitPrompt(t *testing.T, sent <-chan string) string {
+	t.Helper()
+	select {
+	case prompt := <-sent:
+		return prompt
+	case <-time.After(2 * time.Second):
+		t.Fatal("no prompt reached the agent")
+		return ""
+	}
+}
+
+func waitReleased(t *testing.T, session *Session) {
+	t.Helper()
+	select {
+	case <-session.Released():
+	case <-time.After(2 * time.Second):
+		t.Fatal("session was never released")
+	}
+}
+
+func TestGateClick_MessageWhileTheClickHoldsTheSessionIsAnsweredAfterTheOutcome(t *testing.T) {
+	p := &gateStreamPlatform{gatePlatform: newGatePlatform()}
+	as := &sendSignalSession{controllableAgentSession: newControllableSession("s1"), sent: make(chan string, 4)}
+	agent := &controllableAgent{nextSession: as}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	key := "test:chat:user1"
+	onOutcome := postGateCardForClick(t, e, p, key)()
+	session := e.sessions.GetOrCreateActive(key)
+	if !session.Busy() {
+		t.Fatal("the click must hold the session")
+	}
+
+	// No agent process runs for the session, as after an idle reap.
+	e.handleMessage(p, &Message{Platform: "test", SessionKey: key, UserID: "u1", UserName: "user", Content: "typed meanwhile", ReplyCtx: "ctx"})
+	if indexOfSent(p.getSent(), e.i18n.T(MsgMessageQueued)) < 0 {
+		t.Fatalf("message not acknowledged as queued, sent = %q", p.getSent())
+	}
+	select {
+	case prompt := <-as.sent:
+		t.Fatalf("prompt reached the agent while the click holds the session: %q", prompt)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	placeholder := &recordingStreamCard{}
+	onOutcome(`Gate report for request r1: outcome "published"`, placeholder)
+	if prompt := waitPrompt(t, as.sent); !strings.Contains(prompt, "Gate report") {
+		t.Fatalf("first prompt = %q, want the gate report", prompt)
+	}
+	as.events <- Event{Type: EventResult, Content: "Published, all good.", Done: true}
+
+	if prompt := waitPrompt(t, as.sent); !strings.Contains(prompt, "typed meanwhile") {
+		t.Fatalf("second prompt = %q, want the queued message", prompt)
+	}
+	waitFinalized(t, placeholder)
+	if !strings.Contains(placeholder.finalContent(), "Published, all good.") {
+		t.Errorf("placeholder content = %q", placeholder.finalContent())
+	}
+	as.events <- Event{Type: EventResult, Content: "Answer to the typed message.", Done: true}
+	waitReleased(t, session)
+}
+
+func TestGateClick_WhileATurnRunsTheOutcomeTurnFollowsIt(t *testing.T) {
+	p := &gateStreamPlatform{gatePlatform: newGatePlatform()}
+	as := &sendSignalSession{controllableAgentSession: newControllableSession("s1"), sent: make(chan string, 4)}
+	agent := &controllableAgent{nextSession: as}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	key := "test:chat:user1"
+	onClick := postGateCardForClick(t, e, p, key)
+
+	session := e.sessions.GetOrCreateActive(key)
+	if !session.TryLock() {
+		t.Fatal("session already locked")
+	}
+	go e.processInteractiveMessageWith(p, &Message{
+		Platform: "test", SessionKey: key, UserID: "u1", Content: "running turn", ReplyCtx: "ctx",
+	}, session, agent, e.sessions, key, "", "")
+	if prompt := waitPrompt(t, as.sent); !strings.Contains(prompt, "running turn") {
+		t.Fatalf("first prompt = %q", prompt)
+	}
+
+	resolved := make(chan struct{})
+	placeholder := &recordingStreamCard{}
+	go func() {
+		onClick()(`Gate report for request r1: outcome "published"`, placeholder)
+		close(resolved)
+	}()
+	select {
+	case <-resolved:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the click must not wait for the running turn")
+	}
+	select {
+	case prompt := <-as.sent:
+		t.Fatalf("outcome turn started while another turn runs: %q", prompt)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	as.events <- Event{Type: EventResult, Content: "running reply", Done: true}
+	if prompt := waitPrompt(t, as.sent); !strings.Contains(prompt, "Gate report") {
+		t.Fatalf("second prompt = %q, want the gate report", prompt)
+	}
+	as.events <- Event{Type: EventResult, Content: "Published, all good.", Done: true}
+	waitFinalized(t, placeholder)
+	if !strings.Contains(placeholder.finalContent(), "Published, all good.") {
+		t.Errorf("placeholder content = %q", placeholder.finalContent())
+	}
+	waitReleased(t, session)
 }

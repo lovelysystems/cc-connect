@@ -9,6 +9,7 @@ import (
 // See https://learn.microsoft.com/azure/bot-service/rest-api/bot-framework-rest-connector-api-reference.
 type activity struct {
 	Type         string              `json:"type"`
+	Name         string              `json:"name"`
 	ID           string              `json:"id"`
 	Text         string              `json:"text"`
 	ServiceURL   string              `json:"serviceUrl"`
@@ -195,6 +196,24 @@ func (a *activity) cardAction() string {
 		}
 	}
 	return ""
+}
+
+// invokeAction returns the action string of an Action.Execute invoke: the
+// data's action key, else the verb.
+func (a *activity) invokeAction() string {
+	var v struct {
+		Action struct {
+			Verb string         `json:"verb"`
+			Data map[string]any `json:"data"`
+		} `json:"action"`
+	}
+	if err := json.Unmarshal(a.Value, &v); err != nil {
+		return ""
+	}
+	if s, ok := v.Action.Data["action"].(string); ok && s != "" {
+		return s
+	}
+	return v.Action.Verb
 }
 
 // cardActionReply maps a card Action.Submit value to the message content the

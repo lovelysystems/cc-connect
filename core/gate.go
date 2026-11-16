@@ -25,13 +25,18 @@ type GateCard struct {
 	ConfirmLabel string
 }
 
+// GateClick is called by the platform when a gate card's button is clicked,
+// before the card changes or the gate command runs. It holds the card's session
+// until the outcome turn is done and returns onOutcome, which the platform must
+// call exactly once with a fixed-text report; the engine runs it as a turn in
+// that session. A non-nil placeholder is a loading card already posted for that
+// turn: the turn streams its answer into it.
+type GateClick func() (onOutcome func(report string, placeholder StreamingCard))
+
 // GateCardPoster is implemented by platforms that can post a gate card and
-// resolve its button clicks. onOutcome receives a fixed-text report once the
-// card is resolved; the engine runs it as a turn in the card's session. A
-// non-nil placeholder is a loading card already posted for that turn: the turn
-// streams its answer into it.
+// resolve its button clicks.
 type GateCardPoster interface {
-	PostGateCard(ctx context.Context, sessionKey string, replyCtx any, card GateCard, onOutcome func(report string, placeholder StreamingCard)) error
+	PostGateCard(ctx context.Context, sessionKey string, replyCtx any, card GateCard, onClick GateClick) error
 }
 
 // PostGateCard posts a confirm card (or, for kind "notice", plain text) into
@@ -67,34 +72,38 @@ func (e *Engine) PostGateCard(ctx context.Context, sessionKey, kind string, card
 	if !ok {
 		return fmt.Errorf("gate: platform %q cannot post gate cards", platformName)
 	}
-	onOutcome := func(report string, placeholder StreamingCard) {
-		go func() {
-			silent := true
-			job := &TimerJob{
-				ID:          "gate-" + card.RequestID,
-				SessionKey:  sessionKey,
-				Prompt:      report,
-				Silent:      &silent,
-				SessionMode: "reuse",
-				CreatedAt:   time.Now(),
-			}
-			var tracked *finalizeTracker
-			if placeholder != nil {
-				tracked = &finalizeTracker{StreamingCard: placeholder}
-				job.Placeholder = tracked
-			}
-			if err := e.ExecuteTimerJob(job); err != nil {
-				slog.Error("gate: outcome turn failed", "session", sessionKey, "request_id", card.RequestID, "error", err)
-			}
-			if tracked != nil && !tracked.finalized.Load() {
-				if err := tracked.Finalize(context.Background(), gateOutcomeFailedText); err != nil {
-					slog.Error("gate: placeholder edit failed", "session", sessionKey, "request_id", card.RequestID, "error", err)
+	onClick := func() func(string, StreamingCard) {
+		locked := e.lockGateSession(sessionKey)
+		return func(report string, placeholder StreamingCard) {
+			go func() {
+				silent := true
+				job := &TimerJob{
+					ID:          "gate-" + card.RequestID,
+					SessionKey:  sessionKey,
+					Prompt:      report,
+					Silent:      &silent,
+					SessionMode: "reuse",
+					CreatedAt:   time.Now(),
+					HeldSession: <-locked,
 				}
-			}
-		}()
+				var tracked *finalizeTracker
+				if placeholder != nil {
+					tracked = &finalizeTracker{StreamingCard: placeholder}
+					job.Placeholder = tracked
+				}
+				if err := e.ExecuteTimerJob(job); err != nil {
+					slog.Error("gate: outcome turn failed", "session", sessionKey, "request_id", card.RequestID, "error", err)
+				}
+				if tracked != nil && !tracked.finalized.Load() {
+					if err := tracked.Finalize(context.Background(), gateOutcomeFailedText); err != nil {
+						slog.Error("gate: placeholder edit failed", "session", sessionKey, "request_id", card.RequestID, "error", err)
+					}
+				}
+			}()
+		}
 	}
 	post := func() {
-		if err := poster.PostGateCard(context.Background(), sessionKey, replyCtx, card, onOutcome); err != nil {
+		if err := poster.PostGateCard(context.Background(), sessionKey, replyCtx, card, onClick); err != nil {
 			slog.Error("gate: post card failed", "session", sessionKey, "request_id", card.RequestID, "error", err)
 		}
 	}
@@ -108,6 +117,30 @@ func (e *Engine) PostGateCard(ctx context.Context, sessionKey, kind string, card
 		slog.Error("gate: turn still running, card not posted", "session", sessionKey, "request_id", card.RequestID)
 	})
 	return nil
+}
+
+// lockGateSession locks the active session of sessionKey for a clicked gate
+// card and yields it on the returned channel. While a turn holds the session,
+// the lock is taken as soon as that turn releases it; messages arriving in the
+// meantime queue for the busy session.
+func (e *Engine) lockGateSession(sessionKey string) <-chan *Session {
+	_, sessions := e.sessionContextForKey(sessionKey)
+	session := sessions.GetOrCreateActive(sessionKey)
+	locked := make(chan *Session, 1)
+	if session.TryLock() {
+		locked <- session
+		return locked
+	}
+	go func() {
+		for {
+			<-session.Released()
+			if session.TryLock() {
+				locked <- session
+				return
+			}
+		}
+	}()
+	return locked
 }
 
 // heldGateCard is a confirm card waiting for the turn that holds its session.

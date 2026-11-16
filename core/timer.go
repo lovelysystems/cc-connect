@@ -34,6 +34,9 @@ type TimerJob struct {
 	LastError   string    `json:"last_error,omitempty"`
 	// Placeholder is a loading card already posted for this run's turn.
 	Placeholder StreamingCard `json:"-"`
+	// HeldSession is the job's active session, already locked by the caller.
+	// The run takes it over and releases it.
+	HeldSession *Session `json:"-"`
 }
 
 // IsShellJob returns true if the job runs a shell command directly.

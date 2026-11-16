@@ -1666,6 +1666,14 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 // notification (unless muted), and either runs a shell command or injects a
 // synthetic message into the agent session.
 func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
+	// A held session is released here unless the turn below takes it over.
+	held := job.HeldSession
+	defer func() {
+		if held != nil {
+			held.Unlock()
+		}
+	}()
+
 	e.hooks.Emit(HookEvent{
 		Event:      HookEventTimerTriggered,
 		SessionKey: job.SessionKey,
@@ -1837,9 +1845,13 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		return nil
 	}
 
-	session := sessions.GetOrCreateActive(sessionKey)
-	if !session.TryLock() {
-		return fmt.Errorf("session %q is busy", sessionKey)
+	session := held
+	held = nil
+	if session == nil {
+		session = sessions.GetOrCreateActive(sessionKey)
+		if !session.TryLock() {
+			return fmt.Errorf("session %q is busy", sessionKey)
+		}
 	}
 
 	iKey := sessionKey
