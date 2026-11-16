@@ -132,6 +132,9 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	}
 
 	action := a.cardAction()
+	if p.handleGateClick(a, action) {
+		return
+	}
 	isCardAction := action != ""
 	content := messageContent(a, a.cleanText())
 	// Activity attachments are read in 1:1 chats only; a channel's files and pasted

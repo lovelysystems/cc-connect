@@ -100,6 +100,7 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 	s.mux.HandleFunc("/timer/list", s.handleTimerList)
 	s.mux.HandleFunc("/timer/info", s.handleTimerInfo)
 	s.mux.HandleFunc("/timer/del", s.handleTimerDel)
+	s.mux.HandleFunc("/gate/card", s.handleGateCard)
 	s.mux.HandleFunc("/cron/exec", s.handleCronExec)
 	s.mux.HandleFunc("/cron/run", s.handleCronExec)
 	s.mux.HandleFunc("/relay/send", s.handleRelaySend)
@@ -753,6 +754,75 @@ func (s *APIServer) handleTimerDel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiJSON(w, http.StatusOK, map[string]string{"status": "ok", "id": req.ID})
+}
+
+// ── Gate API ──────────────────────────────────────────────────
+
+// GateCardRequest is the JSON body for POST /gate/card.
+type GateCardRequest struct {
+	Project      string `json:"project"`
+	SessionKey   string `json:"session_key"`
+	Kind         string `json:"kind"` // "confirm" | "notice"
+	RequestID    string `json:"request_id"`
+	Nonce        string `json:"nonce"`
+	Title        string `json:"title"`
+	Body         string `json:"body"`
+	ConfirmLabel string `json:"confirm_label"`
+}
+
+func (s *APIServer) handleGateCard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req GateCardRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionKey == "" {
+		http.Error(w, "session_key is required", http.StatusBadRequest)
+		return
+	}
+	switch req.Kind {
+	case "notice":
+	case "confirm":
+		// The button value is "gate:<request_id>:<nonce>", split on ":".
+		if req.RequestID == "" || req.Nonce == "" ||
+			strings.Contains(req.RequestID, ":") || strings.Contains(req.Nonce, ":") {
+			http.Error(w, "request_id and nonce are required and must not contain ':'", http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, "kind must be confirm or notice", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	engine, ok := s.engines[req.Project]
+	if req.Project == "" && len(s.engines) == 1 {
+		for _, e := range s.engines {
+			engine, ok = e, true
+		}
+	}
+	s.mu.RUnlock()
+	if !ok {
+		http.Error(w, fmt.Sprintf("project %q not found", req.Project), http.StatusNotFound)
+		return
+	}
+
+	card := GateCard{
+		RequestID:    req.RequestID,
+		Nonce:        req.Nonce,
+		Title:        req.Title,
+		Body:         req.Body,
+		ConfirmLabel: req.ConfirmLabel,
+	}
+	if err := engine.PostGateCard(r.Context(), req.SessionKey, req.Kind, card); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apiJSON(w, http.StatusOK, map[string]string{"status": "posted"})
 }
 
 // ── Relay API ──────────────────────────────────────────────────

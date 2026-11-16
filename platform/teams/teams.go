@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -41,6 +42,9 @@ type Platform struct {
 	graph       graphReader // Microsoft Graph reader for channel files and pasted images (nil unless channel_files_enabled)
 	server      *http.Server
 	dispatchSem chan struct{} // bounds concurrent async dispatch goroutines
+
+	gatesMu sync.Mutex
+	gates   map[string]*openGate // request id → gate card awaiting its click
 }
 
 // sender abstracts the Bot Connector calls for testability.
@@ -59,6 +63,7 @@ var (
 	_ core.StreamingCardPlatform         = (*Platform)(nil)
 	_ core.ImageSender                   = (*Platform)(nil)
 	_ core.InlineButtonSender            = (*Platform)(nil)
+	_ core.GateCardPoster                = (*Platform)(nil)
 )
 
 // New builds a Teams platform from the config.toml options table.

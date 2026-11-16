@@ -60,6 +60,9 @@ type config struct {
 	// Disabled = channel attachments are ignored, no Graph call.
 	channelFilesEnabled bool
 
+	// gateCommand is the executable run when a gate card's Confirm is clicked.
+	gateCommand string
+
 	// dataDir and project are injected by cc-connect (cc_data_dir / cc_project)
 	// and locate the on-disk engagement store. Empty => engagement stays
 	// in-memory only (e.g. tests / standalone construction).
@@ -79,6 +82,7 @@ func parseConfig(opts map[string]any) (config, error) {
 		sessionScope:        normalizeSessionScope(opts["session_scope"]),
 		serviceURLAllowlist: splitCSV(stringOpt(opts, "service_url_allowlist")),
 		cardLoadingText:     strings.TrimSpace(stringOpt(opts, "card_loading_text")),
+		gateCommand:         strings.TrimSpace(stringOpt(opts, "gate_command")),
 		dataDir:             stringOpt(opts, "cc_data_dir"),
 		project:             stringOpt(opts, "cc_project"),
 	}
