@@ -130,13 +130,17 @@ func (p *Platform) handleGateClick(a *activity, action string) bool {
 		outcome, message = p.runGateCommand(gateCommandInput{RequestID: requestID, Nonce: nonce, ClickedBy: clicker})
 	}
 
-	ctx := context.Background()
-	status := fmt.Sprintf("**%s** by %s", outcome, clicker.Name)
-	if err := p.conn.update(ctx, g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, status))); err != nil {
-		slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
+	var status string
+	switch outcome {
+	case "published":
+		status = "Published by " + clicker.Name + "."
+	case "cancelled":
+		status = "Cancelled by " + clicker.Name + "."
+	default:
+		status = "Not published: " + message
 	}
-	if _, err := p.conn.send(ctx, g.rc, newMessageActivity(g.rc, message)); err != nil {
-		slog.Error("teams: gate message post failed", "request_id", requestID, "error", err)
+	if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, status))); err != nil {
+		slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
 	}
 	if g.onOutcome != nil {
 		g.onOutcome(fmt.Sprintf("Gate report for request %s: outcome %q, clicked by %s. Message: %s",

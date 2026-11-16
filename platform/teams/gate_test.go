@@ -58,10 +58,23 @@ func TestGateCard_ClickResolvesOnceAndNeverReachesEngine(t *testing.T) {
 	if len(fs.updates) != 1 || fs.updatedIDs[0] != "card-1" {
 		t.Fatalf("card must be edited exactly once, updates=%v", fs.updatedIDs)
 	}
-	if fs.last.Text != "POC: would publish r1" {
-		t.Errorf("thread message = %q", fs.last.Text)
+	if len(fs.last.Attachments) != 1 || fs.last.Text != "" {
+		t.Errorf("no message may follow the card, last send = %+v", fs.last)
+	}
+	if status := gateCardStatus(t, fs.updates[0]); status != "Published by Ada." {
+		t.Errorf("card status = %q", status)
 	}
 	if len(reports) != 1 || !strings.Contains(reports[0], `"published"`) {
 		t.Errorf("reports = %v", reports)
 	}
+}
+
+// gateCardStatus returns the status line of an edited gate card.
+func gateCardStatus(t *testing.T, a outboundActivity) string {
+	t.Helper()
+	body := a.Attachments[0].Content.(map[string]any)["body"].([]map[string]any)
+	if len(body) != 3 {
+		t.Fatalf("edited card has no status line, body = %v", body)
+	}
+	return body[2]["text"].(string)
 }

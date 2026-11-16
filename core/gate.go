@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	gateTurnPoll  = 500 * time.Millisecond
+	gateTurnLimit = 15 * time.Minute
+)
+
 // GateCard is a confirmation card posted into a session's thread by a process
 // outside the agent. Its buttons resolve on the platform side and never reach
 // the agent.
@@ -27,7 +32,8 @@ type GateCardPoster interface {
 }
 
 // PostGateCard posts a confirm card (or, for kind "notice", plain text) into
-// the thread of sessionKey.
+// the thread of sessionKey. A confirm card is posted in the background once the
+// session's running turn has ended; a failure there is only logged.
 func (e *Engine) PostGateCard(ctx context.Context, sessionKey, kind string, card GateCard) error {
 	platformName, _, _ := strings.Cut(sessionKey, ":")
 	var p Platform
@@ -73,5 +79,33 @@ func (e *Engine) PostGateCard(ctx context.Context, sessionKey, kind string, card
 			}
 		}()
 	}
-	return poster.PostGateCard(ctx, sessionKey, replyCtx, card, onOutcome)
+	go func() {
+		if !e.waitTurnEnd(sessionKey) {
+			slog.Error("gate: turn still running, card not posted", "session", sessionKey, "request_id", card.RequestID)
+			return
+		}
+		if err := poster.PostGateCard(context.Background(), sessionKey, replyCtx, card, onOutcome); err != nil {
+			slog.Error("gate: post card failed", "session", sessionKey, "request_id", card.RequestID, "error", err)
+		}
+	}()
+	return nil
+}
+
+// waitTurnEnd blocks until the session of sessionKey is no longer busy, so the
+// card lands below the reply of the turn that asked for it. It reports false
+// when the turn is still running after gateTurnLimit.
+func (e *Engine) waitTurnEnd(sessionKey string) bool {
+	_, sessions := e.sessionContextForKey(sessionKey)
+	session := sessions.FindByID(sessions.ActiveSessionID(sessionKey))
+	if session == nil {
+		return true
+	}
+	deadline := time.Now().Add(gateTurnLimit)
+	for session.Busy() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(gateTurnPoll)
+	}
+	return true
 }
