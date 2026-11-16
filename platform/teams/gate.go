@@ -127,6 +127,9 @@ func (p *Platform) handleGateClick(a *activity, action string) bool {
 
 	outcome, message := "cancelled", "Cancelled by "+clicker.Name+"."
 	if !cancel {
+		if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, "Publishing…"))); err != nil {
+			slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
+		}
 		outcome, message = p.runGateCommand(gateCommandInput{RequestID: requestID, Nonce: nonce, ClickedBy: clicker})
 	}
 

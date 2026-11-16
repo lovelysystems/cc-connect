@@ -55,14 +55,20 @@ func TestGateCard_ClickResolvesOnceAndNeverReachesEngine(t *testing.T) {
 	if len(*got) != 1 {
 		t.Fatalf("only the typed message may reach the engine, got %d messages", len(*got))
 	}
-	if len(fs.updates) != 1 || fs.updatedIDs[0] != "card-1" {
-		t.Fatalf("card must be edited exactly once, updates=%v", fs.updatedIDs)
+	if len(fs.updates) != 2 || fs.updatedIDs[0] != "card-1" || fs.updatedIDs[1] != "card-1" {
+		t.Fatalf("card must be edited twice, updates=%v", fs.updatedIDs)
 	}
 	if len(fs.last.Attachments) != 1 || fs.last.Text != "" {
 		t.Errorf("no message may follow the card, last send = %+v", fs.last)
 	}
-	if status := gateCardStatus(t, fs.updates[0]); status != "Published by Ada." {
-		t.Errorf("card status = %q", status)
+	if status := gateCardStatus(t, fs.updates[0]); status != "Publishing…" {
+		t.Errorf("first card status = %q", status)
+	}
+	if _, ok := fs.updates[0].Attachments[0].Content.(map[string]any)["actions"]; ok {
+		t.Errorf("publishing card must have no buttons")
+	}
+	if status := gateCardStatus(t, fs.updates[1]); status != "Published by Ada." {
+		t.Errorf("final card status = %q", status)
 	}
 	if len(reports) != 1 || !strings.Contains(reports[0], `"published"`) {
 		t.Errorf("reports = %v", reports)
