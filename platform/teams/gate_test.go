@@ -59,7 +59,7 @@ func TestGateCard_ClickResolvesOnceAndNeverReachesEngine(t *testing.T) {
 	var reports []string
 	var placeholders []core.StreamingCard
 	rc := replyContext{serviceURL: "https://smba.example/", conversationID: "conv-A;messageid=root"}
-	card := core.GateCard{RequestID: "r1", Nonce: "n1", Title: "Publish", Body: "Publish branch?", ConfirmLabel: "Publish"}
+	card := core.GateCard{RequestID: "r1", Nonce: "n1", Eyebrow: "Publish to main", Title: "draft-1", Body: "Goes live on the site once you publish.", ConfirmLabel: "Publish"}
 	clicks := 0
 	onClick := func() func(string, core.StreamingCard) {
 		clicks++
@@ -122,15 +122,15 @@ func TestGateCard_ClickResolvesOnceAndNeverReachesEngine(t *testing.T) {
 func checkGateCardStatus(t *testing.T, a outboundActivity, decision string) {
 	t.Helper()
 	body := a.Attachments[0].Content.(map[string]any)["body"].([]map[string]any)
-	if len(body) != 3 {
-		t.Fatalf("edited card has no status line, body = %v", body)
+	if len(body) != 4 {
+		t.Fatalf("edited card must keep eyebrow, title and body and add a status line, body = %v", body)
 	}
-	status := body[2]
+	status := body[3]
 	if status["size"] != "Small" || status["isSubtle"] != true || status["separator"] != true || status["wrap"] != true {
 		t.Errorf("status block = %v, want small, subtle, separated and wrapped", status)
 	}
 	when := `(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`
-	want := regexp.MustCompile(`^` + regexp.QuoteMeta(decision) + ` · \{\{DATE\(` + when + `, SHORT\)\}\}, \{\{TIME\(` + when + `\)\}\}$`)
+	want := regexp.MustCompile(`^` + regexp.QuoteMeta(decision) + ` · \{\{DATE\(` + when + `, COMPACT\)\}\}, \{\{TIME\(` + when + `\)\}\}$`)
 	text, _ := status["text"].(string)
 	m := want.FindStringSubmatch(text)
 	if m == nil {
@@ -147,19 +147,61 @@ func TestGateCard_PromptButtonsAreActionSubmitWithTeamsFeedbackHidden(t *testing
 		t.Errorf("version = %v, want 1.5", c["version"])
 	}
 	actions := c["actions"].([]map[string]any)
-	want := []string{"gate:r1:n1", "gate:r1:n1:cancel"}
+	want := []struct{ title, value, style string }{
+		{"Publish", "gate:r1:n1", "positive"},
+		{"Cancel", "gate:r1:n1:cancel", ""},
+	}
 	if len(actions) != len(want) {
 		t.Fatalf("actions = %v", actions)
 	}
 	for i, a := range actions {
 		data := a["data"].(map[string]any)
-		if a["type"] != "Action.Submit" || data["action"] != want[i] {
-			t.Errorf("action %d = %v, want Action.Submit carrying %q", i, a, want[i])
+		if a["type"] != "Action.Submit" || a["title"] != want[i].title || data["action"] != want[i].value {
+			t.Errorf("action %d = %v, want Action.Submit %q carrying %q", i, a, want[i].title, want[i].value)
 		}
-		raw, _ := json.Marshal(data["msteams"])
+		if style, _ := a["style"].(string); style != want[i].style {
+			t.Errorf("action %d style = %q, want %q", i, style, want[i].style)
+		}
+		raw, _ := json.Marshal(a["msteams"])
 		if string(raw) != `{"feedback":{"hide":true}}` {
 			t.Errorf("action %d msteams = %s, want feedback hidden", i, raw)
 		}
+		if _, ok := data["msteams"]; ok {
+			t.Errorf("action %d data carries msteams; Teams reads it from the action", i)
+		}
+	}
+}
+
+func TestGateCard_EyebrowIsASmallSubtleLineAboveTheTitle(t *testing.T) {
+	body := gatePromptCard(core.GateCard{RequestID: "r1", Nonce: "n1", Eyebrow: "Publish to main", Title: "draft-1", Body: "Goes live."})["body"].([]map[string]any)
+	if len(body) != 3 {
+		t.Fatalf("body = %v, want eyebrow, title and body", body)
+	}
+	eyebrow, title := body[0], body[1]
+	if eyebrow["text"] != "Publish to main" || eyebrow["size"] != "Small" || eyebrow["weight"] != "Bolder" ||
+		eyebrow["isSubtle"] != true || eyebrow["wrap"] != true {
+		t.Errorf("eyebrow block = %v, want small, bolder, subtle and wrapped", eyebrow)
+	}
+	if title["text"] != "draft-1" || title["size"] != "Large" || title["weight"] != "Bolder" ||
+		title["wrap"] != true || title["spacing"] != "None" {
+		t.Errorf("title block = %v, want large, bolder, wrapped, no spacing under the eyebrow", title)
+	}
+	if body[2]["text"] != "Goes live." || body[2]["wrap"] != true || body[2]["size"] != nil {
+		t.Errorf("body block = %v, want default size, wrapped", body[2])
+	}
+}
+
+func TestGateCard_NoEyebrowLeavesTheTitleFirst(t *testing.T) {
+	body := gatePromptCard(core.GateCard{RequestID: "r1", Nonce: "n1", Title: "draft-1", Body: "Goes live."})["body"].([]map[string]any)
+	if len(body) != 2 {
+		t.Fatalf("body = %v, want title and body only", body)
+	}
+	title := body[0]
+	if title["text"] != "draft-1" || title["size"] != "Large" || title["weight"] != "Bolder" {
+		t.Errorf("title block = %v, want large and bolder", title)
+	}
+	if _, ok := title["spacing"]; ok {
+		t.Errorf("title without an eyebrow keeps default spacing, got %v", title["spacing"])
 	}
 }
 
@@ -172,7 +214,7 @@ func TestGateCard_CancelClickEditsTheCardAndSkipsTheCommand(t *testing.T) {
 
 	var reports []string
 	rc := replyContext{serviceURL: "https://smba.example/", conversationID: "conv-A;messageid=root"}
-	card := core.GateCard{RequestID: "r1", Nonce: "n1", Title: "Publish", Body: "Publish branch?", ConfirmLabel: "Publish"}
+	card := core.GateCard{RequestID: "r1", Nonce: "n1", Eyebrow: "Publish to main", Title: "draft-1", Body: "Goes live on the site once you publish.", ConfirmLabel: "Publish"}
 	onClick := func() func(string, core.StreamingCard) {
 		return func(r string, _ core.StreamingCard) { reports = append(reports, r) }
 	}

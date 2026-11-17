@@ -78,8 +78,10 @@ func gateConfirmLabel(card core.GateCard) string {
 func gatePromptCard(card core.GateCard) map[string]any {
 	value := gateActionPrefix + card.RequestID + ":" + card.Nonce
 	c := gateCardBody(card, "")
+	confirm := gateSubmitAction(gateConfirmLabel(card), value)
+	confirm["style"] = "positive"
 	c["actions"] = []map[string]any{
-		gateSubmitAction(gateConfirmLabel(card), value),
+		confirm,
 		gateSubmitAction("Cancel", value+gateCancelSuffix),
 	}
 	return c
@@ -89,20 +91,21 @@ func gatePromptCard(card core.GateCard) map[string]any {
 // showing its "response was sent" note under the card on click.
 func gateSubmitAction(title, value string) map[string]any {
 	return map[string]any{
-		"type":  "Action.Submit",
-		"title": title,
-		"data": map[string]any{
-			"action":  value,
-			"msteams": map[string]any{"feedback": map[string]any{"hide": true}},
-		},
+		"type":    "Action.Submit",
+		"title":   title,
+		"data":    map[string]any{"action": value},
+		"msteams": map[string]any{"feedback": map[string]any{"hide": true}},
 	}
 }
 
 func gateCardBody(card core.GateCard, status string) map[string]any {
-	body := []map[string]any{
-		{"type": "TextBlock", "text": card.Title, "wrap": true, "weight": "Bolder", "size": "Medium"},
-		{"type": "TextBlock", "text": card.Body, "wrap": true},
+	var body []map[string]any
+	title := map[string]any{"type": "TextBlock", "text": card.Title, "wrap": true, "weight": "Bolder", "size": "Large"}
+	if card.Eyebrow != "" {
+		body = append(body, map[string]any{"type": "TextBlock", "text": card.Eyebrow, "wrap": true, "weight": "Bolder", "size": "Small", "isSubtle": true})
+		title["spacing"] = "None"
 	}
+	body = append(body, title, map[string]any{"type": "TextBlock", "text": card.Body, "wrap": true})
 	if status != "" {
 		body = append(body, map[string]any{"type": "TextBlock", "text": status, "wrap": true, "separator": true, "size": "Small", "isSubtle": true})
 	}
@@ -153,7 +156,7 @@ func (p *Platform) handleGateClick(a *activity, action string) bool {
 	if cancel {
 		status = "✕ Cancelled by " + clicker.Name
 	}
-	status += " · {{DATE(" + at + ", SHORT)}}, {{TIME(" + at + ")}}"
+	status += " · {{DATE(" + at + ", COMPACT)}}, {{TIME(" + at + ")}}"
 	if err := p.conn.update(context.Background(), g.rc, g.activityID, cardActivity(g.rc, gateCardBody(g.card, status))); err != nil {
 		slog.Error("teams: gate card edit failed", "request_id", requestID, "activity_id", g.activityID, "error", err)
 	}

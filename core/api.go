@@ -765,6 +765,7 @@ type GateCardRequest struct {
 	Kind         string `json:"kind"` // "confirm" | "notice"
 	RequestID    string `json:"request_id"`
 	Nonce        string `json:"nonce"`
+	Eyebrow      string `json:"eyebrow"`
 	Title        string `json:"title"`
 	Body         string `json:"body"`
 	ConfirmLabel string `json:"confirm_label"`
@@ -814,6 +815,7 @@ func (s *APIServer) handleGateCard(w http.ResponseWriter, r *http.Request) {
 	card := GateCard{
 		RequestID:    req.RequestID,
 		Nonce:        req.Nonce,
+		Eyebrow:      req.Eyebrow,
 		Title:        req.Title,
 		Body:         req.Body,
 		ConfirmLabel: req.ConfirmLabel,

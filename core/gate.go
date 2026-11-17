@@ -20,6 +20,7 @@ const gateOutcomeFailedText = "No answer to the gate outcome."
 type GateCard struct {
 	RequestID    string
 	Nonce        string
+	Eyebrow      string
 	Title        string
 	Body         string
 	ConfirmLabel string
