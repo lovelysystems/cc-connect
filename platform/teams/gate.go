@@ -88,14 +88,13 @@ func gatePromptCard(card core.GateCard) map[string]any {
 }
 
 // gateSubmitAction is a gate button. msteams.feedback.hide keeps Teams from
-// showing its "response was sent" note under the card on click. The blank
-// tooltip tries to keep Teams from showing the label again on hover. It is a
-// space because Teams may drop an empty string.
+// showing its "response was sent" note under the card on click. The empty
+// tooltip tries to keep Teams from showing the label again on hover.
 func gateSubmitAction(title, value string) map[string]any {
 	return map[string]any{
 		"type":    "Action.Submit",
 		"title":   title,
-		"tooltip": " ",
+		"tooltip": "",
 		"data":    map[string]any{"action": value},
 		"msteams": map[string]any{"feedback": map[string]any{"hide": true}},
 	}

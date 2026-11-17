@@ -141,7 +141,7 @@ func checkGateCardStatus(t *testing.T, a outboundActivity, decision string) {
 	}
 }
 
-func TestGateCard_PromptButtonsAreActionSubmitWithTeamsFeedbackHiddenAndBlankTooltip(t *testing.T) {
+func TestGateCard_PromptButtonsAreActionSubmitWithTeamsFeedbackHiddenAndEmptyTooltip(t *testing.T) {
 	c := gatePromptCard(core.GateCard{RequestID: "r1", Nonce: "n1", Title: "Publish", ConfirmLabel: "Publish"})
 	if c["version"] != "1.5" {
 		t.Errorf("version = %v, want 1.5", c["version"])
@@ -172,8 +172,8 @@ func TestGateCard_PromptButtonsAreActionSubmitWithTeamsFeedbackHiddenAndBlankToo
 		var sent map[string]any
 		rawAction, _ := json.Marshal(a)
 		_ = json.Unmarshal(rawAction, &sent)
-		if tip, ok := sent["tooltip"]; !ok || tip != " " {
-			t.Errorf("action %d tooltip = %#v (present %v), want a single space", i, tip, ok)
+		if tip, ok := sent["tooltip"]; !ok || tip != "" {
+			t.Errorf("action %d tooltip = %#v (present %v), want an empty string", i, tip, ok)
 		}
 	}
 }
