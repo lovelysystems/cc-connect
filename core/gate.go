@@ -120,6 +120,22 @@ func (e *Engine) PostGateCard(ctx context.Context, sessionKey, kind string, card
 	return nil
 }
 
+// agentPid returns the pid of the live agent process of sessionKey, or 0.
+func (e *Engine) agentPid(sessionKey string) int {
+	iKey := e.interactiveKeyForSessionKey(sessionKey)
+	e.interactiveMu.Lock()
+	defer e.interactiveMu.Unlock()
+	state := e.interactiveStates[iKey]
+	if state == nil || state.agentSession == nil || !state.agentSession.Alive() {
+		return 0
+	}
+	reporter, ok := state.agentSession.(AgentProcessReporter)
+	if !ok {
+		return 0
+	}
+	return reporter.Pid()
+}
+
 // lockGateSession locks the active session of sessionKey for a clicked gate
 // card and yields it on the returned channel. While a turn holds the session,
 // the lock is taken as soon as that turn releases it; messages arriving in the

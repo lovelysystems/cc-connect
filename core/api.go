@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,11 @@ type APIServer struct {
 	// expansion + envelope). Defaults to DefaultMaxAttachmentSize.
 	maxAttachmentBytes int64
 	mu                 sync.RWMutex
+
+	// peerPid and parentPid look up the process calling the socket and walk
+	// its parents, to check that a gate card comes from the session's agent.
+	peerPid   func(net.Conn) (int, error)
+	parentPid func(int) (int, error)
 }
 
 // SendRequest is the JSON body for POST /send.
@@ -88,6 +94,8 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 		mux:                http.NewServeMux(),
 		engines:            make(map[string]*Engine),
 		maxAttachmentBytes: DefaultMaxAttachmentSize,
+		peerPid:            socketPeerPid,
+		parentPid:          processParentPid,
 	}
 	s.mux.HandleFunc("/send", s.handleSend)
 	s.mux.HandleFunc("/sessions", s.handleSessions)
@@ -173,7 +181,12 @@ func (s *APIServer) sendBodyLimit() int64 {
 }
 
 func (s *APIServer) Start() {
-	s.server = &http.Server{Handler: s.mux}
+	s.server = &http.Server{
+		Handler: s.mux,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, apiConnKey{}, c)
+		},
+	}
 	go func() {
 		if err := s.server.Serve(s.listener); err != nil && err != http.ErrServerClosed {
 			slog.Error("api server error", "error", err)
@@ -181,6 +194,9 @@ func (s *APIServer) Start() {
 	}()
 	slog.Info("api server started", "socket", s.socketPath)
 }
+
+// apiConnKey keys the socket connection of a request in its context.
+type apiConnKey struct{}
 
 func (s *APIServer) Stop() {
 	if s.server != nil {
@@ -812,6 +828,14 @@ func (s *APIServer) handleGateCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	conn, _ := r.Context().Value(apiConnKey{}).(net.Conn)
+	peer, err := s.peerPid(conn)
+	if err != nil || !descendsFrom(peer, engine.agentPid(req.SessionKey), s.parentPid) {
+		slog.Info("gate card refused: caller does not belong to session", "session_key", req.SessionKey, "peer_pid", peer, "error", err)
+		http.Error(w, "caller does not belong to session "+req.SessionKey, http.StatusForbidden)
+		return
+	}
+
 	card := GateCard{
 		RequestID:    req.RequestID,
 		Nonce:        req.Nonce,
@@ -825,6 +849,24 @@ func (s *APIServer) handleGateCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiJSON(w, http.StatusOK, map[string]string{"status": "posted"})
+}
+
+// descendsFrom reports whether ancestor is pid or one of its parents.
+func descendsFrom(pid, ancestor int, parentPid func(int) (int, error)) bool {
+	if ancestor <= 0 {
+		return false
+	}
+	for depth := 0; pid > 1 && depth < 64; depth++ {
+		if pid == ancestor {
+			return true
+		}
+		next, err := parentPid(pid)
+		if err != nil {
+			return false
+		}
+		pid = next
+	}
+	return false
 }
 
 // ── Relay API ──────────────────────────────────────────────────

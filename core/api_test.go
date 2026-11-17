@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -536,4 +538,102 @@ func TestSetMaxAttachmentSize_ConcurrentSafe(t *testing.T) {
 		_ = api.sendBodyLimit()
 	}
 	<-done
+}
+
+// pidAgentSession is an agent session whose process has a fixed pid.
+type pidAgentSession struct {
+	*controllableAgentSession
+	pid int
+}
+
+func (s *pidAgentSession) Pid() int { return s.pid }
+
+// newGateCardAPI serves two sessions whose agents run as pid 100 (session A)
+// and pid 200 (session B); the request comes from callerPid. Parents of the
+// fake process tree: 300 → 100, 400 → 200, 100 and 200 → 1.
+func newGateCardAPI(t *testing.T, callerPid int) (*APIServer, *gatePlatform) {
+	t.Helper()
+	p := newGatePlatform()
+	e := NewEngine("test", &controllableAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	e.interactiveStates["test:chat:A"] = &interactiveState{agentSession: &pidAgentSession{newControllableSession("a"), 100}}
+	e.interactiveStates["test:chat:B"] = &interactiveState{agentSession: &pidAgentSession{newControllableSession("b"), 200}}
+	parents := map[int]int{300: 100, 400: 200, 100: 1, 200: 1}
+	api := &APIServer{
+		engines: map[string]*Engine{"test": e},
+		peerPid: func(net.Conn) (int, error) { return callerPid, nil },
+		parentPid: func(pid int) (int, error) {
+			if ppid, ok := parents[pid]; ok {
+				return ppid, nil
+			}
+			return 0, errors.New("no such process")
+		},
+	}
+	return api, p
+}
+
+func postGateCardRequest(t *testing.T, api *APIServer, req GateCardRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	api.handleGateCard(rec, httptest.NewRequest(http.MethodPost, "/gate/card", bytes.NewReader(body)))
+	return rec
+}
+
+func assertNothingPosted(t *testing.T, p *gatePlatform) {
+	t.Helper()
+	select {
+	case <-p.posted:
+		t.Fatal("card posted for a refused caller")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("sent = %q, want nothing", sent)
+	}
+}
+
+func TestHandleGateCard_AcceptsCallerUnderTheSessionsAgent(t *testing.T) {
+	api, p := newGateCardAPI(t, 300)
+	rec := postGateCardRequest(t, api, GateCardRequest{
+		SessionKey: "test:chat:A", Kind: "confirm", RequestID: "r1", Nonce: "n1", Title: "Publish?",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-p.posted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("card not posted")
+	}
+}
+
+func TestHandleGateCard_RefusesCallerUnderAnotherSessionsAgent(t *testing.T) {
+	for _, kind := range []string{"confirm", "notice"} {
+		t.Run(kind, func(t *testing.T) {
+			api, p := newGateCardAPI(t, 400)
+			rec := postGateCardRequest(t, api, GateCardRequest{
+				SessionKey: "test:chat:A", Kind: kind, RequestID: "r1", Nonce: "n1", Title: "Publish?",
+			})
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != "caller does not belong to session test:chat:A" {
+				t.Fatalf("body = %q", got)
+			}
+			assertNothingPosted(t, p)
+		})
+	}
+}
+
+func TestHandleGateCard_RefusesWhenTheSessionHasNoAgent(t *testing.T) {
+	api, p := newGateCardAPI(t, 300)
+	rec := postGateCardRequest(t, api, GateCardRequest{
+		SessionKey: "test:chat:C", Kind: "confirm", RequestID: "r1", Nonce: "n1", Title: "Publish?",
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	assertNothingPosted(t, p)
 }

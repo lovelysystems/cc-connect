@@ -585,6 +585,12 @@ type AgentSessionCanceller interface {
 	CancelTurn() error
 }
 
+// AgentProcessReporter is an optional interface for agent sessions backed by a
+// local process. Pid returns 0 when no process runs.
+type AgentProcessReporter interface {
+	Pid() int
+}
+
 // CommandProvider is an optional interface for agents that expose custom slash
 // commands via local files (e.g. .claude/commands/*.md). The engine scans the
 // returned directories for *.md files and registers them as slash commands.

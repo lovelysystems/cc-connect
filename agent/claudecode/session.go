@@ -1182,6 +1182,13 @@ func (cs *claudeSession) GetContextUsage() *core.ContextUsage {
 	return &clone
 }
 
+func (cs *claudeSession) Pid() int {
+	if cs.cmd == nil || cs.cmd.Process == nil {
+		return 0
+	}
+	return cs.cmd.Process.Pid
+}
+
 func (cs *claudeSession) Alive() bool {
 	return cs.alive.Load()
 }
