@@ -86,8 +86,8 @@ func currentUsername() string {
 // target user's HOME, which silently overrides the supervisor's cmd.Dir. The
 // spawned command therefore re-establishes the intended cwd by chdir-ing to
 // this value before exec-ing the real binary. It travels via the environment
-// (not argv) so directories containing spaces or non-ASCII survive sudo's
-// command re-quoting. Callers set it on cmd.Env when SpawnOptions.WorkDir is
+// (not argv), which sudo -i re-quotes for the login shell; see the known gap
+// in BuildSpawnCommand. Callers set it on cmd.Env when SpawnOptions.WorkDir is
 // non-empty; BuildSpawnCommand adds it to the --preserve-env allowlist.
 const RunAsChdirEnv = "CC_RUNAS_CHDIR"
 
@@ -172,8 +172,11 @@ func BuildSpawnCommand(ctx context.Context, opts SpawnOptions, name string, args
 		// cmd.Dir, so the agent would otherwise start in the wrong directory
 		// (e.g. ignoring a multi-workspace binding). Re-establish the intended
 		// cwd inside the spawn. The path travels in $CC_RUNAS_CHDIR (a
-		// preserved env var, set by the caller) rather than argv so paths with
-		// spaces or non-ASCII survive sudo's command re-quoting.
+		// preserved env var, set by the caller) rather than argv.
+		// Known gap: sudo -i leaves '$' unescaped, so the login shell expands
+		// "$CC_RUNAS_CHDIR" outside quotes; a dash login shell splits a path
+		// with spaces and the spawn fails. "${CC_RUNAS_CHDIR}" reaches the
+		// inner sh intact.
 		sudoArgs = append(sudoArgs,
 			"/bin/sh", "-c", "cd \"$"+RunAsChdirEnv+"\" || exit 1; exec \"$@\"", "sh", name)
 	} else {

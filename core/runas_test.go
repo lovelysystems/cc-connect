@@ -290,6 +290,8 @@ func TestVerifyRunAsUserCheap_CacheHit(t *testing.T) {
 // string runs under `sh -c` in the target's HOME with only the preserved
 // variables set. In record mode it runs nothing; in fail mode it refuses
 // every call; in exists mode every write exits with the "exists" code.
+// Quoting mistakes show only when /bin/sh is dash (Linux CI): macOS bash 3.2
+// does not split an expanded "$NAME" in a word that also holds ${...} or "$@".
 const fakeSudoScript = `#!/bin/sh
 log=@LOG@
 mode=@MODE@

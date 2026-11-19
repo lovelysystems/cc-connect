@@ -462,7 +462,9 @@ func TestBuildHookStdin(t *testing.T) {
 // string runs under `sh -c` in the target's HOME with only the preserved
 // variables set, after login-profile noise with no trailing newline on
 // stdout. In record mode it runs nothing; in fail mode it refuses every call.
-// It reads its mode from a file on each call.
+// It reads its mode from a file on each call. Quoting mistakes show only when
+// /bin/sh is dash (Linux CI): macOS bash 3.2 does not split an expanded
+// "$NAME" in a word that also holds ${...} or "$@".
 const fakeSudoScript = `#!/bin/sh
 log=@LOG@
 mode=$(cat @MODEFILE@)
