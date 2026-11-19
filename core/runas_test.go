@@ -387,6 +387,20 @@ func dirEntries(t *testing.T, dir string) []string {
 	return names
 }
 
+// sudo -i leaves '$' unescaped, so a script that read "$NAME" would have the
+// login shell expand it outside quotes and split the path on its spaces.
+func TestWriteFileAsUser_PathWithSpaces(t *testing.T) {
+	installFakeSudo(t, "exec")
+	path := filepath.Join(t.TempDir(), "dir with  spaces", "file name.txt")
+
+	if err := WriteFileAsUser(context.Background(), SpawnOptions{RunAsUser: "target"}, path, []byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "hi" {
+		t.Fatalf("content = %q, err = %v", got, err)
+	}
+}
+
 func TestSaveFilesToDiskAs_RunAsUserWritesBytesThroughSudo(t *testing.T) {
 	sudo := installFakeSudo(t, "exec")
 	workDir := t.TempDir()
