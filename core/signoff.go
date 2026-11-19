@@ -253,8 +253,8 @@ func (e *Engine) postSignoffCard(c *signoffCard) {
 		slog.Error("signoff: platform cannot post signoff cards", "platform", c.platform.Name(), "session", c.sessionKey, "request_id", c.req.RequestID)
 		return
 	}
-	handle, err := poster.PostSignoffCard(e.ctx, c.replyCtx, c.card, func(value string, by SignoffClicker) {
-		e.signoffClicked(c, value, by)
+	handle, err := poster.PostSignoffCard(e.ctx, c.replyCtx, c.card, func(value string, by SignoffClicker) (SignoffMark, func()) {
+		return e.signoffClicked(c, value, by)
 	})
 	if err != nil || handle == nil {
 		slog.Error("signoff: post card failed", "session", c.sessionKey, "request_id", c.req.RequestID, "error", err)
@@ -291,16 +291,18 @@ func (e *Engine) postSignoffCard(c *signoffCard) {
 }
 
 // signoffClicked handles a button press on c. Only a press carrying one of
-// c's button values counts, and only the first one.
-func (e *Engine) signoffClicked(c *signoffCard, value string, by SignoffClicker) {
+// c's button values counts, and only the first one. For that press it reserves
+// the session and returns the mark the platform draws under the card, and
+// resolve, which runs the rest of the click.
+func (e *Engine) signoffClicked(c *signoffCard, value string, by SignoffClicker) (SignoffMark, func()) {
 	<-c.posted
 	approve := value == c.req.confirmValue()
 	if !approve && value != c.req.cancelValue() {
 		slog.Warn("signoff: click with a value that is not the card's", "session", c.sessionKey, "request_id", c.req.RequestID)
-		return
+		return SignoffMark{}, nil
 	}
 	if c.handle == nil || !c.resolved.CompareAndSwap(false, true) {
-		return
+		return SignoffMark{}, nil
 	}
 	e.signoff.mu.Lock()
 	for i, o := range e.signoff.open {
@@ -317,10 +319,7 @@ func (e *Engine) signoffClicked(c *signoffCard, value string, by SignoffClicker)
 		mark.Kind = SignoffMarkApproved
 	}
 	slog.Info("signoff: card clicked", "session", c.sessionKey, "request_id", c.req.RequestID, "approve", approve, "clicked_by", by.ID)
-	if err := c.handle.Redraw(e.ctx, mark); err != nil {
-		slog.Error("signoff: redraw clicked card failed", "session", c.sessionKey, "request_id", c.req.RequestID, "error", err)
-	}
-	go e.resolveSignoffClick(c, session, granted, approve, by)
+	return mark, func() { e.resolveSignoffClick(c, session, granted, approve, by) }
 }
 
 // reserveSignoffSession reserves the active session of sessionKey for a

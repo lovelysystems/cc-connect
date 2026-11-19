@@ -1,12 +1,18 @@
 package teams
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func signoffTestCard(lines ...core.CardText) *core.Card {
@@ -73,13 +79,16 @@ func TestSignoffCardDrawsEveryTextAsATextRun(t *testing.T) {
 		t.Fatalf("heading block = %v, want a separator above it", body[1])
 	}
 
+	if card["version"] != "1.5" {
+		t.Fatalf("version = %v", card["version"])
+	}
 	actions, _ := card["actions"].([]map[string]any)
 	if len(actions) != 2 {
 		t.Fatalf("actions = %v, want two buttons", card["actions"])
 	}
 	for i, a := range actions {
 		hide := a["msteams"].(map[string]any)["feedback"].(map[string]any)["hide"]
-		if a["type"] != "Action.Submit" || hide != true || a["tooltip"] != "" {
+		if a["type"] != "Action.Execute" || hide != true || a["tooltip"] != "" || a["verb"] != a["data"].(map[string]any)["action"] {
 			t.Fatalf("action %d = %v", i, a)
 		}
 	}
@@ -191,58 +200,158 @@ func TestSignoffCardRedrawnWithItsMark(t *testing.T) {
 	}
 }
 
-func signoffTeamsPlatform(fs *fakeSender) *Platform {
-	p := teamsPlatform("thread")
+func signoffTeamsPlatform(t *testing.T, fs *fakeSender) (*Platform, *testSigner) {
+	s := newTestSigner(t)
+	p := testPlatform(s)
 	p.conn = fs
-	return p
+	p.engaged = newEngagement("")
+	p.cfg.sessionScope = "thread"
+	return p, s
 }
 
 var signoffRC = replyContext{serviceURL: "https://smba.example/", conversationID: "conv-A;messageid=1"}
 
-func signoffClick(conv, user, value string) []byte {
-	return mustJSON(activity{
-		Type:         "message",
+func signoffInvokeActivity(conv, user, value string) activity {
+	return activity{
+		Type:         "invoke",
+		Name:         "adaptiveCard/action",
 		ID:           "click-1",
 		ServiceURL:   "https://smba.example/",
 		From:         channelAccount{ID: "29:" + user, AADObjectID: user, Name: "Jane Editor"},
 		Recipient:    channelAccount{ID: "bot-1"},
 		Conversation: conversationAccount{ID: conv},
-		Value:        []byte(`{"action":"` + value + `"}`),
-	})
+		Value:        []byte(`{"action":{"type":"Action.Execute","verb":"` + value + `","data":{"action":"` + value + `"}},"trigger":"manual"}`),
+	}
 }
 
-type signoffClicks struct{ got []core.SignoffClicker }
+// signoffPost sends a to the webhook and returns the HTTP status and the
+// decoded invoke answer.
+func signoffPost(t *testing.T, p *Platform, s *testSigner, claims jwt.MapClaims, a activity) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewReader(mustJSON(a)))
+	req.Header.Set("Authorization", "Bearer "+s.sign(t, claims))
+	rec := httptest.NewRecorder()
+	p.handleActivity(rec, req)
+	var answer map[string]any
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("answer %q: %v", rec.Body.String(), err)
+		}
+	}
+	return rec.Code, answer
+}
 
-func (c *signoffClicks) onClick(value string, by core.SignoffClicker) {
+// signoffClicks stands in for core: a click counts when count is set.
+type signoffClicks struct {
+	mu       sync.Mutex
+	count    bool
+	got      []core.SignoffClicker
+	resolved chan struct{}
+}
+
+func newSignoffClicks(count bool) *signoffClicks {
+	return &signoffClicks{count: count, resolved: make(chan struct{}, 4)}
+}
+
+func (c *signoffClicks) onClick(value string, by core.SignoffClicker) (core.SignoffMark, func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.got = append(c.got, by)
+	if !c.count {
+		return core.SignoffMark{}, nil
+	}
+	kind := core.SignoffMarkApproved
+	if strings.HasSuffix(value, ":cancel") {
+		kind = core.SignoffMarkCancelled
+	}
+	return core.SignoffMark{Kind: kind, By: by.Name, At: signoffClickAt}, func() { c.resolved <- struct{}{} }
+}
+
+var signoffClickAt = time.Date(2026, 11, 17, 9, 42, 0, 0, time.UTC)
+
+// signoffMarked fails unless the answer carries the posted card, without
+// buttons, with a footer of kind by Jane Editor.
+func signoffMarked(t *testing.T, answer map[string]any, kind core.SignoffMarkKind) map[string]any {
+	t.Helper()
+	card := signoffAnswerCard(t, answer)
+	if _, ok := card["actions"]; ok {
+		t.Fatalf("answered card still has buttons: %v", card["actions"])
+	}
+	want := signoffAdaptiveCard(signoffTestCard(signoffSampleLines()...), &core.SignoffMark{Kind: kind, By: "Jane Editor", At: signoffClickAt})
+	signoffFooterTexts(t, want)
+	signoffSameDrawing(t, card, want)
+	return card
+}
+
+func (c *signoffClicks) clickers() []core.SignoffClicker {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]core.SignoffClicker(nil), c.got...)
+}
+
+// signoffAnswerCard returns the card of an answer that carries one.
+func signoffAnswerCard(t *testing.T, answer map[string]any) map[string]any {
+	t.Helper()
+	if answer["statusCode"] != float64(200) || answer["type"] != adaptiveCardContentType {
+		t.Fatalf("answer = %v, want 200 with a card", answer)
+	}
+	return answer["value"].(map[string]any)
+}
+
+// signoffSameDrawing fails unless the answered card equals want, as JSON.
+func signoffSameDrawing(t *testing.T, got, want map[string]any) {
+	t.Helper()
+	g, _ := json.Marshal(got)
+	w, _ := json.Marshal(want)
+	if string(g) != string(w) {
+		t.Fatalf("answered card\n%s\nwant\n%s", g, w)
+	}
+}
+
+func signoffEmpty(t *testing.T, answer map[string]any) {
+	t.Helper()
+	if answer["statusCode"] != float64(200) || answer["type"] != "application/vnd.microsoft.activity.message" || answer["value"] != "" {
+		t.Fatalf("answer = %v, want an empty message", answer)
+	}
+}
+
+func signoffPostCard(t *testing.T, p *Platform, clicks *signoffClicks) core.SignoffCardHandle {
+	t.Helper()
+	handle, err := p.PostSignoffCard(context.Background(), signoffRC, signoffTestCard(signoffSampleLines()...), clicks.onClick)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handle
 }
 
 func TestSignoffPostThenRedrawEditsTheSameActivity(t *testing.T) {
 	fs := &fakeSender{id: "act-9"}
-	p := signoffTeamsPlatform(fs)
-	handle, err := p.PostSignoffCard(context.Background(), signoffRC, signoffTestCard(signoffSampleLines()...), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p, s := signoffTeamsPlatform(t, fs)
+	clicks := newSignoffClicks(true)
+	handle := signoffPostCard(t, p, clicks)
 	if handle.Thread() != "conv-A;messageid=1" {
 		t.Fatalf("thread = %q", handle.Thread())
 	}
 	if len(fs.last.Entities) != 0 {
 		t.Fatalf("signoff card carries entities %v", fs.last.Entities)
 	}
-	if err := handle.Redraw(context.Background(), core.SignoffMark{Kind: core.SignoffMarkApproved, By: "Jane Editor", At: time.Now()}); err != nil {
+	mark := core.SignoffMark{Kind: core.SignoffMarkReplaced, At: time.Now()}
+	if err := handle.Redraw(context.Background(), mark); err != nil {
 		t.Fatal(err)
 	}
 	if len(fs.updatedIDs) != 1 || fs.updatedIDs[0] != "act-9" {
 		t.Fatalf("updated = %v, want act-9", fs.updatedIDs)
 	}
-	if len(p.signoff.byValue) != 0 {
-		t.Fatal("a redrawn card still takes clicks")
+
+	_, answer := signoffPost(t, p, s, baseClaims(), signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"))
+	signoffSameDrawing(t, signoffAnswerCard(t, answer), signoffAdaptiveCard(signoffTestCard(signoffSampleLines()...), &mark))
+	if len(clicks.clickers()) != 0 {
+		t.Fatal("a click on a replaced card reached onClick")
 	}
 }
 
 func TestSignoffPostWithoutActivityIDFails(t *testing.T) {
-	p := signoffTeamsPlatform(&fakeSender{})
+	p, _ := signoffTeamsPlatform(t, &fakeSender{})
 	if _, err := p.PostSignoffCard(context.Background(), signoffRC, signoffTestCard(), nil); err == nil {
 		t.Fatal("post without an activity id succeeded")
 	}
@@ -251,73 +360,135 @@ func TestSignoffPostWithoutActivityIDFails(t *testing.T) {
 	}
 }
 
-func TestSignoffClickReachesTheCardNeverTheAgent(t *testing.T) {
-	p := signoffTeamsPlatform(&fakeSender{id: "act-9"})
+func TestSignoffInvokeIsAnsweredWithTheCardAndItsMark(t *testing.T) {
+	fs := &fakeSender{id: "act-9"}
+	p, s := signoffTeamsPlatform(t, fs)
 	h, got := collector()
 	p.handler = h
-	clicks := &signoffClicks{}
-	if _, err := p.PostSignoffCard(context.Background(), signoffRC, signoffTestCard(), clicks.onClick); err != nil {
-		t.Fatal(err)
+	clicks := newSignoffClicks(true)
+	signoffPostCard(t, p, clicks)
+
+	code, answer := signoffPost(t, p, s, baseClaims(), signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"))
+
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
 	}
-
-	p.dispatch(nil, signoffClick("conv-A;messageid=1", "aad-1", "signoff:r1:n1"))
-
-	if len(clicks.got) != 1 || clicks.got[0] != (core.SignoffClicker{ID: "aad-1", Name: "Jane Editor"}) {
-		t.Fatalf("clicks = %v", clicks.got)
+	card := signoffMarked(t, answer, core.SignoffMarkApproved)
+	if c := clicks.clickers(); len(c) != 1 || c[0] != (core.SignoffClicker{ID: "aad-1", Name: "Jane Editor"}) {
+		t.Fatalf("clicks = %v", c)
+	}
+	select {
+	case <-clicks.resolved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the click was never resolved")
+	}
+	if len(fs.updatedIDs) != 0 {
+		t.Fatalf("the clicked card was also redrawn by an edit: %v", fs.updatedIDs)
 	}
 	if len(*got) != 0 {
 		t.Fatalf("the click became a message: %+v", (*got)[0])
 	}
-}
 
-func TestSignoffClickFromAnotherConversationRunsNothing(t *testing.T) {
-	p := signoffTeamsPlatform(&fakeSender{id: "act-9"})
-	h, got := collector()
-	p.handler = h
-	clicks := &signoffClicks{}
-	if _, err := p.PostSignoffCard(context.Background(), signoffRC, signoffTestCard(), clicks.onClick); err != nil {
-		t.Fatal(err)
-	}
-
-	p.dispatch(nil, signoffClick("conv-B", "aad-1", "signoff:r1:n1"))
-
-	if len(clicks.got) != 0 || len(*got) != 0 {
-		t.Fatalf("clicks %v, messages %d; want none", clicks.got, len(*got))
+	// A second click is answered with the card as drawn and runs nothing.
+	_, again := signoffPost(t, p, s, baseClaims(), signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1:cancel"))
+	signoffSameDrawing(t, signoffAnswerCard(t, again), card)
+	if c := clicks.clickers(); len(c) != 1 {
+		t.Fatalf("clicks = %v, want the first only", c)
 	}
 }
 
-func TestSignoffClickOnlyFromAllowFrom(t *testing.T) {
-	p := signoffTeamsPlatform(&fakeSender{id: "act-9"})
+func TestSignoffClicksThatDoNotCount(t *testing.T) {
+	open := signoffAdaptiveCard(signoffTestCard(signoffSampleLines()...), nil)
+	cases := []struct {
+		name   string
+		count  bool
+		allow  string
+		claims jwt.MapClaims
+		click  activity
+		empty  bool
+	}{
+		{name: "unknown card", count: true, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:old:n0"), empty: true},
+		{name: "another conversation", count: true, click: signoffInvokeActivity("conv-B", "aad-1", "signoff:r1:n1"), empty: true},
+		{name: "not on allow_from", count: true, allow: "aad-editor", click: signoffInvokeActivity("conv-A;messageid=1", "aad-stranger", "signoff:r1:n1")},
+		{name: "refused by core", count: false, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1")},
+		{name: "untrusted serviceUrl", count: true, claims: jwt.MapClaims{"serviceurl": "https://elsewhere.example/"}, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"), empty: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fs := &fakeSender{id: "act-9"}
+			p, s := signoffTeamsPlatform(t, fs)
+			p.cfg.allowFrom = c.allow
+			h, got := collector()
+			p.handler = h
+			clicks := newSignoffClicks(c.count)
+			signoffPostCard(t, p, clicks)
+			claims := baseClaims()
+			for k, v := range c.claims {
+				claims[k] = v
+			}
+
+			code, answer := signoffPost(t, p, s, claims, c.click)
+
+			if code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", code)
+			}
+			if c.empty {
+				signoffEmpty(t, answer)
+			} else {
+				signoffSameDrawing(t, signoffAnswerCard(t, answer), open)
+			}
+			if !c.count {
+				if n := len(clicks.clickers()); n != 1 {
+					t.Fatalf("onClick asked %d times, want once", n)
+				}
+			} else if n := len(clicks.clickers()); n != 0 {
+				t.Fatalf("onClick asked %d times, want never", n)
+			}
+			if len(clicks.resolved) != 0 || len(fs.updatedIDs) != 0 || len(*got) != 0 {
+				t.Fatalf("resolved %d, edits %v, messages %d; want none", len(clicks.resolved), fs.updatedIDs, len(*got))
+			}
+		})
+	}
+}
+
+func TestSignoffClickFromAllowFromCounts(t *testing.T) {
+	p, s := signoffTeamsPlatform(t, &fakeSender{id: "act-9"})
 	p.cfg.allowFrom = "aad-editor"
-	h, got := collector()
-	p.handler = h
-	clicks := &signoffClicks{}
-	if _, err := p.PostSignoffCard(context.Background(), signoffRC, signoffTestCard(), clicks.onClick); err != nil {
-		t.Fatal(err)
-	}
+	clicks := newSignoffClicks(true)
+	signoffPostCard(t, p, clicks)
 
-	p.dispatch(nil, signoffClick("conv-A;messageid=1", "aad-stranger", "signoff:r1:n1"))
-	if len(clicks.got) != 0 || len(*got) != 0 {
-		t.Fatalf("a click from outside allow_from counted: clicks %v, messages %d", clicks.got, len(*got))
-	}
+	_, answer := signoffPost(t, p, s, baseClaims(), signoffInvokeActivity("conv-A;messageid=1", "aad-editor", "signoff:r1:n1:cancel"))
 
-	p.dispatch(nil, signoffClick("conv-A;messageid=1", "aad-editor", "signoff:r1:n1"))
-	if len(clicks.got) != 1 || clicks.got[0].ID != "aad-editor" {
-		t.Fatalf("clicks = %v, want the editor's", clicks.got)
+	signoffMarked(t, answer, core.SignoffMarkCancelled)
+	if c := clicks.clickers(); len(c) != 1 || c[0].ID != "aad-editor" {
+		t.Fatalf("clicks = %v, want the editor's", c)
 	}
 }
 
-func TestSignoffUnknownValueIsSwallowed(t *testing.T) {
-	p := signoffTeamsPlatform(&fakeSender{id: "act-9"})
+func TestSignoffValueInAMessageIsDropped(t *testing.T) {
+	p, _ := signoffTeamsPlatform(t, &fakeSender{id: "act-9"})
 	h, got := collector()
 	p.handler = h
+	clicks := newSignoffClicks(true)
+	signoffPostCard(t, p, clicks)
 
-	p.dispatch(nil, signoffClick("conv-A;messageid=1", "aad-1", "signoff:old:n0:cancel"))
-	if len(*got) != 0 {
-		t.Fatalf("an unknown signoff value became a message: %+v", (*got)[0])
+	submit := func(value string) activity {
+		return activity{
+			Type:         "message",
+			ID:           "click-1",
+			ServiceURL:   "https://smba.example/",
+			From:         channelAccount{ID: "29:aad-1", AADObjectID: "aad-1", Name: "Jane Editor"},
+			Recipient:    channelAccount{ID: "bot-1"},
+			Conversation: conversationAccount{ID: "conv-A;messageid=1"},
+			Value:        []byte(`{"action":"` + value + `"}`),
+		}
+	}
+	p.dispatch(baseClaims(), mustJSON(submit("signoff:r1:n1:cancel")))
+	if len(*got) != 0 || len(clicks.clickers()) != 0 {
+		t.Fatalf("a signoff value in a message counted: messages %d, clicks %v", len(*got), clicks.clickers())
 	}
 
-	p.dispatch(nil, signoffClick("conv-A;messageid=1", "aad-1", "perm:allow"))
+	p.dispatch(baseClaims(), mustJSON(submit("perm:allow")))
 	if len(*got) != 1 || (*got)[0].Content != "allow" || !(*got)[0].IsPermissionResponse {
 		t.Fatalf("perm:allow = %+v, want a permission message", *got)
 	}

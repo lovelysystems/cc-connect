@@ -5,15 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// signoffCards keeps the posted signoff cards that still take a click, in
-// memory only, by button value.
+// signoffCards keeps the posted signoff cards, in memory only, by button
+// value.
 type signoffCards struct {
 	mu      sync.Mutex
 	byValue map[string]*signoffCard
@@ -24,11 +26,30 @@ type signoffCard struct {
 	rc         replyContext
 	activityID string
 	card       *core.Card
-	onClick    func(string, core.SignoffClicker)
+	onClick    func(string, core.SignoffClicker) (core.SignoffMark, func())
+	// clickMu lets one click at a time ask onClick and record its mark.
+	clickMu sync.Mutex
+	// mark is set once the card is resolved; guarded by signoffCards.mu.
+	mark *core.SignoffMark
+}
+
+// invokeResponse is the body of the answer to an adaptiveCard/action invoke.
+type invokeResponse struct {
+	StatusCode int    `json:"statusCode"`
+	Type       string `json:"type"`
+	Value      any    `json:"value"`
+}
+
+// signoffEmptyAnswer answers a click on a card cc-connect cannot draw: a
+// message with no text, which leaves the card as it is.
+var signoffEmptyAnswer = invokeResponse{StatusCode: http.StatusOK, Type: "application/vnd.microsoft.activity.message", Value: ""}
+
+func signoffCardAnswer(card map[string]any) invokeResponse {
+	return invokeResponse{StatusCode: http.StatusOK, Type: adaptiveCardContentType, Value: card}
 }
 
 // PostSignoffCard implements core.SignoffCardPlatform.
-func (p *Platform) PostSignoffCard(ctx context.Context, replyCtx any, card *core.Card, onClick func(string, core.SignoffClicker)) (core.SignoffCardHandle, error) {
+func (p *Platform) PostSignoffCard(ctx context.Context, replyCtx any, card *core.Card, onClick func(string, core.SignoffClicker) (core.SignoffMark, func())) (core.SignoffCardHandle, error) {
 	rc, ok := replyCtx.(replyContext)
 	if !ok {
 		return nil, fmt.Errorf("teams: invalid reply context %T", replyCtx)
@@ -57,15 +78,11 @@ func (p *Platform) PostSignoffCard(ctx context.Context, replyCtx any, card *core
 // the thread.
 func (c *signoffCard) Thread() string { return c.rc.conversationID }
 
-// Redraw replaces the card with its text and the mark, without buttons, and
-// stops routing its clicks.
+// Redraw replaces the card with its text and the mark, without buttons. Later
+// clicks on it are answered with that drawing and never reach onClick.
 func (c *signoffCard) Redraw(ctx context.Context, mark core.SignoffMark) error {
 	c.p.signoff.mu.Lock()
-	for _, b := range signoffButtons(c.card) {
-		if c.p.signoff.byValue[b.Value] == c {
-			delete(c.p.signoff.byValue, b.Value)
-		}
-	}
+	c.mark = &mark
 	c.p.signoff.mu.Unlock()
 	if err := c.p.conn.update(ctx, c.rc, c.activityID, cardActivity(c.rc, signoffAdaptiveCard(c.card, &mark))); err != nil {
 		return fmt.Errorf("teams: redraw signoff card: %w", err)
@@ -73,26 +90,59 @@ func (c *signoffCard) Redraw(ctx context.Context, mark core.SignoffMark) error {
 	return nil
 }
 
-// handleSignoffClick takes a press on a signoff card button. A press counts
+// handleSignoffClick takes a press on a signoff card button from an
+// adaptiveCard/action invoke and returns the invoke's answer. A press counts
 // only on an open card, from the conversation it was posted in, by someone
-// allow_from lets through; anything else is logged and the card stays open.
-func (p *Platform) handleSignoffClick(a *activity, value string) {
+// allow_from lets through: it is answered with the card drawn with its mark,
+// and resolve is to be called once the answer is written. Any other press is
+// logged, runs nothing and is answered with the card as drawn now, or with
+// signoffEmptyAnswer when cc-connect holds no card it may draw there.
+func (p *Platform) handleSignoffClick(claims jwt.MapClaims, a *activity, value string) (answer invokeResponse, resolve func()) {
+	if !p.serviceURLTrusted(claims, a) {
+		return signoffEmptyAnswer, nil
+	}
 	p.signoff.mu.Lock()
 	c := p.signoff.byValue[value]
 	p.signoff.mu.Unlock()
 	if c == nil {
-		slog.Info("teams: signoff click for no open card")
-		return
+		slog.Info("teams: signoff click for no held card; answered with an empty message")
+		return signoffEmptyAnswer, nil
 	}
+	// The card's text stays out of other conversations.
 	if a.Conversation.ID != c.rc.conversationID {
-		slog.Warn("teams: signoff click from another conversation", "conversation", a.Conversation.ID)
-		return
+		slog.Warn("teams: signoff click from another conversation; answered with an empty message", "conversation", a.Conversation.ID)
+		return signoffEmptyAnswer, nil
 	}
 	if !core.AllowList(p.cfg.allowFrom, userID(a)) {
-		slog.Warn("teams: signoff click from a user not on allow_from", "user", userID(a))
-		return
+		slog.Warn("teams: signoff click from a user not on allow_from; answered with the card as drawn", "user", userID(a))
+		return signoffCardAnswer(c.drawn()), nil
 	}
-	c.onClick(value, core.SignoffClicker{ID: userID(a), Name: a.From.Name})
+
+	c.clickMu.Lock()
+	defer c.clickMu.Unlock()
+	p.signoff.mu.Lock()
+	resolved := c.mark != nil
+	p.signoff.mu.Unlock()
+	if resolved {
+		slog.Info("teams: signoff click on a resolved card; answered with the card as drawn")
+		return signoffCardAnswer(c.drawn()), nil
+	}
+	mark, resolve := c.onClick(value, core.SignoffClicker{ID: userID(a), Name: a.From.Name})
+	if resolve == nil {
+		return signoffCardAnswer(c.drawn()), nil
+	}
+	p.signoff.mu.Lock()
+	c.mark = &mark
+	p.signoff.mu.Unlock()
+	return signoffCardAnswer(signoffAdaptiveCard(c.card, &mark)), resolve
+}
+
+// drawn is the card as Teams shows it now.
+func (c *signoffCard) drawn() map[string]any {
+	c.p.signoff.mu.Lock()
+	mark := c.mark
+	c.p.signoff.mu.Unlock()
+	return signoffAdaptiveCard(c.card, mark)
 }
 
 func signoffButtons(card *core.Card) []core.CardButton {
@@ -132,9 +182,10 @@ func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any
 	var actions []map[string]any
 	for _, b := range signoffButtons(card) {
 		action := map[string]any{
-			"type":    "Action.Submit",
+			"type":    "Action.Execute",
 			"title":   literalBraces(b.Text),
 			"tooltip": "",
+			"verb":    b.Value,
 			"data":    map[string]any{"action": b.Value},
 			// Hides Teams' "Your response was sent to the app" note under the card.
 			"msteams": map[string]any{"feedback": map[string]any{"hide": true}},

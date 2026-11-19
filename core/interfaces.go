@@ -726,17 +726,20 @@ type StreamingCardPlatform interface {
 // lines and one CardActions row; the platform keeps what it needs to redraw the
 // card and to route a click in memory only. onClick receives the value of the
 // clicked button and who clicked it, for a click in the thread the card was
-// posted in; it decides whether the click counts.
+// posted in; it decides whether the click counts. For a click that counts it
+// returns the mark to draw under the card and resolve: the platform draws the
+// card without its buttons and with the mark, then calls resolve once, off the
+// goroutine that took the click. resolve is nil for a click that does not count.
 type SignoffCardPlatform interface {
-	PostSignoffCard(ctx context.Context, replyCtx any, card *Card, onClick func(value string, by SignoffClicker)) (SignoffCardHandle, error)
+	PostSignoffCard(ctx context.Context, replyCtx any, card *Card, onClick func(value string, by SignoffClicker) (mark SignoffMark, resolve func())) (SignoffCardHandle, error)
 }
 
 // SignoffCardHandle is a posted signoff card.
 type SignoffCardHandle interface {
 	// Thread names the thread the card was posted in.
 	Thread() string
-	// Redraw draws the card once more without its buttons and with mark under
-	// it. After Redraw the platform routes no more clicks for the card.
+	// Redraw draws a replaced card once more without its buttons and with mark
+	// under it. After Redraw the platform routes no more clicks for the card.
 	Redraw(ctx context.Context, mark SignoffMark) error
 }
 

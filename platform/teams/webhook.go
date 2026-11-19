@@ -3,6 +3,7 @@ package teams
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,6 +63,7 @@ type droppedAttachment struct {
 // on timeout; a slow turn (e.g. a cold agent start) under a synchronous ack would
 // trigger a retry and a duplicate dispatch. Acking before dispatch matches the
 // M365 Agents SDK, which queues activities to a background worker and returns 202.
+// A signoff button's adaptiveCard/action invoke is answered in the response body.
 func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -86,10 +88,21 @@ func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ack first, process the turn asynchronously (the card-only connector never
-	// returns Invoke/ExpectReplies responses, so nothing needs a synchronous body).
-	// A bounded semaphore caps concurrent turns; at capacity we shed with 503 so
-	// the Bot Connector retries rather than letting turns spawn unbounded.
+	if a, value, ok := signoffInvoke(body); ok {
+		answer, resolve := p.handleSignoffClick(claims, a, value)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(answer); err != nil {
+			slog.Warn("teams: signoff invoke answer write failed", "error", err)
+		}
+		if resolve != nil {
+			go resolve()
+		}
+		return
+	}
+
+	// Ack first, process the turn asynchronously. A bounded semaphore caps
+	// concurrent turns; at capacity we shed with 503 so the Bot Connector retries
+	// rather than letting turns spawn unbounded.
 	select {
 	case p.dispatchSem <- struct{}{}:
 		go func() {
@@ -105,7 +118,7 @@ func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 
 // dispatch parses an activity, enforces serviceURL binding + authorization +
 // the engagement gate, and forwards a core.Message to the engine. A signoff
-// card button press is taken here and never becomes a message. Gated-out or
+// value in a message is dropped here and never becomes a message. Gated-out or
 // malformed activities are dropped silently (the webhook still returns 200).
 func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	a, err := parseActivity(body)
@@ -117,26 +130,15 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		return // ignore typing/conversationUpdate/etc.
 	}
 
-	// serviceURL binding: a genuine Bot Framework token carries the issuer's
-	// serviceurl claim. Rejecting a body whose serviceUrl doesn't match prevents
-	// a replayed valid token from redirecting the bot's authenticated replies
-	// (and the bearer token they carry) to an attacker-controlled host.
-	if !serviceURLClaimMatches(claims, a.ServiceURL) {
-		slog.Warn("teams: serviceUrl claim mismatch; dropping activity")
-		return
-	}
-	// Optional host allowlist: reject a serviceURL outside the configured hosts
-	// before any outbound POST carries the bot's bearer token to it. Off by default.
-	if !serviceURLAllowed(a.ServiceURL, p.cfg.serviceURLAllowlist) {
-		slog.Warn("teams: serviceUrl host not in allowlist; dropping activity", "service_url", a.ServiceURL)
+	if !p.serviceURLTrusted(claims, a) {
 		return
 	}
 
 	action := a.cardAction()
-	// Every signoff value is taken here, open card or not, so a stale cancel
-	// value never reaches the engine as the permission keyword "cancel".
+	// Signoff buttons answer by invoke. A signoff value in a message is dropped,
+	// so it never reaches the engine as the permission keyword "cancel".
 	if strings.HasPrefix(action, core.SignoffValuePrefix) {
-		p.handleSignoffClick(a, action)
+		slog.Info("teams: signoff value in a message activity; dropped")
 		return
 	}
 	isCardAction := action != ""
@@ -228,6 +230,42 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 		}
 	}
 	p.handler(p, msg)
+}
+
+// signoffInvoke reads an adaptiveCard/action invoke whose data action or verb
+// is a signoff value. ok is false for any other activity.
+func signoffInvoke(body []byte) (a *activity, value string, ok bool) {
+	a, err := parseActivity(body)
+	if err != nil || !strings.EqualFold(a.Type, "invoke") || !strings.EqualFold(a.Name, "adaptiveCard/action") {
+		return nil, "", false
+	}
+	verb, dataAction := a.invokeAction()
+	for _, v := range []string{dataAction, verb} {
+		if strings.HasPrefix(v, core.SignoffValuePrefix) {
+			return a, v, true
+		}
+	}
+	return nil, "", false
+}
+
+// serviceURLTrusted reports whether replies may be sent to the activity's
+// serviceUrl.
+func (p *Platform) serviceURLTrusted(claims jwt.MapClaims, a *activity) bool {
+	// serviceURL binding: a genuine Bot Framework token carries the issuer's
+	// serviceurl claim. Rejecting a body whose serviceUrl doesn't match prevents
+	// a replayed valid token from redirecting the bot's authenticated replies
+	// (and the bearer token they carry) to an attacker-controlled host.
+	if !serviceURLClaimMatches(claims, a.ServiceURL) {
+		slog.Warn("teams: serviceUrl claim mismatch; dropping activity")
+		return false
+	}
+	// Optional host allowlist: reject a serviceURL outside the configured hosts
+	// before any outbound POST carries the bot's bearer token to it. Off by default.
+	if !serviceURLAllowed(a.ServiceURL, p.cfg.serviceURLAllowlist) {
+		slog.Warn("teams: serviceUrl host not in allowlist; dropping activity", "service_url", a.ServiceURL)
+		return false
+	}
+	return true
 }
 
 // messageContent returns the Markdown of the message's HTML version when it carries formatting the

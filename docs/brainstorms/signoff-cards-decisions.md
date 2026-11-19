@@ -138,6 +138,25 @@ Sources: the user's post of the sample card in a Teams channel; a local Docker r
 - `{{DATE(`: Teams substitutes `{{DATE(…)}}` and `{{TIME(…)}}` inside a `TextRun`, so the U+2060 joiner of KTD6 is built for the title, every body line and both button labels in the Teams drawing; the stored card and core keep the text, the footer keeps its own markup — `platform/teams/signoff.go:184`.
 - Channel click: clicks in a channel thread carry the card's exact conversation id including `;messageid=`, so the exact match is kept — `platform/teams/signoff.go:87`.
 
+## Execute experiment
+
+Sources: the user's Teams test of the Submit card (button held, both buttons blank for about a second, then the redrawn card); `git show 17bbc288:platform/teams/gate.go` and `d552f376` on `origin/taras/gate-card-poc`; the Universal Action Model and User Specific Views pages on learn.microsoft.com.
+
+- Buttons are `Action.Execute` with `verb` and `data.action` both the button value and the hide flag on the action; over the brief's "`Action.Submit` with the hide flag on the button"; the brief's "`Action.Execute` does not hide it" came from the proof of concept's Execute card (`17bbc288`, `gateExecuteAction`), which never put the flag on the action, and the flag only worked for Submit once `d552f376` moved it onto the action. This overturns the brief's preference for this branch — `platform/teams/signoff.go:185`.
+- A click is answered in the invoke response with the card drawn with its mark; over the 202 ack plus a PUT; Teams swaps the card in one step instead of showing the blank-button gap between the ack and the PUT — `platform/teams/webhook.go:91`.
+- `onClick` returns the mark and a `resolve` func, nil for a click that does not count, and core no longer calls `Redraw` for a click; over core redrawing through the handle; the platform needs the drawn card before it answers the request — `core/interfaces.go:734`, `core/signoff.go:322`.
+- The placeholder, `signoff_exec` and the report turn start in `resolve`, which Teams runs on its own goroutine after writing the answer; over starting them inside `onClick`; the placeholder would race the invoke answer to the thread — `platform/teams/webhook.go:98`.
+- Core order kept: the session is reserved inside `onClick`, before the platform draws the answer — `core/signoff.go:322`.
+- Replaced cards are still redrawn by PUT; over leaving them as they are; no invoke is in flight for a replaced card — `platform/teams/signoff.go:85`.
+- Resolved and replaced cards stay in the Teams card map with their mark, in memory only, and grow with every card until a restart; over dropping them at the redraw; a later click is answered with the card as drawn, and signoff cards are few — `platform/teams/signoff.go:135`.
+- One click at a time per card asks core and records its mark (`clickMu`); over no lock; a second click racing the first could be answered with the open card — `platform/teams/signoff.go:31`.
+- Checks run in the Submit path's order: trusted serviceURL, card found by value, conversation, `allow_from`, then the claim; `serviceURLTrusted` is shared by the invoke and `dispatch` — `platform/teams/webhook.go:253`.
+- Not on `allow_from`, already resolved, replaced, or refused by core: answered with the card as drawn now, so Teams leaves it unchanged; over an empty message; cc-connect holds the card and redrawing it shows nothing new — `platform/teams/signoff.go:117`, `platform/teams/signoff.go:127`.
+- Unknown card (after a restart), untrusted serviceURL, or a click from another conversation: answered `{"statusCode":200,"type":"application/vnd.microsoft.activity.message","value":""}`; over a 4xx/5xx `application/vnd.microsoft.error` answer, which Teams shows as an error, an HTTP error without the body the contract requires, or the card from another conversation, which would put its text there; an empty message is the only success answer that needs no card and carries no words of cc-connect's — `platform/teams/signoff.go:45`, `platform/teams/signoff.go:111`.
+- A `signoff:` value arriving as a Submit message is dropped and logged before any message is built; over routing it as a click; no posted card has Submit buttons, so such a value comes from no held card — `platform/teams/webhook.go:141`.
+- Card version stays 1.5; Teams docs ask for 1.5 for Universal Actions, and no `fallback` is set; over an `Action.Submit` fallback; a fallback would bring back the Submit path this branch drops — `platform/teams/card.go:85`.
+- To watch in the Teams test: User Specific Views says "The User Specific Card returned by the bot is sent only to the specific client that requested for it", so others in the channel, and the clicker's other devices, may still see the buttons until they click; their click is answered with the drawn card. Also watch what Teams shows for the empty-message answer.
+
 ## Open questions
 
 ### Engine choice without the caller check, for the upstream PR

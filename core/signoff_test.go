@@ -250,7 +250,7 @@ func (p *signoffTestPlatform) CreateStreamingCard(context.Context, any) (Streami
 	return &signoffTestStream{p: p}, nil
 }
 
-func (p *signoffTestPlatform) PostSignoffCard(_ context.Context, replyCtx any, card *Card, onClick func(string, SignoffClicker)) (SignoffCardHandle, error) {
+func (p *signoffTestPlatform) PostSignoffCard(_ context.Context, replyCtx any, card *Card, onClick func(string, SignoffClicker) (SignoffMark, func())) (SignoffCardHandle, error) {
 	p.mu.Lock()
 	fail := p.failPost
 	p.mu.Unlock()
@@ -284,25 +284,35 @@ type signoffTestHandle struct {
 	id      string
 	thread  string
 	card    *Card
-	onClick func(string, SignoffClicker)
+	onClick func(string, SignoffClicker) (SignoffMark, func())
 }
 
 func (h *signoffTestHandle) Thread() string { return h.thread }
 func (h *signoffTestHandle) Redraw(_ context.Context, mark SignoffMark) error {
-	kind := map[SignoffMarkKind]string{SignoffMarkApproved: "approved", SignoffMarkCancelled: "cancelled", SignoffMarkReplaced: "replaced"}[mark.Kind]
-	h.p.record("redraw:" + h.id + ":" + kind + ":" + mark.By)
+	h.draw(mark)
 	return nil
 }
 
-func (h *signoffTestHandle) approve(by string) {
-	actions := h.card.Elements[len(h.card.Elements)-1].(CardActions)
-	h.onClick(actions.Buttons[0].Value, SignoffClicker{ID: "aad-" + by, Name: by})
+func (h *signoffTestHandle) draw(mark SignoffMark) {
+	kind := map[SignoffMarkKind]string{SignoffMarkApproved: "approved", SignoffMarkCancelled: "cancelled", SignoffMarkReplaced: "replaced"}[mark.Kind]
+	h.p.record("redraw:" + h.id + ":" + kind + ":" + mark.By)
 }
 
-func (h *signoffTestHandle) cancel(by string) {
+// click presses the button at index as the platform does: a counted press is
+// drawn with its mark, then resolved on a goroutine of its own.
+func (h *signoffTestHandle) click(index int, by string) {
 	actions := h.card.Elements[len(h.card.Elements)-1].(CardActions)
-	h.onClick(actions.Buttons[1].Value, SignoffClicker{ID: "aad-" + by, Name: by})
+	mark, resolve := h.onClick(actions.Buttons[index].Value, SignoffClicker{ID: "aad-" + by, Name: by})
+	if resolve == nil {
+		return
+	}
+	h.draw(mark)
+	go resolve()
 }
+
+func (h *signoffTestHandle) approve(by string) { h.click(0, by) }
+
+func (h *signoffTestHandle) cancel(by string) { h.click(1, by) }
 
 func (p *signoffTestPlatform) waitFor(t *testing.T, entry string) int {
 	t.Helper()
