@@ -114,6 +114,9 @@ Sources read: brief, this log, ch#2022 and ch#2023 with comments, task ch#2320 (
 - One `hasLineBreak` (`\r`, `\n`, U+2028, U+2029) checks the card texts and `signoff_exec`'s `message`, so `message` now also refuses U+2028 and U+2029; over a second check with its own set; one rule for "one line" on both sides — `core/signoff.go:98`, `core/signoff_exec.go:107`.
 - The word joiner goes between every two adjacent `{`, so `{{{` gets two; over replacing each `{{` once, which leaves a `{{` inside `{{{` — `platform/teams/signoff.go:184`.
 - The plan's "Pinned for the gate" gains the one-line rule; over leaving it to the decisions log; it lists the style names of the body format, and the gate must keep line breaks out — plan "Pinned for the gate".
+- `signoff_exec`'s stderr logged from a deferred call once the outcome is known, at INFO for `published` or `refused` and WARN for `failed`; it now follows the error line on a failure; over logging it before the outcome is known — `core/signoff_exec.go:70`.
+- A replaced card logs its `signoff: outcome` line when it is taken for replacement, before the redraw; over logging after the redraw; the line marks the outcome, and a failed redraw has its own error line — `core/signoff.go:284`.
+- No log test added; no signoff test asserts log output.
 
 ## Review
 

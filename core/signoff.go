@@ -281,6 +281,7 @@ func (e *Engine) postSignoffCard(c *signoffCard) {
 		if !o.resolved.CompareAndSwap(false, true) {
 			continue
 		}
+		slog.Info("signoff: outcome", "session", o.sessionKey, "request_id", o.req.RequestID, "outcome", SignoffReplaced)
 		if err := o.handle.Redraw(e.ctx, SignoffMark{Kind: SignoffMarkReplaced, At: time.Now()}); err != nil {
 			slog.Error("signoff: redraw replaced card failed", "session", o.sessionKey, "request_id", o.req.RequestID, "error", err)
 		}

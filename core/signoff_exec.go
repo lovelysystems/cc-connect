@@ -67,12 +67,20 @@ func (e *Engine) runSignoffExec(in signoffExecInput) (outcome, message string) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	defer func() {
+		s := strings.TrimSpace(stderr.String())
+		if s == "" {
+			return
+		}
+		level := slog.LevelInfo
+		if outcome == SignoffFailed {
+			level = slog.LevelWarn
+		}
+		slog.Log(context.Background(), level, "signoff: signoff_exec stderr", "request_id", in.RequestID, "stderr", truncateStr(s, 2000))
+	}()
 
 	err = cmd.Run()
 	killProcessGroup(cmd)
-	if s := strings.TrimSpace(stderr.String()); s != "" {
-		slog.Warn("signoff: signoff_exec stderr", "request_id", in.RequestID, "stderr", truncateStr(s, 2000))
-	}
 	if ctx.Err() != nil {
 		slog.Error("signoff: signoff_exec ran past its limit or cc-connect stopped", "request_id", in.RequestID, "limit", limit)
 		return SignoffFailed, ""
