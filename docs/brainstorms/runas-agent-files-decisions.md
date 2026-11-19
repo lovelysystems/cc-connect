@@ -41,5 +41,11 @@
 - The write script creates the file with `: >` under noclobber, then appends stdin and removes the file if the append fails, over one `cat >` that would leave a partial file; a failed create never reaches the `rm`, so a name another writer took is never removed. `core/runas.go:202`
 - `WriteFileAsUser` makes the destination absolute against the supervisor's cwd before the spawn, over passing it as given; `sudo -i` runs the script in the target's HOME, where a relative path would land elsewhere. `core/runas.go:214`
 - The core fake-`sudo` tests sit in `core/runas_test.go` (built on non-Windows only), over `core/message_test.go`, which also builds on Windows and cannot see the shim. `core/runas_test.go:346`
+- Hooks under `run_as_user` run in their own `runHookCommandAsUser`, over adding options to `runHookCommand`; the plain path's code and its tests stay as they were. `agent/claudecode/cc_hooks.go:416`
+- The hook's own stdout is framed by marker lines too, over parsing all of sudo's stdout; a line of login-profile output would otherwise turn every decision into a parse error. `agent/claudecode/cc_hooks.go:35`
+- The wrapper runs as `/bin/sh` and the hook as `sh` from the target's PATH, over `/bin/sh` for both; the hook keeps the `sh` it gets today. `agent/claudecode/cc_hooks.go:35`
+- A failed settings read as the user leaves the session without hooks (once per session, like a missing file), over retrying on the next permission request; every request then goes to the platform prompt. `agent/claudecode/cc_hooks.go:181`
+- The settings read gets its own 30s timeout, over the session context alone; a hung sudo would otherwise block the first permission request. `agent/claudecode/cc_hooks.go:213`
+- `readSettingsFile` keeps reading the file and hands the bytes to a new `parseSettings`, over a second copy of the JSONC parse for framed output. `agent/claudecode/cc_hooks.go:294`
 
 ## Open questions

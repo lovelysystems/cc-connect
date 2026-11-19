@@ -881,7 +881,7 @@ func TestHandleControlRequest_PermissionModes(t *testing.T) {
 				events:  make(chan core.Event, 4),
 				ctx:     ctx,
 				stdin:   stdin,
-				ccHooks: newCCPermissionHookRunner(cfgDir),
+				ccHooks: newCCPermissionHookRunner(cfgDir, core.SpawnOptions{}),
 			}
 			cs.alive.Store(true)
 			cs.autoApprove.Store(tc.auto)

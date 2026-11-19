@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/chenhg5/cc-connect/core"
 )
 
 func TestStripJSONC(t *testing.T) {
@@ -247,7 +251,7 @@ func TestTryHook(t *testing.T) {
 			}
 		}`), 0644)
 
-		r := newCCPermissionHookRunner(dir)
+		r := newCCPermissionHookRunner(dir, core.SpawnOptions{})
 		hctx := hookContext{sessionID: "test-session", toolName: "Bash", toolInput: map[string]any{"command": "ls"}, cwd: dir}
 		decision, ok := r.tryHook(context.Background(), hctx)
 		if !ok {
@@ -271,7 +275,7 @@ func TestTryHook(t *testing.T) {
 			}
 		}`), 0644)
 
-		r := newCCPermissionHookRunner(dir)
+		r := newCCPermissionHookRunner(dir, core.SpawnOptions{})
 		hctx := hookContext{sessionID: "test-session", toolName: "Bash", toolInput: map[string]any{"command": "ls"}, cwd: dir}
 		_, ok := r.tryHook(context.Background(), hctx)
 		if ok {
@@ -292,7 +296,7 @@ func TestTryHook(t *testing.T) {
 			}
 		}`), 0644)
 
-		r := newCCPermissionHookRunner(dir)
+		r := newCCPermissionHookRunner(dir, core.SpawnOptions{})
 		hctx := hookContext{sessionID: "test-session", toolName: "Bash", toolInput: map[string]any{}, cwd: dir}
 		_, ok := r.tryHook(context.Background(), hctx)
 		if ok {
@@ -313,7 +317,7 @@ func TestTryHook(t *testing.T) {
 			}
 		}`), 0644)
 
-		r := newCCPermissionHookRunner(dir)
+		r := newCCPermissionHookRunner(dir, core.SpawnOptions{})
 		hctx := hookContext{sessionID: "test-session", toolName: "AnyTool", toolInput: map[string]any{}, cwd: dir}
 		decision, ok := r.tryHook(context.Background(), hctx)
 		if !ok {
@@ -325,7 +329,7 @@ func TestTryHook(t *testing.T) {
 	})
 
 	t.Run("no settings files", func(t *testing.T) {
-		r := newCCPermissionHookRunner("/nonexistent/path")
+		r := newCCPermissionHookRunner("/nonexistent/path", core.SpawnOptions{})
 		hctx := hookContext{sessionID: "test-session", toolName: "Bash", toolInput: map[string]any{}}
 		_, ok := r.tryHook(context.Background(), hctx)
 		if ok {
@@ -346,7 +350,7 @@ func TestTryHook(t *testing.T) {
 			}
 		}`), 0644)
 
-		r := newCCPermissionHookRunner(dir)
+		r := newCCPermissionHookRunner(dir, core.SpawnOptions{})
 		hctx := hookContext{sessionID: "test-session", toolName: "Bash", toolInput: map[string]any{}, cwd: dir}
 		decision, ok := r.tryHook(context.Background(), hctx)
 		if !ok {
@@ -379,7 +383,7 @@ func TestTryHook(t *testing.T) {
 			}
 		}`), 0644)
 
-		r := newCCPermissionHookRunner(dir)
+		r := newCCPermissionHookRunner(dir, core.SpawnOptions{})
 		hctx := hookContext{sessionID: "test-session", toolName: "Bash", toolInput: map[string]any{}, cwd: dir}
 		decision, ok := r.tryHook(context.Background(), hctx)
 		if !ok {
@@ -447,5 +451,242 @@ func TestBuildHookStdin(t *testing.T) {
 	}
 	if _, ok := minimal["agent_type"]; ok {
 		t.Error("agent_type should be omitted when empty")
+	}
+}
+
+// fakeSudoScript stands in for sudo on PATH. It records its argv, fails the
+// target's own nested `sudo -n` the way a correctly scoped sudoers does, and
+// in exec mode runs the command the way `sudo -n -iu USER --` does: every
+// byte of every argument except alphanumerics, '_', '-' and '$' is
+// backslash-escaped, the arguments are joined into one string and that
+// string runs under `sh -c` in the target's HOME with only the preserved
+// variables set, after a line of login-profile noise on stdout. In record
+// mode it runs nothing; in fail mode it refuses every call.
+const fakeSudoScript = `#!/bin/sh
+log=@LOG@
+mode=@MODE@
+home=@HOME@
+innerpath=@PATH@
+printf '%s\n' "$*" >> "$log"
+if [ "$mode" = fail ]; then
+	echo "sudo: a password is required" >&2
+	exit 1
+fi
+user=
+preserve=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-iu) user=$2; shift 2 ;;
+	--preserve-env=*) preserve=${1#--preserve-env=}; shift ;;
+	--) shift; break ;;
+	*) shift ;;
+	esac
+done
+if [ "$1" = sudo ]; then
+	exit 1
+fi
+if [ "$mode" = record ]; then
+	exit 0
+fi
+joined=
+for a in "$@"; do
+	joined="$joined $(printf '%s' "$a" | sed -e 's/[^A-Za-z0-9_$-]/\\&/g' -e '$!s/$/\\/')"
+done
+set -- HOME="$home" PATH="$innerpath" CC_FAKE_SUDO_USER="$user"
+oldifs=$IFS
+IFS=,
+for v in $preserve; do
+	eval "isset=\${$v+x}"
+	if [ -n "$isset" ]; then
+		eval "val=\$$v"
+		set -- "$@" "$v=$val"
+	fi
+done
+IFS=$oldifs
+echo "fake login profile noise"
+cd "$home" || exit 1
+exec env -i "$@" /bin/sh -c "$joined"
+`
+
+type fakeSudo struct {
+	log  string
+	home string
+}
+
+// installFakeSudo puts fakeSudoScript first on PATH in the given mode
+// ("exec", "record" or "fail"). extraPath, when set, leads the PATH the
+// spawned command sees.
+func installFakeSudo(t *testing.T, mode, extraPath string) *fakeSudo {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("run_as_user is not supported on Windows")
+	}
+	binDir := t.TempDir()
+	f := &fakeSudo{log: filepath.Join(binDir, "sudo.log"), home: t.TempDir()}
+	innerPath := "/usr/bin:/bin"
+	if extraPath != "" {
+		innerPath = extraPath + ":" + innerPath
+	}
+	script := strings.NewReplacer(
+		"@LOG@", testShellQuote(f.log),
+		"@MODE@", mode,
+		"@HOME@", testShellQuote(f.home),
+		"@PATH@", testShellQuote(innerPath),
+	).Replace(fakeSudoScript)
+	if err := os.WriteFile(filepath.Join(binDir, "sudo"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":/usr/bin:/bin")
+	core.ResetVerifyCache()
+	t.Cleanup(core.ResetVerifyCache)
+	return f
+}
+
+func (f *fakeSudo) calls(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(f.log)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func testShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func writeHookSettings(t *testing.T, path, matcher, command string) {
+	t.Helper()
+	settings := map[string]any{"hooks": map[string]any{"PermissionRequest": []any{
+		map[string]any{"matcher": matcher, "hooks": []any{map[string]any{"type": "command", "command": command}}},
+	}}}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTryHook_RunAsUserRunsHookAsTarget(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	sudo := installFakeSudo(t, "exec", "")
+	writeHookSettings(t, filepath.Join(sudo.home, ".claude", "settings.json"), "Bash",
+		`if [ "$CC_FAKE_SUDO_USER" = target ]; then echo allow; else echo deny; fi`)
+
+	r := newCCPermissionHookRunner(t.TempDir(), core.SpawnOptions{RunAsUser: "target"})
+	decision, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
+
+	if !ok || decision.Behavior != "allow" {
+		t.Fatalf("decision = %+v, ok = %v; want allow from a hook run as target", decision, ok)
+	}
+}
+
+func TestTryHook_RunAsUserReadsWorkDirSettingsAsTarget(t *testing.T) {
+	for _, name := range []string{"settings.json", "settings.local.json"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+			sudo := installFakeSudo(t, "exec", "")
+			workDir := t.TempDir()
+			writeHookSettings(t, filepath.Join(workDir, ".claude", name), "*",
+				`if [ "$CC_FAKE_SUDO_USER" = target ]; then echo allow; else echo deny; fi`)
+
+			r := newCCPermissionHookRunner(workDir, core.SpawnOptions{RunAsUser: "target"})
+			decision, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
+
+			if !ok || decision.Behavior != "allow" {
+				t.Fatalf("decision = %+v, ok = %v; want allow", decision, ok)
+			}
+			calls := sudo.calls(t)
+			if !strings.Contains(calls, settingsBeginMarker) {
+				t.Fatalf("settings were not read through sudo; sudo log:\n%s", calls)
+			}
+			if !strings.Contains(calls, hookCommandEnv) {
+				t.Fatalf("hook did not run through sudo; sudo log:\n%s", calls)
+			}
+		})
+	}
+}
+
+func TestTryHook_RunAsUserKeepsMultiLineCommandText(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	installFakeSudo(t, "exec", "")
+	workDir := t.TempDir()
+	writeHookSettings(t, filepath.Join(workDir, ".claude", "settings.json"), "*",
+		"v='$x'\nif [ \"$v\" = '$x' ]; then\n  echo allow\nfi")
+
+	r := newCCPermissionHookRunner(workDir, core.SpawnOptions{RunAsUser: "target"})
+	decision, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
+
+	if !ok || decision.Behavior != "allow" {
+		t.Fatalf("decision = %+v, ok = %v; want allow from the command as written", decision, ok)
+	}
+}
+
+func TestTryHook_RunAsUserSudoFailureRunsNothing(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	installFakeSudo(t, "fail", "")
+	workDir := t.TempDir()
+	sentinel := filepath.Join(t.TempDir(), "ran")
+	hook := "touch " + testShellQuote(sentinel) + "; echo allow"
+	writeHookSettings(t, filepath.Join(configDir, "settings.json"), "*", hook)
+	writeHookSettings(t, filepath.Join(workDir, ".claude", "settings.json"), "*", hook)
+
+	r := newCCPermissionHookRunner(workDir, core.SpawnOptions{RunAsUser: "target"})
+	_, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
+
+	if ok {
+		t.Fatal("tryHook returned a decision although sudo failed")
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("hook command ran without sudo")
+	}
+}
+
+func TestTryHook_RunAsUserHookTimeoutReturnsPromptly(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	installFakeSudo(t, "exec", "")
+	workDir := t.TempDir()
+	writeHookSettings(t, filepath.Join(workDir, ".claude", "settings.json"), "Bash", "sleep 30; echo allow")
+	r := newCCPermissionHookRunner(workDir, core.SpawnOptions{RunAsUser: "target"})
+	// Load the settings and warm the per-spawn check outside the timed call.
+	if _, ok := r.tryHook(context.Background(), hookContext{toolName: "Read", toolInput: map[string]any{}}); ok {
+		t.Fatal("unexpected decision for a tool no hook matches")
+	}
+
+	const deadline = 500 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	start := time.Now()
+	_, ok := r.tryHook(ctx, hookContext{toolName: "Bash", toolInput: map[string]any{}})
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("timed-out hook produced a decision")
+	}
+	if limit := deadline + 2*time.Second + 2*time.Second; elapsed > limit {
+		t.Fatalf("tryHook took %v, want under %v", elapsed, limit)
+	}
+}
+
+func TestTryHook_WithoutRunAsUserSkipsSudo(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	sudo := installFakeSudo(t, "record", "")
+	workDir := t.TempDir()
+	writeHookSettings(t, filepath.Join(workDir, ".claude", "settings.json"), "*", "echo allow")
+
+	r := newCCPermissionHookRunner(workDir, core.SpawnOptions{})
+	decision, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
+
+	if !ok || decision.Behavior != "allow" {
+		t.Fatalf("decision = %+v, ok = %v; want allow", decision, ok)
+	}
+	if calls := sudo.calls(t); calls != "" {
+		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
 	}
 }

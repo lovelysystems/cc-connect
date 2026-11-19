@@ -359,6 +359,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	// target user's HOME), so the workspace must be re-applied inside the
 	// spawn. WorkDir tells BuildSpawnCommand to wrap the command with a chdir;
 	// the path itself is passed through RunAsChdirEnv below.
+	sideSpawnOpts := spawnOpts
 	spawnOpts.WorkDir = workDir
 	cmd := core.BuildSpawnCommand(sessionCtx, spawnOpts, cliBin, allArgs...)
 	cmd.Dir = workDir
@@ -452,7 +453,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		cancel:              cancel,
 		done:                make(chan struct{}),
 		gracefulStopTimeout: 120 * time.Second,
-		ccHooks:             newCCPermissionHookRunner(workDir),
+		ccHooks:             newCCPermissionHookRunner(workDir, sideSpawnOpts),
 		startupWarning:      rootDowngradeWarning,
 		promptFilePath:      cleanupPromptPath,
 	}
