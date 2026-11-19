@@ -61,4 +61,49 @@ Plan: `docs/plans/2026-11-19-1449-feat-signoff-cards-plan.md`. One line per choi
 - Route and `signoff_exec` documented in `config.example.toml`, the card in `docs/teams.md`; over `docs/usage.md`; no doc lists socket routes and `docs/usage.md` is a PR #8 file — `config.example.toml:735-760`.
 - Mockups adapted from the lovely-cockpit mockups (content, click line option C, replaced option B), headings sent upper-case in the request; over CSS upper-casing; Adaptive Cards cannot change case — `sandbox/claude/tv-build/signoff-cards-mockups/` (not committed).
 
+## Plan review
+
+Sources read: brief, this log, ch#2022 and ch#2023 with comments, task ch#2320 (no comments), workpackage plan `ch-engineering` `origin/master:plans/ch-2022-…/workpackages.gdoc.md` at `synced_at` 2026-11-17T17:58:14Z (WP1, WP5), `ch-content-bot` and `op-argo-apps` at `origin/master`.
+
+### Cuts
+
+- Cut: the `CardText` case in `Card.RenderText` and its test (KTD1, U1); nothing in the story requires it now — a signoff card never goes through the text fallback (brief, "The card"), and the switch skips unknown elements (`core/card.go:237-268`).
+
+### Other changes
+
+- U6 execution note now follows KTD6 and the `## Plan` line above: if Teams substitutes `{{DATE(`/`{{TIME(` in a `TextRun`, add the word joiner and log it; the note said "record it and stop", which contradicted both.
+- KTD7 and KTD10 carry a pointer to the two open questions below.
+
+### Departures from the brief, checked
+
+- Click intercept before `allow_from` (KTD7, R14): follows "Anyone in the thread may click" literally; not settled for a deployment with `allow_from` — logged under `## Open questions`, not passed.
+- Replacement keyed on the thread the card was posted into, over the session key (KTD5): the brief says "in that thread"; the content bot runs `session_scope = "thread"` (`ch-content-bot` `origin/master:docker/config.default.toml`), where the two are equal, and `platform/teams/session.go:125-143` shows they differ only in the other scopes; kept, nothing the gate reads.
+- `signoff_exec` without `shell_profile`, from `/` (KTD8), over "as `exec` is elsewhere" (`shellExecCommand` prepends the profile, `core/engine.go:7842-7845`; `work_dir` is the agent's): kept; the tripwire "anything cc-connect runs … as root on a path the agent's user can write" requires it; the gate reads it from `config.example.toml` (U7) and must use absolute paths; the content bot sets no `shell_profile` today.
+- Session reservation as a FIFO lock hand-off (KTD12, U8), beyond the brief's "a new path beside timers": kept; the tripwire "an outcome turn dropped because the session is busy; the click holds the session" needs it, and the existing drain pops messages queued after the click before it unlocks (`core/engine.go:6298-6325`), so the 20 ms poll (`core/engine.go:2771-2785`) loses; internal, nothing the gate reads. Traced to WP1 "cc-connect reports each card's outcome to the bot as a new turn" and WP5 "The bot tells the editor … each card's outcome".
+- Messages queued before the click also wait for the report turn (KTD12), beyond the brief's case about messages after the click: kept; it falls out of the hand-off, and answering them first needs a before/after marker on each queued message.
+- Fixed 5 min limit that kills the process group, and no report on a stop (KTD8): kept; the brief has this unit pin the limit and log it ("the time limit — the gate reads from this repo"), the group kill is what makes a `failed` report true, and open cards are memory-only by the brief, so nothing reports after a restart. The gate's publish must be all-or-nothing; WP5's single push of one commit is. Documented in U7.
+- Report turn on the new active session after `/new`, `/cancel` or `/switch` (KTD9), over the brief's "on the session the click holds": kept; on the old one two turns would run on one agent (`core/engine.go:6943`, `core/engine.go:10150`).
+- Refusal 404 for a `session_key` with no live session (KTD2), beyond the brief's refusal list: kept; it is the engine lookup the caller check needs, and no live session means no agent to descend from.
+- Outcome report text `Signoff <request_id>: <outcome>` (KTD10): adds the gate's id to a tripwire-listed contract — logged under `## Open questions`, not passed.
+
 ## Build
+
+## Open questions
+
+### Signoff click and `allow_from`
+
+- **Question:** does a click from someone in the thread who is not on the Teams `allow_from` list count?
+- **Why it is open:** the brief says "Anyone in the thread may click" and puts where the click is handled on the tripwire list; it does not mention `allow_from`. The content bot requires `allow_from` in every deployment ("Anyone else gets no answer", `ch-content-bot` `origin/master:README.md:50`, `CHANGES.md:7-11`), and prod sets it to two Entra ids (`op-argo-apps` `origin/master:prod/radio/kustomization.yml:105`, `prod/regiotv/kustomization.yml:106`; stg is `*`). The bot runs in channels (`channel_files_enabled = true`), where every team member sees the card. ch#2022's AC is "goes live only after **the editor** confirms the summary". The plan's first draft put the intercept after `allow_from`; it was reversed on the brief's sentence.
+- **Blocks:** KTD7, R14, U6 step 3 and its `allow_from` test, U7's "who may click" in `docs/teams.md`; and the gate in ch-content-bot (WP5), which must know whether it has to check `clicked_by.id` itself.
+- **Option A — before `allow_from`, as planned:** any member of the channel can approve a publication from a bot that would not take an order from them. Closing that falls to the gate, which would re-check `clicked_by.id` against `TEAMS_ALLOW_FROM` — the same list kept in two places.
+- **Option B — consume every `signoff:` value before `allow_from`, call `onClick` only when the clicker passes `core.AllowList(p.cfg.allowFrom, userID(a))`; otherwise log and leave the card open:** one call in the intercept; a team member outside the list cannot approve — the same people the bot already ignores. "Anyone in the thread" then reads "anyone the bot answers in the thread", which is still not only the requester. No stale value can become a permission message, since consumption still comes first.
+- **Recommended:** B. It keeps the deployment's one list of who may act through the bot, and costs one line plus one test.
+
+### Outcome report text
+
+- **Question:** may the report carry the gate's `request_id` — `Signoff <request_id>: <outcome>`, `replaced` adding ` by <newer request_id>`, the command's `message` on a second line — or only fixed words, the outcome and the `message`?
+- **Why it is open:** the tripwire list pins the report to "fixed text, the outcome and the command's `message`, never the nonce"; `request_id` is none of those. The bot's skill in ch-content-bot (WP5, "The bot tells the editor each refusal and each card's outcome") is built against the exact text, and the brief's list of what this unit pins for the gate (style names, `clicked_by` names, time limit) does not name it.
+- **Blocks:** KTD10, U5's report-text tests, U7's documentation of the report, and the WP5 skill text that reads it.
+- **Option A — with the `request_id`, as planned:** a gate-chosen string (non-empty, no `:`) enters the agent's prompt; the gate is root and the only caller, and the id is not secret (it is in the button value). The agent can tell two reports in one session apart and, on `replaced`, which card is still open.
+- **Option B — `Signoff: <outcome>` and the `message` line only:** exactly the tripwire's contents. With two cards in one turn the agent gets `replaced` then, later, another outcome, and must rely on order; the gate can still put its own id into `message` for `published`, `refused` and `failed`, but `cancelled` and `replaced` carry no `message`.
+- **Recommended:** A, recorded as a pinned contract the gate reads, beside the style names and `clicked_by`.
