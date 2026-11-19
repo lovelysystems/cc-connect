@@ -82,10 +82,7 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 
 	var cmd *exec.Cmd
 	if a.spawnOpts.IsolationMode() {
-		verifyCtx, verifyCancel := context.WithTimeout(probeCtx, 10*time.Second)
-		err := core.VerifyRunAsUserCheap(verifyCtx, core.ExecSudoRunner{}, a.spawnOpts.RunAsUser)
-		verifyCancel()
-		if err != nil {
+		if err := verifyRunAsUser(probeCtx, a.spawnOpts.RunAsUser); err != nil {
 			return "", fmt.Errorf("claudecode: usage probe as run_as_user refused: %w", err)
 		}
 		opts := a.spawnOpts

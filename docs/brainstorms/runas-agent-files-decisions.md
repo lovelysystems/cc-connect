@@ -53,5 +53,6 @@
 - The docs get a new "What runs as the target user" subsection ahead of Setup, over spreading the three actions across the existing checklist and failure-mode lists. `docs/usage.md:338`
 - `core/runas_windows.go` gains a no-op `ResetVerifyCache`, over a `!windows` build tag on the Claude Code test files; those tests skip on Windows at run time but must compile there, and the stub keeps the Windows API in step with the Unix one. `core/runas_windows.go:64`
 - The usage probe's stderr goes into a mutex-guarded buffer, over leaving the `bytes.Buffer`; exec writes it from its own goroutine while the poll loop reads it, a race on the base that `go test -race` reports as soon as a test runs the probe. `agent/claudecode/claude_usage.go:229`
+- The 10s-timeout `VerifyRunAsUserCheap` call is one `verifyRunAsUser` helper in the Claude Code package, used by the agent spawn too, over a copy per spawn; `WriteFileAsUser` in core keeps its call without a timeout. `agent/claudecode/session.go`
 
 ## Open questions

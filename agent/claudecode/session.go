@@ -334,10 +334,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	// before we build the command. This catches sudoers being edited
 	// between startup preflight and now.
 	if spawnOpts.IsolationMode() {
-		verifyCtx, verifyCancel := context.WithTimeout(sessionCtx, 10*time.Second)
-		err := core.VerifyRunAsUserCheap(verifyCtx, core.ExecSudoRunner{}, spawnOpts.RunAsUser)
-		verifyCancel()
-		if err != nil {
+		if err := verifyRunAsUser(sessionCtx, spawnOpts.RunAsUser); err != nil {
 			cancel()
 			return nil, fmt.Errorf("claudeSession: run_as_user spawn refused: %w", err)
 		}
@@ -1306,6 +1303,13 @@ func claudeContextWindow(model string) int {
 		return 1_000_000
 	}
 	return 200_000
+}
+
+// verifyRunAsUser runs core.VerifyRunAsUserCheap for user with a 10s timeout.
+func verifyRunAsUser(ctx context.Context, user string) error {
+	verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return core.VerifyRunAsUserCheap(verifyCtx, core.ExecSudoRunner{}, user)
 }
 
 // filterEnv returns a copy of env with entries matching the given key removed.

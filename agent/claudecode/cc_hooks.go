@@ -203,10 +203,7 @@ func (r *ccPermissionHookRunner) loadSettingsAsUser(ctx context.Context) *ccSett
 }
 
 func (r *ccPermissionHookRunner) readSettingsAsUser(ctx context.Context) ([]byte, error) {
-	verifyCtx, verifyCancel := context.WithTimeout(ctx, 10*time.Second)
-	err := core.VerifyRunAsUserCheap(verifyCtx, core.ExecSudoRunner{}, r.spawnOpts.RunAsUser)
-	verifyCancel()
-	if err != nil {
+	if err := verifyRunAsUser(ctx, r.spawnOpts.RunAsUser); err != nil {
 		return nil, fmt.Errorf("run_as_user spawn refused: %w", err)
 	}
 
@@ -412,7 +409,7 @@ func runHookCommand(
 }
 
 // runHookCommandAsUser runs a hook command as the run_as_user user through
-// sudo, with tool info on stdin. Timeout: 60s, as runHookCommand.
+// sudo, with tool info on stdin.
 func runHookCommandAsUser(
 	ctx context.Context,
 	opts core.SpawnOptions,
@@ -427,10 +424,7 @@ func runHookCommandAsUser(
 	timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	verifyCtx, verifyCancel := context.WithTimeout(timeoutCtx, 10*time.Second)
-	err = core.VerifyRunAsUserCheap(verifyCtx, core.ExecSudoRunner{}, opts.RunAsUser)
-	verifyCancel()
-	if err != nil {
+	if err := verifyRunAsUser(timeoutCtx, opts.RunAsUser); err != nil {
 		return ccHookDecision{}, fmt.Errorf("run_as_user spawn refused: %w", err)
 	}
 

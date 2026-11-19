@@ -164,8 +164,7 @@ func SaveFilesToDisk(workDir, messageID string, files []FileAttachment) []string
 // SaveFilesToDiskAs is SaveFilesToDisk with the directories and files created
 // as opts.RunAsUser when opts sets one. In that case the supervisor makes no
 // directory and opens no file under workDir, and both layouts create each file
-// with WriteFileAsUser, which refuses an existing name. Without RunAsUser it
-// behaves exactly as SaveFilesToDisk.
+// with WriteFileAsUser, which refuses an existing name.
 func SaveFilesToDiskAs(ctx context.Context, opts SpawnOptions, workDir, messageID string, files []FileAttachment) []string {
 	if len(files) == 0 {
 		return nil
