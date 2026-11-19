@@ -22,11 +22,6 @@ entry that graduated upstream at the re-base keeps its final marker there.
 - **claudecode**: with `run_as_user`, read and run settings hooks, run the usage readout and
   write inbound attachments as the target user (upstream: pending)
 
-#### Deployment
-
-- **claudecode**: with `run_as_user`, chown an existing `<work_dir>/.cc-connect` to the target
-  user
-
 ### 2026-11-09 / v1.5.0-ls.3
 
 #### Fix
