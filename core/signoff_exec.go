@@ -32,7 +32,8 @@ type signoffExecOutput struct {
 // runSignoffExec runs signoff_exec for an approved card and returns its
 // outcome and one-line message. A command that is unset, exits non-zero,
 // prints anything but one valid JSON object or outlives the limit gives
-// failed with no message.
+// failed with no message. Once the command has ended, the rest of its process
+// group is killed.
 //
 // The command runs through the project's shell and flag without
 // shell_profile, from /, so nothing in a directory or profile the agent's
@@ -68,6 +69,7 @@ func (e *Engine) runSignoffExec(in signoffExecInput) (outcome, message string) {
 	cmd.Stderr = &stderr
 
 	err = cmd.Run()
+	killProcessGroup(cmd)
 	if s := strings.TrimSpace(stderr.String()); s != "" {
 		slog.Warn("signoff: signoff_exec stderr", "request_id", in.RequestID, "stderr", truncateStr(s, 2000))
 	}

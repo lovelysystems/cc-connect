@@ -69,7 +69,7 @@ type CardSelectOption struct {
 }
 
 // CardText renders one line of plain text in a style. The text is shown as
-// written: never read as markdown, HTML or any card format.
+// written.
 type CardText struct {
 	Text  string
 	Style CardTextStyle

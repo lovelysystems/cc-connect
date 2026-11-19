@@ -127,7 +127,9 @@ func TestSignoffAPIRefusesMalformedRequests(t *testing.T) {
 		"colon in request_id": func(b map[string]any) { b["request_id"] = "r:1" },
 		"unknown field":       func(b map[string]any) { b["eyebrow"] = "Publish" },
 		"project field":       func(b map[string]any) { b["project"] = "test" },
-		"button in a line":    func(b map[string]any) { b["body"] = []any{map[string]any{"style": "name", "text": "x", "action": "signoff:x:y"}} },
+		"button in a line": func(b map[string]any) {
+			b["body"] = []any{map[string]any{"style": "name", "text": "x", "action": "signoff:x:y"}}
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

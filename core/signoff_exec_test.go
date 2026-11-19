@@ -21,7 +21,7 @@ func newSignoffExecEngine(t *testing.T, command string) *Engine {
 var signoffExecTestInput = signoffExecInput{
 	RequestID: "r1",
 	Nonce:     "n1",
-	ClickedBy: SignoffClicker{ID: "aad-1", Name: "Lovely Editor"},
+	ClickedBy: SignoffClicker{ID: "aad-1", Name: "Jane Editor"},
 }
 
 func TestSignoffExecPassesTheClickAndReadsTheOutcome(t *testing.T) {
@@ -38,7 +38,7 @@ func TestSignoffExecPassesTheClickAndReadsTheOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"request_id":"r1","nonce":"n1","clicked_by":{"id":"aad-1","name":"Lovely Editor"}}`
+	want := `{"request_id":"r1","nonce":"n1","clicked_by":{"id":"aad-1","name":"Jane Editor"}}`
 	if string(got) != want {
 		t.Fatalf("stdin = %s\nwant    %s", got, want)
 	}
@@ -104,6 +104,20 @@ func TestSignoffExecLimitKillsTheWholeProcessGroup(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if _, err := os.Stat(late); err == nil {
 		t.Fatal("a child of the command ran on after the limit")
+	}
+}
+
+func TestSignoffExecFailedExitKillsTheWholeProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	late := filepath.Join(dir, "late")
+	e := newSignoffExecEngine(t, `(sleep 1; touch `+late+`) >/dev/null 2>&1 & exit 1`)
+
+	if outcome, _ := e.runSignoffExec(signoffExecTestInput); outcome != SignoffFailed {
+		t.Fatalf("outcome = %q, want failed", outcome)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(late); err == nil {
+		t.Fatal("a child of the command ran on after the command failed")
 	}
 }
 

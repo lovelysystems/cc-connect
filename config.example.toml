@@ -261,9 +261,9 @@ level = "info" # debug, info, warn, error
 #   {"session_key": "teams:...", "request_id": "r1", "nonce": "<random>",
 #    "title": "5 changes",
 #    "body": [{"style": "heading", "text": "ENTRIES"},
-#             {"style": "name", "text": "herbstfest-2026"},
-#             {"style": "detail", "text": "www.radio24.ch"},
-#             {"style": "link", "text": "https://tickets.example.ch/x"}],
+#             {"style": "name", "text": "autumn-fair-2026"},
+#             {"style": "detail", "text": "www.example.com"},
+#             {"style": "link", "text": "https://tickets.example.com/x"}],
 #    "confirm_label": "Approve", "cancel_label": "Cancel"}
 #   All seven fields are required and no other field is accepted. Styles:
 #   heading, name, detail, link. Every text is shown as written, never as
@@ -278,8 +278,11 @@ level = "info" # debug, info, warn, error
 #                            卡片在本轮最终回复之后发出（无进行中的轮次则立即发出）；之后的发送失败只记录日志
 #   400  malformed request / 请求格式错误
 #   403  the caller does not run under the agent of session_key (checked on Linux
-#        only; elsewhere every caller is refused) / 调用方不在该会话的 agent 进程之下
-#        （仅 Linux 可校验；其他系统一律拒绝）
+#        only; elsewhere every caller is refused). The check needs an agent that
+#        reports its process id; only Claude Code does, so every other agent's
+#        callers are refused / 调用方不在该会话的 agent 进程之下（仅 Linux 可校验；
+#        其他系统一律拒绝）。校验需要 agent 报告其进程 id，目前仅 Claude Code 支持，
+#        其他 agent 的调用方一律拒绝
 #   404  no live agent session for session_key / session_key 没有存活的 agent 会话
 #   422  the project has no run_as_user, or its platform cannot show signoff cards
 #        项目未设置 run_as_user，或其平台不支持签核卡片
@@ -305,11 +308,13 @@ level = "info" # debug, info, warn, error
 #                           "name": "<display name>"}}
 #   stdout: exactly one JSON object {"outcome": "published"|"refused", "message": "<one line, optional>"}
 #   A non-zero exit, any other output, or running past 5 minutes gives the outcome
-#   "failed". At the limit, or when cc-connect stops, the command's whole process
-#   group is killed and no outcome is reported, so its publish must be
-#   all-or-nothing.
-#   非零退出、任何其他输出或运行超过 5 分钟，结果为 "failed"。到达时限或 cc-connect
-#   停止时，命令的整个进程组会被杀死且不会报告结果，因此发布操作必须是全有或全无。
+#   "failed". When the command exits or reaches the limit, its whole process
+#   group is killed, so no background child keeps running. When cc-connect
+#   stops, the group is killed and no outcome is reported, so its publish must
+#   be all-or-nothing.
+#   非零退出、任何其他输出或运行超过 5 分钟，结果为 "failed"。命令退出或到达时限时，
+#   其整个进程组会被杀死，后台子进程不会继续运行。cc-connect 停止时，进程组会被杀死且
+#   不会报告结果，因此发布操作必须是全有或全无。
 #
 # After every outcome the agent gets a turn in the card's session whose text is:
 # 每个结果之后，agent 会在卡片所在会话中收到一轮消息，内容为：
@@ -319,7 +324,7 @@ level = "info" # debug, info, warn, error
 # 若命令返回了 message，则在第二行附上。
 #
 # [[projects]]
-# name = "content-bot"
+# name = "publishing"
 # run_as_user = "claude"
 # run_as_env = ["CC_SESSION_KEY"]
 # signoff_exec = "/usr/local/bin/gate publish"

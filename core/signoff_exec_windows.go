@@ -7,3 +7,6 @@ import "os/exec"
 // killProcessGroupOnCancel keeps exec's default on Windows: the process
 // itself is killed when cmd's context is done.
 func killProcessGroupOnCancel(*exec.Cmd) {}
+
+// killProcessGroup does nothing on Windows.
+func killProcessGroup(*exec.Cmd) {}

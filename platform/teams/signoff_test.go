@@ -24,9 +24,9 @@ func signoffTestCard(lines ...core.CardText) *core.Card {
 func signoffSampleLines() []core.CardText {
 	return []core.CardText{
 		{Text: "ENTRIES", Style: core.CardTextHeading},
-		{Text: "winterklaenge-am-see-2027", Style: core.CardTextName},
-		{Text: "www.radio24.ch · www.radio32.ch", Style: core.CardTextDetail},
-		{Text: "🔗 https://tickets.example.ch/winterklaenge", Style: core.CardTextLink},
+		{Text: "winter-concert-2027", Style: core.CardTextName},
+		{Text: "www.example.com · www.example.org", Style: core.CardTextDetail},
+		{Text: "🔗 https://tickets.example.com/winter", Style: core.CardTextLink},
 	}
 }
 
@@ -55,9 +55,9 @@ func TestSignoffCardDrawsEveryTextAsATextRun(t *testing.T) {
 	want := []map[string]any{
 		{"text": "5 changes", "size": "Large", "weight": "Bolder"},
 		{"text": "ENTRIES", "size": "Small", "weight": "Bolder", "isSubtle": true},
-		{"text": "winterklaenge-am-see-2027", "weight": "Bolder"},
-		{"text": "www.radio24.ch · www.radio32.ch", "size": "Small", "isSubtle": true},
-		{"text": "🔗 https://tickets.example.ch/winterklaenge", "size": "Small", "color": "Accent"},
+		{"text": "winter-concert-2027", "weight": "Bolder"},
+		{"text": "www.example.com · www.example.org", "size": "Small", "isSubtle": true},
+		{"text": "🔗 https://tickets.example.com/winter", "size": "Small", "color": "Accent"},
 	}
 	for i, w := range want {
 		if runs[i]["type"] != "TextRun" {
@@ -131,8 +131,8 @@ func TestSignoffCardRedrawnWithItsMark(t *testing.T) {
 		symbol, line string
 		color        any
 	}{
-		{core.SignoffMark{Kind: core.SignoffMarkApproved, By: "Lovely Editor", At: at}, "✓", "Lovely Editor · " + when, "Good"},
-		{core.SignoffMark{Kind: core.SignoffMarkCancelled, By: "Lovely Editor", At: at}, "✕", "Lovely Editor · " + when, "Attention"},
+		{core.SignoffMark{Kind: core.SignoffMarkApproved, By: "Jane Editor", At: at}, "✓", "Jane Editor · " + when, "Good"},
+		{core.SignoffMark{Kind: core.SignoffMarkCancelled, By: "Jane Editor", At: at}, "✕", "Jane Editor · " + when, "Attention"},
 		{core.SignoffMark{Kind: core.SignoffMarkReplaced, At: at}, "↻", when, nil},
 	}
 	for _, c := range cases {
@@ -163,7 +163,7 @@ func signoffClick(conv, user, value string) []byte {
 		Type:         "message",
 		ID:           "click-1",
 		ServiceURL:   "https://smba.example/",
-		From:         channelAccount{ID: "29:" + user, AADObjectID: user, Name: "Lovely Editor"},
+		From:         channelAccount{ID: "29:" + user, AADObjectID: user, Name: "Jane Editor"},
 		Recipient:    channelAccount{ID: "bot-1"},
 		Conversation: conversationAccount{ID: conv},
 		Value:        []byte(`{"action":"` + value + `"}`),
@@ -189,7 +189,7 @@ func TestSignoffPostThenRedrawEditsTheSameActivity(t *testing.T) {
 	if len(fs.last.Entities) != 0 {
 		t.Fatalf("signoff card carries entities %v", fs.last.Entities)
 	}
-	if err := handle.Redraw(context.Background(), core.SignoffMark{Kind: core.SignoffMarkApproved, By: "Lovely Editor", At: time.Now()}); err != nil {
+	if err := handle.Redraw(context.Background(), core.SignoffMark{Kind: core.SignoffMarkApproved, By: "Jane Editor", At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fs.updatedIDs) != 1 || fs.updatedIDs[0] != "act-9" {
@@ -221,7 +221,7 @@ func TestSignoffClickReachesTheCardNeverTheAgent(t *testing.T) {
 
 	p.dispatch(nil, signoffClick("conv-A;messageid=1", "aad-1", "signoff:r1:n1"))
 
-	if len(clicks.got) != 1 || clicks.got[0] != (core.SignoffClicker{ID: "aad-1", Name: "Lovely Editor"}) {
+	if len(clicks.got) != 1 || clicks.got[0] != (core.SignoffClicker{ID: "aad-1", Name: "Jane Editor"}) {
 		t.Fatalf("clicks = %v", clicks.got)
 	}
 	if len(*got) != 0 {

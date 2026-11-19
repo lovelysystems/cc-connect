@@ -112,4 +112,43 @@ Sources read: brief, this log, ch#2022 and ch#2023 with comments, task ch#2320 (
 - Footer drops the name and its " · " when the clicker has no display name; over a line starting with " · " — `platform/teams/signoff.go:196`.
 - Manual Teams check of the drawn card (U6 execution note) left for the review stop, and the U+2060 word joiner left unbuilt until that check shows Teams substitutes `{{DATE(` in a `TextRun`; over stopping the build; the pipeline has no Teams test channel and the joiner is conditional by the plan — plan U6.
 
+## Review
+
+Sources: `ce-code-review` and `tv:review` findings on `328f5a52`, `gh pr view 8`, `ch-content-bot` `origin/taras/gate-card-poc`.
+
+- The rest of `signoff_exec`'s process group is killed as soon as the command has ended, whatever the outcome; over killing it only at the limit or a stop; a background child of a gate that answered `failed` could still publish, which KTD8 rules out. The proof-of-concept gate `exec`s one process and backgrounds nothing (`ch-content-bot` `origin/taras/gate-card-poc:docker/bin/content-gate-publish`), so nothing it needs is killed. A child that keeps stdout or stderr open still runs until it closes them, at most `WaitDelay` (2 s) — `core/signoff_exec.go:72`, `core/signoff_exec_unix.go:22`.
+- `config.example.toml` says the limit gives `failed` and only a stop gives no report; over its earlier text, where the limit gave no report; the code reports `failed` at the limit, as KTD8 and the `## Plan review` line on the limit say. The `## Plan` line "A cc-connect stop or the limit … gives no report" means a stop only — `config.example.toml:311`.
+- The route's 403 doc says the caller check needs an agent that reports its process id, which only Claude Code does; over leaving it unsaid; every other agent's callers get 403 — `core/signoff.go:176`, `config.example.toml:280`.
+- Customer hosts, slugs and names in tests and `config.example.toml` replaced by `example.*` hosts and generic names; the user's ruling. Brainstorm and plan docs keep them.
+- PR #8 is still open (`gh pr view 8`, 2026-11-19); `git merge-tree HEAD origin/taras/runas-agent-files` conflicts in `CHANGES.md` only, as KTD11 expects. Rebase onto #8 once it lands.
+- Answered by this log, not changed: one user's card replacing another user's card in the same Teams conversation (`## Mechanism`, replacement keyed by thread); a failed card post never reaching the agent (plan R9, KTD5: log only).
+
 ## Open questions
+
+### Line breaks and `{{DATE(` in a drawn `TextRun`
+
+- Source: `tv:review` Question 1, with the manual U6 check still open. Needs a Teams test channel.
+- Logged: "A body line's text may hold a line break; over refusing it; the brief refuses only empty text and unknown styles" (`## Build`). Finding: `validate` accepts `"a\nb"` in a `name` line, the title and the labels (`core/signoff.go:52`), and the Teams card puts it in one `TextRun` (`platform/teams/signoff.go:182`). If Teams breaks the line there, text from an agent's commit could draw as a second entry or link.
+- Probe: post a card with a `name` line `a\nb` and one with `{{DATE(2026-11-19T10:00:00Z)}}`.
+- Option A, keep: no change; costs a possible fake line on the card if Teams breaks the line.
+- Option B, refuse `\r`/`\n` in every text in `SignoffRequest.validate`, as `parseSignoffExecOutput` does for `message`: a 400 for such text; changes the body format on the tripwire list, and the gate must keep line breaks out of names it reads from commits.
+- Option C, draw `\r`/`\n` as a space in Teams: the request stays as is; the text is no longer shown exactly as sent.
+- `{{DATE(` substituted: add the U+2060 joiner of KTD6; that is already decided.
+- Recommended: run the probe; if `\n` breaks the line, B.
+
+### Click conversation id in a channel thread
+
+- Source: `tv:review` Question 2; plan "Assumptions" names it unverified. Needs a Teams test channel.
+- The intercept drops a click whose `Conversation.ID` differs from the card's (`platform/teams/signoff.go:87`). If Teams sends a channel-thread click with another `;messageid=`, every channel click is dropped and the card stays open.
+- Option A, keep the exact match: costs every channel click if Teams sends another id.
+- Option B, compare the conversation id without `;messageid=`: costs the "only in the thread its card was posted in" rule on the tripwire list, since a click would count from any thread of the channel.
+- Recommended: click a card in a channel thread; keep A unless the click is dropped, then decide B.
+
+### Engine choice without the caller check, for the upstream PR
+
+- Source: `tv:review` Question 3. Story owner's decision.
+- Logged: "Engine found from `session_key` … keeps the brief's seven fields and the check separable" (`## Mechanism`). Finding: without the check, `handleSignoffSend` takes the first engine in name order with a live session for the key (`core/api.go:811-821`), so two projects whose bots share a chat cannot be told apart; the check is not separable that way.
+- Option A, keep the caller check as what picks the engine, upstream too: no change; the route works on Linux only.
+- Option B, add an optional `project` field like `/send`: an eighth field, on the tripwire list; the gate does not need it.
+- Option C, ship upstream without the check: no change here; two projects sharing a chat get the wrong engine.
+- Recommended: A. The content bot runs one project, so nothing is needed now.

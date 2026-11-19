@@ -18,19 +18,19 @@ import (
 func signoffSampleBody() []SignoffLine {
 	return []SignoffLine{
 		{CardTextHeading, "ENTRIES"},
-		{CardTextName, "winterklaenge-am-see-2027"},
-		{CardTextDetail, "www.radio24.ch · www.radio32.ch"},
-		{CardTextLink, "🔗 https://tickets.example.ch/winterklaenge"},
-		{CardTextLink, "🔗 https://www.seebad-example.ch/anfahrt"},
-		{CardTextName, "herbstfest-2026"},
-		{CardTextDetail, "www.radio24.ch"},
+		{CardTextName, "winter-concert-2027"},
+		{CardTextDetail, "www.example.com · www.example.org"},
+		{CardTextLink, "🔗 https://tickets.example.com/winter"},
+		{CardTextLink, "🔗 https://venue.example.com/directions"},
+		{CardTextName, "autumn-fair-2026"},
+		{CardTextDetail, "www.example.com"},
 		{CardTextName, "test-event-november-2026"},
-		{CardTextDetail, "www.radio32.ch"},
+		{CardTextDetail, "www.example.org"},
 		{CardTextHeading, "LISTS"},
-		{CardTextName, "artikel-win"},
-		{CardTextDetail, "www.radio32.ch"},
-		{CardTextName, "events-uebersicht"},
-		{CardTextDetail, "www.radio24.ch"},
+		{CardTextName, "article-prizes"},
+		{CardTextDetail, "www.example.org"},
+		{CardTextName, "events-overview"},
+		{CardTextDetail, "www.example.com"},
 	}
 }
 
@@ -181,8 +181,8 @@ func (a *signoffTestAgent) StartSession(context.Context, string) (AgentSession, 
 	return a.session, nil
 }
 func (a *signoffTestAgent) ListSessions(context.Context) ([]AgentSessionInfo, error) { return nil, nil }
-func (a *signoffTestAgent) Stop() error                                            { return nil }
-func (a *signoffTestAgent) GetRunAsUser() string                                   { return a.runAs }
+func (a *signoffTestAgent) Stop() error                                              { return nil }
+func (a *signoffTestAgent) GetRunAsUser() string                                     { return a.runAs }
 
 // signoffTestPlatform records, in order, what reaches the thread: messages,
 // streaming cards, signoff cards and their redraws.
@@ -332,7 +332,7 @@ func (h *signoffHarness) say(id, text string) {
 		Platform:   "test",
 		MessageID:  id,
 		UserID:     "u1",
-		UserName:   "Lovely Editor",
+		UserName:   "Jane Editor",
 		Content:    text,
 		ReplyCtx:   "thread-1",
 	})
@@ -477,9 +477,9 @@ func TestSignoffNewerCardReplacesTheOlderOneInTheThread(t *testing.T) {
 	}
 
 	// A click on the replaced card does nothing.
-	h.p.handle(t, "r1").approve("Lovely Editor")
+	h.p.handle(t, "r1").approve("Jane Editor")
 	time.Sleep(50 * time.Millisecond)
-	if h.p.has("redraw:r1:approved:Lovely Editor") {
+	if h.p.has("redraw:r1:approved:Jane Editor") {
 		t.Fatal("a click on a replaced card was taken")
 	}
 }
@@ -538,8 +538,8 @@ func TestSignoffCardStaysClickableAfterTheSessionStateIsCleared(t *testing.T) {
 	card := h.p.handle(t, "r1")
 
 	h.e.cleanupInteractiveState(signoffTestKey)
-	card.approve("Lovely Editor")
-	h.p.waitFor(t, "redraw:r1:approved:Lovely Editor")
+	card.approve("Jane Editor")
+	h.p.waitFor(t, "redraw:r1:approved:Jane Editor")
 	if got := h.agent.nextPrompt(t); got != "Signoff r1: refused" {
 		t.Fatalf("report = %q", got)
 	}
@@ -558,8 +558,8 @@ func TestSignoffApproveRunsTheCommandAndReportsItsOutcome(t *testing.T) {
 	h.request(t, "r1")
 	card := h.p.handle(t, "r1")
 
-	card.approve("Lovely Editor")
-	redraw := h.p.waitFor(t, "redraw:r1:approved:Lovely Editor")
+	card.approve("Jane Editor")
+	redraw := h.p.waitFor(t, "redraw:r1:approved:Jane Editor")
 
 	report := h.agent.nextPrompt(t)
 	if report != "Signoff r1: published\n5 changes live" {
@@ -572,7 +572,7 @@ func TestSignoffApproveRunsTheCommandAndReportsItsOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"request_id":"r1","nonce":"nonce-r1","clicked_by":{"id":"aad-Lovely Editor","name":"Lovely Editor"}}`; string(got) != want {
+	if want := `{"request_id":"r1","nonce":"nonce-r1","clicked_by":{"id":"aad-Jane Editor","name":"Jane Editor"}}`; string(got) != want {
 		t.Fatalf("stdin = %s, want %s", got, want)
 	}
 
@@ -590,7 +590,7 @@ func TestSignoffApproveRunsTheCommandAndReportsItsOutcome(t *testing.T) {
 	}
 
 	// A second click runs nothing.
-	card.approve("Lovely Editor")
+	card.approve("Jane Editor")
 	time.Sleep(100 * time.Millisecond)
 	data, _ := os.ReadFile(runs)
 	if n := strings.Count(string(data), "run"); n != 1 {
@@ -674,9 +674,9 @@ func TestSignoffCancelReportsWithoutRunningTheCommand(t *testing.T) {
 	h.setExec(`echo run >> ` + runs + `; echo '{"outcome":"published"}'`)
 	h.turn(t, "m0", "hello", "hi")
 	h.request(t, "r1")
-	h.p.handle(t, "r1").cancel("Lovely Editor")
+	h.p.handle(t, "r1").cancel("Jane Editor")
 
-	h.p.waitFor(t, "redraw:r1:cancelled:Lovely Editor")
+	h.p.waitFor(t, "redraw:r1:cancelled:Jane Editor")
 	if got := h.agent.nextPrompt(t); got != "Signoff r1: cancelled" {
 		t.Fatalf("report = %q", got)
 	}
@@ -689,7 +689,7 @@ func TestSignoffUnsetCommandReportsFailed(t *testing.T) {
 	h := newSignoffHarness(t)
 	h.turn(t, "m0", "hello", "hi")
 	h.request(t, "r1")
-	h.p.handle(t, "r1").approve("Lovely Editor")
+	h.p.handle(t, "r1").approve("Jane Editor")
 	if got := h.agent.nextPrompt(t); got != "Signoff r1: failed" {
 		t.Fatalf("report = %q", got)
 	}
@@ -705,8 +705,8 @@ func TestSignoffMessageTypedAfterTheClickWaitsForTheReport(t *testing.T) {
 
 	h.say("m1", "still working?")
 	h.agent.nextPrompt(t)
-	card.approve("Lovely Editor")
-	h.p.waitFor(t, "redraw:r1:approved:Lovely Editor")
+	card.approve("Jane Editor")
+	h.p.waitFor(t, "redraw:r1:approved:Jane Editor")
 	h.say("m2", "is it live?")
 	h.p.waitFor(t, "msg:"+h.e.i18n.T(MsgMessageQueued))
 	h.agent.answer("yes")
@@ -729,8 +729,8 @@ func TestSignoffHoldBlocksTypedTurnsAndPsUntilTheReport(t *testing.T) {
 	h.setExec(`while [ ! -f ` + release + ` ]; do sleep 0.02; done; echo '{"outcome":"published"}'`)
 	h.turn(t, "m0", "hello", "hi")
 	h.request(t, "r1")
-	h.p.handle(t, "r1").approve("Lovely Editor")
-	h.p.waitFor(t, "redraw:r1:approved:Lovely Editor")
+	h.p.handle(t, "r1").approve("Jane Editor")
+	h.p.waitFor(t, "redraw:r1:approved:Jane Editor")
 
 	h.say("m1", "/ps sneak in")
 	h.p.waitFor(t, "msg:"+h.e.i18n.T(MsgPsNoSession))
@@ -760,8 +760,8 @@ func TestSignoffReportRunsOnTheNewSessionAfterNew(t *testing.T) {
 	h.turn(t, "m0", "hello", "hi")
 	old := h.session()
 	h.request(t, "r1")
-	h.p.handle(t, "r1").approve("Lovely Editor")
-	h.p.waitFor(t, "redraw:r1:approved:Lovely Editor")
+	h.p.handle(t, "r1").approve("Jane Editor")
+	h.p.waitFor(t, "redraw:r1:approved:Jane Editor")
 
 	h.say("m1", "/new")
 	h.p.waitFor(t, "msg:"+h.e.i18n.T(MsgNewSessionCreated))
@@ -791,8 +791,8 @@ func TestSignoffStopBeforeTheReportFinalizesThePlaceholderEmpty(t *testing.T) {
 	h.setExec(`sleep 5; echo '{"outcome":"published"}'`)
 	h.turn(t, "m0", "hello", "hi")
 	h.request(t, "r1")
-	h.p.handle(t, "r1").approve("Lovely Editor")
-	h.p.waitFor(t, "redraw:r1:approved:Lovely Editor")
+	h.p.handle(t, "r1").approve("Jane Editor")
+	h.p.waitFor(t, "redraw:r1:approved:Jane Editor")
 
 	_ = h.e.Stop()
 	h.p.waitFor(t, "final:")

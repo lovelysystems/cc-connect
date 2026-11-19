@@ -272,7 +272,7 @@ func (e *Engine) postSignoffCard(c *signoffCard) {
 }
 
 // signoffClicked handles a button press on c. Only a press carrying one of
-// c's two button values counts, and only the first one.
+// c's button values counts, and only the first one.
 func (e *Engine) signoffClicked(c *signoffCard, value string, by SignoffClicker) {
 	<-c.posted
 	approve := value == c.req.confirmValue()
