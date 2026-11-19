@@ -59,3 +59,6 @@ func VerifyRunAsUserCheap(_ context.Context, _ SudoRunner, runAsUser string) err
 func WriteFileAsUser(_ context.Context, _ SpawnOptions, _ string, _ []byte) error {
 	return errors.New("run_as_user is not supported on Windows")
 }
+
+// ResetVerifyCache is a no-op on Windows: nothing is cached.
+func ResetVerifyCache() {}

@@ -48,5 +48,10 @@
 - The settings read gets its own 30s timeout, over the session context alone; a hung sudo would otherwise block the first permission request. `agent/claudecode/cc_hooks.go:213`
 - `readSettingsFile` keeps reading the file and hands the bytes to a new `parseSettings`, over a second copy of the JSONC parse for framed output. `agent/claudecode/cc_hooks.go:294`
 - Under `run_as_user` an inbound image is created with `WriteFileAsUser`, which refuses a taken name, over replacing it as `os.WriteFile` does; the name carries a millisecond timestamp, and a file planted at that name is skipped. `agent/claudecode/session.go:993`
+- The usage probe's `DISABLE_TELEMETRY` and `DISABLE_COST_WARNINGS` are exported inside the spawned script, over adding them to the env allowlist; `FilterEnvForSpawn` would drop them and the supervisor's own values would cross with an allowlist entry. `agent/claudecode/claude_usage.go:54`
+- The stub `claude` in the usage tests records and then sleeps, and each test ends GetUsage by its context, over a stub that exits; GetUsage on the base hangs when `claude` exits on its own (the pty reader's result is taken in the loop and waited for again in the deferred cleanup), and fixing that is outside the three actions. `agent/claudecode/claude_usage_test.go:281`
+- The docs get a new "What runs as the target user" subsection ahead of Setup, over spreading the three actions across the existing checklist and failure-mode lists. `docs/usage.md:338`
+- `core/runas_windows.go` gains a no-op `ResetVerifyCache`, over a `!windows` build tag on the Claude Code test files; those tests skip on Windows at run time but must compile there, and the stub keeps the Windows API in step with the Unix one. `core/runas_windows.go:64`
+- The usage probe's stderr goes into a mutex-guarded buffer, over leaving the `bytes.Buffer`; exec writes it from its own goroutine while the poll loop reads it, a race on the base that `go test -race` reports as soon as a test runs the probe. `agent/claudecode/claude_usage.go:229`
 
 ## Open questions

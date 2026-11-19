@@ -46,9 +46,20 @@ type claudeUsageProbeState struct {
 	usageSentAt     time.Time
 }
 
+// usageProbeAsUserScript starts the usage probe's claude in a fixed dir under
+// the run_as_user user's HOME. sudo -i joins argv into one string for the
+// login shell, so the flags live in the script, which stays on one line and
+// reads variables only as "${NAME}".
+const usageProbeAsUserScript = `d="${HOME}/.cc-connect/usage-probe"; mkdir -p -- "${d}" && cd -- "${d}" && ` +
+	`export DISABLE_TELEMETRY=true DISABLE_COST_WARNINGS=true && ` +
+	`exec claude --tools '' --permission-mode plan --no-chrome`
+
 func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		return nil, fmt.Errorf("claudecode: 'claude' CLI not found in PATH")
+	// Under run_as_user the target user's PATH decides where claude is.
+	if !a.spawnOpts.IsolationMode() {
+		if _, err := exec.LookPath("claude"); err != nil {
+			return nil, fmt.Errorf("claudecode: 'claude' CLI not found in PATH")
+		}
 	}
 
 	screen, err := a.runClaudeUsageProbe(ctx)
@@ -62,29 +73,43 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	workDir, err := os.MkdirTemp("", "cc-connect-claude-usage-*")
-	if err != nil {
-		return "", fmt.Errorf("claudecode: create usage temp dir: %w", err)
-	}
-	defer os.RemoveAll(workDir)
-
-	args := []string{
-		"--tools", "",
-		"--permission-mode", "plan",
-		"--no-chrome",
-	}
-	cmd := exec.CommandContext(probeCtx, "claude", args...)
-	cmd.Dir = workDir
-
 	env := filterEnv(os.Environ(), "CLAUDECODE")
 	env = append(env, "DISABLE_TELEMETRY=true")
 	env = append(env, "DISABLE_COST_WARNINGS=true")
 	if extra := a.usageProbeEnv(); len(extra) > 0 {
 		env = core.MergeEnv(env, extra)
 	}
-	cmd.Env = env
 
-	var stderr bytes.Buffer
+	var cmd *exec.Cmd
+	if a.spawnOpts.IsolationMode() {
+		verifyCtx, verifyCancel := context.WithTimeout(probeCtx, 10*time.Second)
+		err := core.VerifyRunAsUserCheap(verifyCtx, core.ExecSudoRunner{}, a.spawnOpts.RunAsUser)
+		verifyCancel()
+		if err != nil {
+			return "", fmt.Errorf("claudecode: usage probe as run_as_user refused: %w", err)
+		}
+		opts := a.spawnOpts
+		opts.WorkDir = ""
+		cmd = core.BuildSpawnCommand(probeCtx, opts, "/bin/sh", "-c", usageProbeAsUserScript)
+		cmd.Env = core.FilterEnvForSpawn(env, opts)
+	} else {
+		workDir, err := os.MkdirTemp("", "cc-connect-claude-usage-*")
+		if err != nil {
+			return "", fmt.Errorf("claudecode: create usage temp dir: %w", err)
+		}
+		defer func() { _ = os.RemoveAll(workDir) }()
+
+		args := []string{
+			"--tools", "",
+			"--permission-mode", "plan",
+			"--no-chrome",
+		}
+		cmd = exec.CommandContext(probeCtx, "claude", args...)
+		cmd.Dir = workDir
+		cmd.Env = env
+	}
+
+	var stderr lockedBuffer
 	cmd.Stderr = &stderr
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
@@ -197,6 +222,25 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 			}
 		}
 	}
+}
+
+// lockedBuffer collects the probe's stderr, which exec copies in from its own
+// goroutine while the poll loop reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (a *Agent) usageProbeEnv() []string {

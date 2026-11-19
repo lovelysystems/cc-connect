@@ -3,9 +3,13 @@ package claudecode
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chenhg5/cc-connect/core"
 )
 
 func TestSanitizeClaudeUsageOutput_RendersCursorMoves(t *testing.T) {
@@ -268,4 +272,89 @@ func mustLoadLocation(t *testing.T, name string) *time.Location {
 		t.Fatalf("LoadLocation(%q): %v", name, err)
 	}
 	return loc
+}
+
+// writeStubClaude puts a `claude` into a new dir that records its working
+// dir and arguments, one per line in brackets, then sleeps without drawing
+// anything. GetUsage returns once its context ends; a probe whose claude
+// exits on its own keeps GetUsage waiting on the pty reader.
+func writeStubClaude(t *testing.T) (dir, record string) {
+	t.Helper()
+	dir = t.TempDir()
+	record = filepath.Join(t.TempDir(), "claude.record")
+	script := "#!/bin/sh\n{ pwd -P; for a in \"$@\"; do printf '[%s]\\n' \"$a\"; done; } > " + testShellQuote(record) + "\nexec sleep 3\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, record
+}
+
+func TestGetUsage_RunAsUserRunsProbeAsTarget(t *testing.T) {
+	stubDir, record := writeStubClaude(t)
+	sudo := installFakeSudo(t, "exec", stubDir)
+	if _, err := exec.LookPath("claude"); err == nil {
+		t.Fatal("supervisor PATH unexpectedly has claude")
+	}
+	a := &Agent{spawnOpts: core.SpawnOptions{RunAsUser: "target"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	if _, err := a.GetUsage(ctx); err == nil {
+		t.Fatal("GetUsage succeeded against a stub that renders nothing")
+	}
+
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("stub claude did not run: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	wantDir, err := filepath.EvalSymlinks(sudo.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir = filepath.Join(wantDir, ".cc-connect", "usage-probe")
+	if lines[0] != wantDir {
+		t.Fatalf("probe ran in %q, want %q", lines[0], wantDir)
+	}
+	wantArgs := []string{"[--tools]", "[]", "[--permission-mode]", "[plan]", "[--no-chrome]"}
+	if got := lines[1:]; strings.Join(got, " ") != strings.Join(wantArgs, " ") {
+		t.Fatalf("probe args = %v, want %v", got, wantArgs)
+	}
+	if !strings.Contains(sudo.calls(t), "-n -iu target") {
+		t.Fatalf("probe did not go through sudo; sudo log:\n%s", sudo.calls(t))
+	}
+}
+
+func TestGetUsage_RunAsUserSudoFailureStartsNoClaude(t *testing.T) {
+	stubDir, record := writeStubClaude(t)
+	installFakeSudo(t, "fail", "")
+	t.Setenv("PATH", os.Getenv("PATH")+":"+stubDir)
+	a := &Agent{spawnOpts: core.SpawnOptions{RunAsUser: "target"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	if _, err := a.GetUsage(ctx); err == nil {
+		t.Fatal("GetUsage succeeded although sudo failed")
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Fatal("claude started without sudo")
+	}
+}
+
+func TestGetUsage_WithoutRunAsUserSkipsSudo(t *testing.T) {
+	stubDir, record := writeStubClaude(t)
+	sudo := installFakeSudo(t, "record", "")
+	t.Setenv("PATH", os.Getenv("PATH")+":"+stubDir)
+	a := &Agent{}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	_, _ = a.GetUsage(ctx)
+
+	if _, err := os.Stat(record); err != nil {
+		t.Fatalf("claude did not run directly: %v", err)
+	}
+	if calls := sudo.calls(t); calls != "" {
+		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
+	}
 }
