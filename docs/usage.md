@@ -360,9 +360,8 @@ attachment is skipped with a log line. The hook settings are read once
 per session: if that read fails, the session runs no hooks and every
 request goes to the chat's permission prompt for the rest of the session.
 
-Older cc-connect versions created `<work_dir>/.cc-connect` as the
-supervisor. The target user cannot write into that dir, so every
-attachment is skipped until you hand it over:
+If `<work_dir>/.cc-connect` exists and the target user cannot write it,
+every attachment is skipped until you hand it over:
 
 ```bash
 sudo chown -hR <target-user> <work_dir>/.cc-connect
