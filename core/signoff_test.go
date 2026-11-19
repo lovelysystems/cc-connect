@@ -123,6 +123,34 @@ func TestSignoffRequestRefusals(t *testing.T) {
 	}
 }
 
+func TestSignoffRequestRefusesLineBreaks(t *testing.T) {
+	fields := map[string]func(*SignoffRequest, string){
+		"title":         func(r *SignoffRequest, s string) { r.Title = s },
+		"body text":     func(r *SignoffRequest, s string) { r.Body[1].Text = s },
+		"confirm_label": func(r *SignoffRequest, s string) { r.ConfirmLabel = s },
+		"cancel_label":  func(r *SignoffRequest, s string) { r.CancelLabel = s },
+	}
+	breaks := map[string]string{"LF": "\n", "CR": "\r", "U+2028": "\u2028", "U+2029": "\u2029"}
+	for field, set := range fields {
+		for name, br := range breaks {
+			t.Run(field+" "+name, func(t *testing.T) {
+				req := signoffTestRequest("test:u1", "r1")
+				set(&req, "a"+br+"b")
+				if err := req.validate(); err == nil {
+					t.Fatal("validate accepted the request")
+				}
+			})
+		}
+		t.Run(field+" one line", func(t *testing.T) {
+			req := signoffTestRequest("test:u1", "r1")
+			set(&req, "a\tb · {{DATE(2026-11-17T10:42:00Z)}}")
+			if err := req.validate(); err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+		})
+	}
+}
+
 // --- engine harness ---
 
 // signoffTestSession is an agent session whose turns the test answers.

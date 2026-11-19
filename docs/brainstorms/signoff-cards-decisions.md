@@ -103,7 +103,7 @@ Sources read: brief, this log, ch#2022 and ch#2023 with comments, task ch#2320 (
 - `failed` report has no second line; the reason and stderr go to the log; over a cc-connect error text as the second line; the pinned second line is the command's `message` — `core/signoff_exec.go:40`.
 - Empty stdout or `null` gives `failed`, trailing whitespace after the object is accepted; over requiring a trailing newline or none; `echo` adds one — `core/signoff_exec.go:92`.
 - `SignoffValuePrefix` exported from core and read by Teams' intercept; over a Teams-local `"signoff:"`; one definition of the button value — `core/signoff.go:15`.
-- A body line's text may hold a line break; over refusing it; the brief refuses only empty text and unknown styles, and a line break is still plain text — `core/signoff.go:52`.
+- A body line's text may hold a line break; over refusing it; the brief refuses only empty text and unknown styles, and a line break is still plain text — `core/signoff.go:52`. Superseded by `## Teams test`.
 - At a click the session is reserved before the card is redrawn; over redraw first; a message typed right after the click must already find the session reserved — `core/signoff.go:277`.
 - Route tries engines in project-name order and takes the first whose agent the caller runs under; over map order; the same request always lands in the same engine — `core/api.go:778`.
 - Route body capped at 1 MiB; over `/send`'s attachment-sized limit; the route carries no attachments — `core/api.go:773`.
@@ -111,6 +111,9 @@ Sources read: brief, this log, ch#2022 and ch#2023 with comments, task ch#2320 (
 - Line spacing from the mockup: `name` default, `detail` none, `link` none but small after a `detail`, `heading` medium with a separator; the mark medium and bold; over one spacing for every line; the mockup groups a name with its details and links — `platform/teams/signoff.go:160`.
 - Footer drops the name and its " · " when the clicker has no display name; over a line starting with " · " — `platform/teams/signoff.go:196`.
 - Manual Teams check of the drawn card (U6 execution note) left for the review stop, and the U+2060 word joiner left unbuilt until that check shows Teams substitutes `{{DATE(` in a `TextRun`; over stopping the build; the pipeline has no Teams test channel and the joiner is conditional by the plan — plan U6.
+- One `hasLineBreak` (`\r`, `\n`, U+2028, U+2029) checks the card texts and `signoff_exec`'s `message`, so `message` now also refuses U+2028 and U+2029; over a second check with its own set; one rule for "one line" on both sides — `core/signoff.go:98`, `core/signoff_exec.go:107`.
+- The word joiner goes between every two adjacent `{`, so `{{{` gets two; over replacing each `{{` once, which leaves a `{{` inside `{{{` — `platform/teams/signoff.go:184`.
+- The plan's "Pinned for the gate" gains the one-line rule; over leaving it to the decisions log; it lists the style names of the body format, and the gate must keep line breaks out — plan "Pinned for the gate".
 
 ## Review
 
@@ -123,26 +126,16 @@ Sources: `ce-code-review` and `tv:review` findings on `328f5a52`, `gh pr view 8`
 - PR #8 is still open (`gh pr view 8`, 2026-11-19); `git merge-tree HEAD origin/taras/runas-agent-files` conflicts in `CHANGES.md` only, as KTD11 expects. Rebase onto #8 once it lands.
 - Answered by this log, not changed: one user's card replacing another user's card in the same Teams conversation (`## Mechanism`, replacement keyed by thread); a failed card post never reaching the agent (plan R9, KTD5: log only).
 
+## Teams test
+
+Sources: the user's post of the sample card in a Teams channel; a local Docker run of a click in a channel thread.
+
+- Links are not clickable and markup shows as text, as KTD6 expects.
+- Line breaks: `\n` inside one text splits onto a second line in Teams, so the pick is B: the title, any body line's text and both labels with `\n`, `\r`, U+2028 or U+2029 are refused with 400; the gate must keep line breaks out of the text it sends — `core/signoff.go:75`.
+- `{{DATE(`: Teams substitutes `{{DATE(…)}}` and `{{TIME(…)}}` inside a `TextRun`, so the U+2060 joiner of KTD6 is built for the title, every body line and both button labels in the Teams drawing; the stored card and core keep the text, the footer keeps its own markup — `platform/teams/signoff.go:184`.
+- Channel click: clicks in a channel thread carry the card's exact conversation id including `;messageid=`, so the exact match is kept — `platform/teams/signoff.go:87`.
+
 ## Open questions
-
-### Line breaks and `{{DATE(` in a drawn `TextRun`
-
-- Source: `tv:review` Question 1, with the manual U6 check still open. Needs a Teams test channel.
-- Logged: "A body line's text may hold a line break; over refusing it; the brief refuses only empty text and unknown styles" (`## Build`). Finding: `validate` accepts `"a\nb"` in a `name` line, the title and the labels (`core/signoff.go:52`), and the Teams card puts it in one `TextRun` (`platform/teams/signoff.go:182`). If Teams breaks the line there, text from an agent's commit could draw as a second entry or link.
-- Probe: post a card with a `name` line `a\nb` and one with `{{DATE(2026-11-19T10:00:00Z)}}`.
-- Option A, keep: no change; costs a possible fake line on the card if Teams breaks the line.
-- Option B, refuse `\r`/`\n` in every text in `SignoffRequest.validate`, as `parseSignoffExecOutput` does for `message`: a 400 for such text; changes the body format on the tripwire list, and the gate must keep line breaks out of names it reads from commits.
-- Option C, draw `\r`/`\n` as a space in Teams: the request stays as is; the text is no longer shown exactly as sent.
-- `{{DATE(` substituted: add the U+2060 joiner of KTD6; that is already decided.
-- Recommended: run the probe; if `\n` breaks the line, B.
-
-### Click conversation id in a channel thread
-
-- Source: `tv:review` Question 2; plan "Assumptions" names it unverified. Needs a Teams test channel.
-- The intercept drops a click whose `Conversation.ID` differs from the card's (`platform/teams/signoff.go:87`). If Teams sends a channel-thread click with another `;messageid=`, every channel click is dropped and the card stays open.
-- Option A, keep the exact match: costs every channel click if Teams sends another id.
-- Option B, compare the conversation id without `;messageid=`: costs the "only in the thread its card was posted in" rule on the tripwire list, since a click would count from any thread of the channel.
-- Recommended: click a card in a channel thread; keep A unless the click is dropped, then decide B.
 
 ### Engine choice without the caller check, for the upstream PR
 

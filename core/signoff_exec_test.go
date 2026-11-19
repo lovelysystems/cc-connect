@@ -68,6 +68,8 @@ func TestSignoffExecFailures(t *testing.T) {
 		"unknown field":        `echo '{"outcome":"published","extra":1}'`,
 		"message line break":   `printf '%s\n' '{"outcome":"published","message":"a\nb"}'`,
 		"message carriage ret": `printf '%s\n' '{"outcome":"published","message":"a\rb"}'`,
+		"message line sep":     `printf '%s\n' '{"outcome":"published","message":"a\u2028b"}'`,
+		"message para sep":     `printf '%s\n' '{"outcome":"published","message":"a\u2029b"}'`,
 		"prints nothing":       `true`,
 	}
 	for name, command := range cases {

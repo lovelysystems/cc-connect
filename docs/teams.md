@@ -244,7 +244,9 @@ project needs `run_as_user`.
 **The card.** A large title, then one line per `body` entry, drawn by its style:
 `heading` small, bold and grey with a separator above it, `name` bold, `detail`
 small and grey, `link` small in the accent colour and not clickable. Every text
-is shown exactly as sent, never read as markdown or HTML. Below them, the two
+is shown exactly as sent, never read as markdown or HTML, and `{{DATE(…)}}` or
+`{{TIME(…)}}` in it stays as written. A text with a line break is refused, so
+each text is one line on the card. Below them, the two
 buttons with the labels from the request, the confirm button filled. cc-connect
 adds no words of its own. The card goes out directly under the final reply of
 the turn that asked for it, or at once when no turn runs.

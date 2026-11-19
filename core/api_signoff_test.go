@@ -125,6 +125,7 @@ func TestSignoffAPIRefusesMalformedRequests(t *testing.T) {
 		"empty body":          func(b map[string]any) { b["body"] = []any{} },
 		"unknown style":       func(b map[string]any) { b["body"] = []any{map[string]any{"style": "bold", "text": "x"}} },
 		"colon in request_id": func(b map[string]any) { b["request_id"] = "r:1" },
+		"line break in text":  func(b map[string]any) { b["body"] = []any{map[string]any{"style": "name", "text": "a\nb"}} },
 		"unknown field":       func(b map[string]any) { b["eyebrow"] = "Publish" },
 		"project field":       func(b map[string]any) { b["project"] = "test" },
 		"button in a line": func(b map[string]any) {

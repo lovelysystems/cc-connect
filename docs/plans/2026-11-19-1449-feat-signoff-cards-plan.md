@@ -119,6 +119,7 @@ The content bot's agent runs as the user `claude`; cc-connect runs as root in th
 The gate in ch-content-bot reads these from this repo; changing one breaks it.
 
 - Style names `heading`, `name`, `detail`, `link` (KTD1).
+- `title`, every body line's `text`, `confirm_label` and `cancel_label` are one line: `\n`, `\r`, U+2028 or U+2029 in any of them is refused with 400 (decisions log, `## Teams test`).
 - `clicked_by` inner names `id` and `name` (KTD8).
 - Time limit for `signoff_exec`: fixed 5 min (KTD8).
 - Outcome report text: `Signoff <request_id>: <outcome>`, `replaced` adds ` by <newer request_id>`, the command's `message` on a second line when non-empty (KTD10).

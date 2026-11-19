@@ -92,7 +92,7 @@ func TestSignoffCardDrawsEveryTextAsATextRun(t *testing.T) {
 }
 
 func TestSignoffCardKeepsMarkupAsWritten(t *testing.T) {
-	texts := []string{"**x**", "<b>x</b>", `{"type":"AdaptiveCard"}`, "{{DATE(2026-11-17T10:42:00Z, COMPACT)}}"}
+	texts := []string{"**x**", "<b>x</b>", `{"type":"AdaptiveCard"}`, "{a} }}", "{ {DATE(x)}}"}
 	var lines []core.CardText
 	for _, text := range texts {
 		lines = append(lines, core.CardText{Text: text, Style: core.CardTextName})
@@ -102,6 +102,47 @@ func TestSignoffCardKeepsMarkupAsWritten(t *testing.T) {
 		if runs[i+1]["text"] != text {
 			t.Fatalf("run %d text = %q, want %q", i+1, runs[i+1]["text"], text)
 		}
+	}
+}
+
+func TestSignoffCardKeepsDoubleBracesLiteral(t *testing.T) {
+	const wj = "\u2060"
+	card := &core.Card{
+		Header: &core.CardHeader{Title: "{{DATE(2026-11-17T10:42:00Z)}}"},
+		Elements: []core.CardElement{
+			core.CardText{Text: "a {{TIME(2026-11-17T10:42:00Z)}} b", Style: core.CardTextName},
+			core.CardText{Text: "{{{DATE(x)}}", Style: core.CardTextDetail},
+			core.CardActions{Buttons: []core.CardButton{
+				core.PrimaryBtn("{{DATE(x)}}", "signoff:r1:n1"),
+				core.DefaultBtn("Cancel", "signoff:r1:n1:cancel"),
+			}},
+		},
+	}
+	drawn := signoffAdaptiveCard(card, nil)
+	runs := signoffRuns(t, drawn)
+	want := []string{
+		"{" + wj + "{DATE(2026-11-17T10:42:00Z)}}",
+		"a {" + wj + "{TIME(2026-11-17T10:42:00Z)}} b",
+		"{" + wj + "{" + wj + "{DATE(x)}}",
+	}
+	for i, w := range want {
+		if runs[i]["text"] != w {
+			t.Fatalf("run %d text = %q, want %q", i, runs[i]["text"], w)
+		}
+	}
+	actions := drawn["actions"].([]map[string]any)
+	if actions[0]["title"] != "{"+wj+"{DATE(x)}}" || actions[1]["title"] != "Cancel" {
+		t.Fatalf("button titles = %q, %q", actions[0]["title"], actions[1]["title"])
+	}
+	if card.Header.Title != "{{DATE(2026-11-17T10:42:00Z)}}" || card.Elements[0].(core.CardText).Text != "a {{TIME(2026-11-17T10:42:00Z)}} b" {
+		t.Fatalf("drawing changed the card: %+v", card)
+	}
+
+	at := time.Date(2026, 11, 17, 9, 42, 0, 0, time.UTC)
+	redrawn := signoffAdaptiveCard(card, &core.SignoffMark{Kind: core.SignoffMarkApproved, By: "Jane Editor", At: at})
+	_, line := signoffFooterTexts(t, redrawn)
+	if line != "Jane Editor · {{DATE(2026-11-17T09:42:00Z, COMPACT)}}, {{TIME(2026-11-17T09:42:00Z)}}" {
+		t.Fatalf("footer = %q", line)
 	}
 }
 

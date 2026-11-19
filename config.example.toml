@@ -267,10 +267,12 @@ level = "info" # debug, info, warn, error
 #    "confirm_label": "Approve", "cancel_label": "Cancel"}
 #   All seven fields are required and no other field is accepted. Styles:
 #   heading, name, detail, link. Every text is shown as written, never as
-#   markdown or HTML; a link is not clickable. request_id and nonce must not
-#   contain ":".
+#   markdown or HTML; a link is not clickable. title, every body text and both
+#   labels must be one line: a line break (\n, \r, U+2028, U+2029) is refused
+#   with 400. request_id and nonce must not contain ":".
 #   七个字段均为必填，不接受其他字段。style 取值：heading、name、detail、link。
-#   所有文本按原样显示，不解析 markdown 或 HTML；link 不可点击。
+#   所有文本按原样显示，不解析 markdown 或 HTML；link 不可点击。title、每行 body
+#   文本和两个按钮标签都只能是一行：含换行（\n、\r、U+2028、U+2029）时返回 400。
 #   request_id 与 nonce 不能包含 ":"。
 # Answers / 响应:
 #   200 {"status":"posted"}  the card goes out under the turn's final reply, or at

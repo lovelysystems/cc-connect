@@ -67,6 +67,15 @@ func (r *SignoffRequest) validate() error {
 	if strings.Contains(r.RequestID, ":") || strings.Contains(r.Nonce, ":") {
 		return errors.New("request_id and nonce must not contain ':'")
 	}
+	for _, f := range []struct{ name, value string }{
+		{"title", r.Title},
+		{"confirm_label", r.ConfirmLabel},
+		{"cancel_label", r.CancelLabel},
+	} {
+		if hasLineBreak(f.value) {
+			return fmt.Errorf("%s must be one line", f.name)
+		}
+	}
 	if len(r.Body) == 0 {
 		return errors.New("body must have at least one line")
 	}
@@ -77,8 +86,17 @@ func (r *SignoffRequest) validate() error {
 		if line.Text == "" {
 			return fmt.Errorf("body[%d]: text is required", i)
 		}
+		if hasLineBreak(line.Text) {
+			return fmt.Errorf("body[%d]: text must be one line", i)
+		}
 	}
 	return nil
+}
+
+// hasLineBreak reports whether s holds a line break, the Unicode line and
+// paragraph separators included.
+func hasLineBreak(s string) bool {
+	return strings.ContainsAny(s, "\r\n\u2028\u2029")
 }
 
 func (r *SignoffRequest) confirmValue() string {

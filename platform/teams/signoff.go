@@ -111,7 +111,7 @@ func signoffButtons(card *core.Card) []core.CardButton {
 func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any {
 	var body []map[string]any
 	if card.Header != nil {
-		body = append(body, richText(map[string]any{}, map[string]any{"text": card.Header.Title, "size": "Large", "weight": "Bolder"}))
+		body = append(body, richText(map[string]any{}, map[string]any{"text": literalBraces(card.Header.Title), "size": "Large", "weight": "Bolder"}))
 	}
 	var previous core.CardTextStyle
 	for _, el := range card.Elements {
@@ -120,7 +120,7 @@ func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any
 			continue
 		}
 		block, run := signoffLineStyle(line.Style, previous)
-		run["text"] = line.Text
+		run["text"] = literalBraces(line.Text)
 		body = append(body, richText(block, run))
 		previous = line.Style
 	}
@@ -133,7 +133,7 @@ func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any
 	for _, b := range signoffButtons(card) {
 		action := map[string]any{
 			"type":    "Action.Submit",
-			"title":   b.Text,
+			"title":   literalBraces(b.Text),
 			"tooltip": "",
 			"data":    map[string]any{"action": b.Value},
 			// Hides Teams' "Your response was sent to the app" note under the card.
@@ -176,6 +176,25 @@ func signoffLineStyle(style, previous core.CardTextStyle) (block, run map[string
 		run["color"] = "Accent"
 	}
 	return block, run
+}
+
+// literalBraces puts a word joiner (U+2060) between the two braces of every
+// "{{", so Teams shows {{DATE(…)}} and {{TIME(…)}} as written. The joiner has
+// no width.
+func literalBraces(s string) string {
+	if !strings.Contains(s, "{{") {
+		return s
+	}
+	var b strings.Builder
+	var previous rune
+	for _, r := range s {
+		if r == '{' && previous == '{' {
+			b.WriteRune('\u2060')
+		}
+		b.WriteRune(r)
+		previous = r
+	}
+	return b.String()
 }
 
 func richText(block, run map[string]any) map[string]any {
