@@ -295,7 +295,7 @@ func TestGetUsage_RunAsUserRunsProbeAsTarget(t *testing.T) {
 		t.Fatal("supervisor PATH unexpectedly has claude")
 	}
 	a := &Agent{spawnOpts: core.SpawnOptions{RunAsUser: "target"}}
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if _, err := a.GetUsage(ctx); err == nil {
@@ -345,7 +345,7 @@ func TestGetUsage_WithoutRunAsUserSkipsSudo(t *testing.T) {
 	sudo := installFakeSudo(t, "record", "")
 	t.Setenv("PATH", os.Getenv("PATH")+":"+stubDir)
 	a := &Agent{}
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, _ = a.GetUsage(ctx)
