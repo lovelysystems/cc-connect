@@ -34,4 +34,12 @@
 
 ## Build
 
+- Units built inline one after another, over parallel workers; the Claude Code units share `session.go` and one fake-`sudo` shim in the test package, and U2 needs U1. `agent/claudecode/session.go`
+- `SaveFilesToDisk` keeps its doc and delegates to `SaveFilesToDiskAs` with empty options, over a second copy of the body; without `run_as_user` the same `os` calls run in the same order. `core/message.go:160`
+- The run-as-user suffix loop is its own function, over parameterising `writeUniqueNoOverwrite` with a writer; the plain path's code stays as it was. `core/message.go:275`
+- The write script leaves the target user's umask alone, over forcing `umask 022`; the files are for that user's own agent. `core/runas.go:199`
+- The write script creates the file with `: >` under noclobber, then appends stdin and removes the file if the append fails, over one `cat >` that would leave a partial file; a failed create never reaches the `rm`, so a name another writer took is never removed. `core/runas.go:202`
+- `WriteFileAsUser` makes the destination absolute against the supervisor's cwd before the spawn, over passing it as given; `sudo -i` runs the script in the target's HOME, where a relative path would land elsewhere. `core/runas.go:214`
+- The core fake-`sudo` tests sit in `core/runas_test.go` (built on non-Windows only), over `core/message_test.go`, which also builds on Windows and cannot see the shim. `core/runas_test.go:346`
+
 ## Open questions

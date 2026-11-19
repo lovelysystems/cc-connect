@@ -3,13 +3,17 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildSpawnCommand_Legacy(t *testing.T) {
@@ -278,3 +282,279 @@ func TestVerifyRunAsUserCheap_CacheHit(t *testing.T) {
 	}
 }
 
+// fakeSudoScript stands in for sudo on PATH. It records its argv, fails the
+// target's own nested `sudo -n` the way a correctly scoped sudoers does, and
+// in exec mode runs the command the way `sudo -n -iu USER --` does: every
+// byte of every argument except alphanumerics, '_', '-' and '$' is
+// backslash-escaped, the arguments are joined into one string and that
+// string runs under `sh -c` in the target's HOME with only the preserved
+// variables set. In record mode it runs nothing; in fail mode it refuses
+// every call.
+const fakeSudoScript = `#!/bin/sh
+log=@LOG@
+mode=@MODE@
+home=@HOME@
+innerpath=@PATH@
+printf '%s\n' "$*" >> "$log"
+if [ "$mode" = fail ]; then
+	echo "sudo: a password is required" >&2
+	exit 1
+fi
+user=
+preserve=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-iu) user=$2; shift 2 ;;
+	--preserve-env=*) preserve=${1#--preserve-env=}; shift ;;
+	--) shift; break ;;
+	*) shift ;;
+	esac
+done
+if [ "$1" = sudo ]; then
+	exit 1
+fi
+if [ "$mode" = record ]; then
+	exit 0
+fi
+joined=
+for a in "$@"; do
+	joined="$joined $(printf '%s' "$a" | sed -e 's/[^A-Za-z0-9_$-]/\\&/g' -e '$!s/$/\\/')"
+done
+set -- HOME="$home" PATH="$innerpath" CC_FAKE_SUDO_USER="$user"
+oldifs=$IFS
+IFS=,
+for v in $preserve; do
+	eval "isset=\${$v+x}"
+	if [ -n "$isset" ]; then
+		eval "val=\$$v"
+		set -- "$@" "$v=$val"
+	fi
+done
+IFS=$oldifs
+echo "fake login profile noise"
+cd "$home" || exit 1
+exec env -i "$@" /bin/sh -c "$joined"
+`
+
+type fakeSudo struct {
+	log  string
+	home string
+}
+
+// installFakeSudo puts fakeSudoScript first on PATH in the given mode
+// ("exec", "record" or "fail").
+func installFakeSudo(t *testing.T, mode string) *fakeSudo {
+	t.Helper()
+	binDir := t.TempDir()
+	f := &fakeSudo{log: filepath.Join(binDir, "sudo.log"), home: t.TempDir()}
+	script := strings.NewReplacer(
+		"@LOG@", shellQuote(f.log),
+		"@MODE@", mode,
+		"@HOME@", shellQuote(f.home),
+		"@PATH@", shellQuote("/usr/bin:/bin"),
+	).Replace(fakeSudoScript)
+	if err := os.WriteFile(filepath.Join(binDir, "sudo"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+	ResetVerifyCache()
+	t.Cleanup(ResetVerifyCache)
+	return f
+}
+
+func (f *fakeSudo) calls(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(f.log)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func dirEntries(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func TestSaveFilesToDiskAs_RunAsUserWritesBytesThroughSudo(t *testing.T) {
+	sudo := installFakeSudo(t, "exec")
+	workDir := t.TempDir()
+	data := []byte{0x00, 0xff, '\n', '$', 'x', '\'', '"', 0x7f}
+
+	paths := SaveFilesToDiskAs(context.Background(), SpawnOptions{RunAsUser: "target"}, workDir, "msg-1",
+		[]FileAttachment{{FileName: "blob.bin", Data: data}})
+
+	want := filepath.Join(workDir, ".cc-connect", "attachments", "msg-1", "blob.bin")
+	if !slices.Equal(paths, []string{want}) {
+		t.Fatalf("paths = %v, want [%s]", paths, want)
+	}
+	got, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("content = %q, want %q", got, data)
+	}
+	if !strings.Contains(sudo.calls(t), "-n -iu target") {
+		t.Fatalf("write did not go through sudo -n -iu target; sudo log:\n%s", sudo.calls(t))
+	}
+}
+
+func TestSaveFilesToDiskAs_RunAsUserSuffixesExistingName(t *testing.T) {
+	installFakeSudo(t, "exec")
+	workDir := t.TempDir()
+	opts := SpawnOptions{RunAsUser: "target"}
+
+	first := SaveFilesToDiskAs(context.Background(), opts, workDir, "msg-1",
+		[]FileAttachment{{FileName: "name.txt", Data: []byte("one")}})
+	second := SaveFilesToDiskAs(context.Background(), opts, workDir, "msg-1",
+		[]FileAttachment{{FileName: "name.txt", Data: []byte("two")}})
+
+	dir := filepath.Join(workDir, ".cc-connect", "attachments", "msg-1")
+	if !slices.Equal(first, []string{filepath.Join(dir, "name.txt")}) {
+		t.Fatalf("first paths = %v", first)
+	}
+	if !slices.Equal(second, []string{filepath.Join(dir, "name_1.txt")}) {
+		t.Fatalf("second paths = %v", second)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "name.txt")); string(got) != "one" {
+		t.Fatalf("name.txt = %q, want one", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "name_1.txt")); string(got) != "two" {
+		t.Fatalf("name_1.txt = %q, want two", got)
+	}
+}
+
+func TestSaveFilesToDiskAs_RunAsUserFlatLayoutRefusesExistingName(t *testing.T) {
+	installFakeSudo(t, "exec")
+	workDir := t.TempDir()
+	dir := filepath.Join(workDir, ".cc-connect", "attachments")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "name.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := SaveFilesToDiskAs(context.Background(), SpawnOptions{RunAsUser: "target"}, workDir, "",
+		[]FileAttachment{{FileName: "name.txt", Data: []byte("new")}})
+
+	if len(paths) != 0 {
+		t.Fatalf("paths = %v, want none", paths)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "name.txt")); string(got) != "old" {
+		t.Fatalf("name.txt = %q, want old", got)
+	}
+}
+
+func TestSaveFilesToDiskAs_RunAsUserNeverFollowsPlantedLinkAsSupervisor(t *testing.T) {
+	cases := []struct {
+		name  string
+		plant func(t *testing.T, workDir, outside string)
+	}{
+		{"cc-connect dir is a link", func(t *testing.T, workDir, outside string) {
+			if err := os.Symlink(outside, filepath.Join(workDir, ".cc-connect")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"attachments dir is a link", func(t *testing.T, workDir, outside string) {
+			if err := os.MkdirAll(filepath.Join(workDir, ".cc-connect"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(workDir, ".cc-connect", "attachments")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"destination file is a link", func(t *testing.T, workDir, outside string) {
+			dir := filepath.Join(workDir, ".cc-connect", "attachments", "msg-1")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(outside, "victim"), filepath.Join(dir, "name.txt")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installFakeSudo(t, "record")
+			workDir := t.TempDir()
+			outside := t.TempDir()
+			tc.plant(t, workDir, outside)
+
+			SaveFilesToDiskAs(context.Background(), SpawnOptions{RunAsUser: "target"}, workDir, "msg-1",
+				[]FileAttachment{{FileName: "name.txt", Data: []byte("x")}})
+
+			if names := dirEntries(t, outside); len(names) != 0 {
+				t.Fatalf("supervisor wrote through the planted link: %v", names)
+			}
+		})
+	}
+}
+
+func TestSaveFilesToDiskAs_RunAsUserSudoFailureWritesNothing(t *testing.T) {
+	installFakeSudo(t, "fail")
+	workDir := t.TempDir()
+
+	paths := SaveFilesToDiskAs(context.Background(), SpawnOptions{RunAsUser: "target"}, workDir, "msg-1",
+		[]FileAttachment{{FileName: "name.txt", Data: []byte("x")}})
+
+	if len(paths) != 0 {
+		t.Fatalf("paths = %v, want none", paths)
+	}
+	if names := dirEntries(t, workDir); len(names) != 0 {
+		t.Fatalf("work dir = %v, want empty", names)
+	}
+}
+
+func TestSaveFilesToDiskAs_RunAsUserUnwritableDirSkipsPromptly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only dir")
+	}
+	installFakeSudo(t, "exec")
+	workDir := t.TempDir()
+	dir := filepath.Join(workDir, ".cc-connect", "attachments", "msg-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	paths := SaveFilesToDiskAs(ctx, SpawnOptions{RunAsUser: "target"}, workDir, "msg-1",
+		[]FileAttachment{{FileName: "name.txt", Data: []byte("x")}})
+
+	if len(paths) != 0 {
+		t.Fatalf("paths = %v, want none", paths)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("write kept retrying until the deadline")
+	}
+}
+
+func TestSaveFilesToDiskAs_WithoutRunAsUserSkipsSudo(t *testing.T) {
+	sudo := installFakeSudo(t, "record")
+	workDir := t.TempDir()
+
+	paths := SaveFilesToDiskAs(context.Background(), SpawnOptions{}, workDir, "msg-1",
+		[]FileAttachment{{FileName: "name.txt", Data: []byte("x")}})
+
+	want := filepath.Join(workDir, ".cc-connect", "attachments", "msg-1", "name.txt")
+	if !slices.Equal(paths, []string{want}) {
+		t.Fatalf("paths = %v, want [%s]", paths, want)
+	}
+	if calls := sudo.calls(t); calls != "" {
+		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
+	}
+}

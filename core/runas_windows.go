@@ -54,3 +54,8 @@ func VerifyRunAsUserCheap(_ context.Context, _ SudoRunner, runAsUser string) err
 	}
 	return errors.New("run_as_user is not supported on Windows")
 }
+
+// WriteFileAsUser always fails on Windows.
+func WriteFileAsUser(_ context.Context, _ SpawnOptions, _ string, _ []byte) error {
+	return errors.New("run_as_user is not supported on Windows")
+}
