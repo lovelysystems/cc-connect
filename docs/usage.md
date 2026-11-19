@@ -335,6 +335,38 @@ a separate Unix user per project.
 **This is not a sandbox in the sense of Linux namespaces, seccomp, or
 container isolation.** It is strictly file-system scoping by uid.
 
+### What runs as the target user
+
+With `run_as_user` set, cc-connect does these as the target user too,
+each through the same `sudo -n -iu <target-user>` spawn and the same
+per-spawn check as the agent:
+
+- **PermissionRequest hooks.** The hook settings are read as the target
+  user from the target's Claude config home (`$CLAUDE_CONFIG_DIR`, else
+  `~/.claude`) and from `<work_dir>/.claude/settings.json` and
+  `settings.local.json`. Each hook command runs as the target user. Hooks
+  in the supervisor's own `~/.claude` are not used.
+- **The usage readout.** Its `claude` process runs as the target user in
+  the target's `~/.cc-connect/usage-probe`.
+- **Inbound images and files.** They are written as the target user into
+  `<work_dir>/.cc-connect/attachments`.
+
+If sudo or the per-spawn check fails, the action fails and nothing runs
+as the supervisor instead: the hook is skipped and the request goes to
+the chat's permission prompt, the usage readout returns an error, and the
+attachment is skipped with a log line.
+
+Older cc-connect versions created `<work_dir>/.cc-connect` as the
+supervisor. The target user cannot write into that dir, so every
+attachment is skipped until you hand it over:
+
+```bash
+sudo chown -hR <target-user> <work_dir>/.cc-connect
+```
+
+Keep `-h`: the target user can write `<work_dir>` and could have replaced
+`.cc-connect` with a symlink, which `chown` without `-h` would follow.
+
 ### Setup
 
 #### 1. Create the target user and install their tooling
