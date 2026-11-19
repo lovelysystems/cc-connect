@@ -5922,7 +5922,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if elapsed := time.Since(replyStart); elapsed >= slowPlatformSend {
 				slog.Warn("slow final reply send", "platform", p.Name(), "elapsed", elapsed, "response_len", len(fullResponse))
 			}
-			// Signoff cards requested during the turn go out directly under its final reply.
 			e.postSignoffCards(session)
 
 			// TTS: async voice reply if enabled (skipped for silent replies)

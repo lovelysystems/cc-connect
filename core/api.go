@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -793,11 +794,7 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.RLock()
-	names := make([]string, 0, len(s.engines))
-	for name := range s.engines {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(s.engines))
 	engines := make([]*Engine, 0, len(names))
 	for _, name := range names {
 		engines = append(engines, s.engines[name])

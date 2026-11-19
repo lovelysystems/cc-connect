@@ -128,7 +128,6 @@ type signoffs struct {
 	execLimit time.Duration // zero means signoffExecLimit
 }
 
-// signoffCard is one card from request to outcome.
 type signoffCard struct {
 	req        SignoffRequest
 	card       *Card

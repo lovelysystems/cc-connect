@@ -19,13 +19,11 @@ type signoffCards struct {
 	byValue map[string]*signoffCard
 }
 
-// signoffCard is a posted signoff card.
 type signoffCard struct {
 	p          *Platform
 	rc         replyContext
 	activityID string
 	card       *core.Card
-	values     []string
 	onClick    func(string, core.SignoffClicker)
 }
 
@@ -44,15 +42,12 @@ func (p *Platform) PostSignoffCard(ctx context.Context, replyCtx any, card *core
 		return nil, errors.New("teams: post signoff card: connector returned no activity id")
 	}
 	c := &signoffCard{p: p, rc: rc, activityID: id, card: card, onClick: onClick}
-	for _, b := range signoffButtons(card) {
-		c.values = append(c.values, b.Value)
-	}
 	p.signoff.mu.Lock()
 	if p.signoff.byValue == nil {
 		p.signoff.byValue = make(map[string]*signoffCard)
 	}
-	for _, v := range c.values {
-		p.signoff.byValue[v] = c
+	for _, b := range signoffButtons(card) {
+		p.signoff.byValue[b.Value] = c
 	}
 	p.signoff.mu.Unlock()
 	return c, nil
@@ -66,9 +61,9 @@ func (c *signoffCard) Thread() string { return c.rc.conversationID }
 // stops routing its clicks.
 func (c *signoffCard) Redraw(ctx context.Context, mark core.SignoffMark) error {
 	c.p.signoff.mu.Lock()
-	for _, v := range c.values {
-		if c.p.signoff.byValue[v] == c {
-			delete(c.p.signoff.byValue, v)
+	for _, b := range signoffButtons(c.card) {
+		if c.p.signoff.byValue[b.Value] == c {
+			delete(c.p.signoff.byValue, b.Value)
 		}
 	}
 	c.p.signoff.mu.Unlock()

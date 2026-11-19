@@ -276,7 +276,6 @@ func (h *signoffTestHandle) cancel(by string) {
 	h.onClick(actions.Buttons[1].Value, SignoffClicker{ID: "aad-" + by, Name: by})
 }
 
-// waitFor waits until entry is in the log and returns its index.
 func (p *signoffTestPlatform) waitFor(t *testing.T, entry string) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -327,7 +326,6 @@ func newSignoffHarness(t *testing.T) *signoffHarness {
 	return &signoffHarness{e: e, p: p, agent: as}
 }
 
-// say sends a typed message into the thread.
 func (h *signoffHarness) say(id, text string) {
 	h.e.ReceiveMessage(h.p, &Message{
 		SessionKey: signoffTestKey,
