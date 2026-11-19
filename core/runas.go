@@ -66,6 +66,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -203,10 +204,10 @@ var writeAsUserScript = `mkdir -p -- "${` + runAsWriteDirEnv + `}" || exit 1; ` 
 	`cat >> "${` + runAsWritePathEnv + `}" || { rm -f -- "${` + runAsWritePathEnv + `}"; exit 1; }`
 
 // WriteFileAsUser creates path with data as opts.RunAsUser, making missing
-// parent directories. It never replaces an existing name: when path exists
-// the error matches fs.ErrExist. The supervisor itself opens nothing on the
-// path, so a symlink planted along it reaches only what the target user can
-// already write.
+// parent directories, and gives up after 30s. It never replaces an existing
+// name: when path exists the error matches fs.ErrExist. The supervisor itself
+// opens nothing on the path, so a symlink planted along it reaches only what
+// the target user can already write.
 func WriteFileAsUser(ctx context.Context, opts SpawnOptions, path string, data []byte) error {
 	if !opts.IsolationMode() {
 		return errors.New("WriteFileAsUser: run_as_user is not set")
@@ -215,6 +216,8 @@ func WriteFileAsUser(ctx context.Context, opts SpawnOptions, path string, data [
 	if err != nil {
 		return fmt.Errorf("write as %q: %w", opts.RunAsUser, err)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	if err := VerifyRunAsUserCheap(ctx, ExecSudoRunner{}, opts.RunAsUser); err != nil {
 		return fmt.Errorf("write as %q refused: %w", opts.RunAsUser, err)
 	}
@@ -225,6 +228,10 @@ func WriteFileAsUser(ctx context.Context, opts SpawnOptions, path string, data [
 		runAsWriteDirEnv + "=" + filepath.Dir(absPath),
 		runAsWritePathEnv + "=" + absPath,
 	}), opts)
+	// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a child
+	// still holds stderr after sudo is gone.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdin = bytes.NewReader(data)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

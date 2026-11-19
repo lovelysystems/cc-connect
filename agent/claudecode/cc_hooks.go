@@ -45,7 +45,7 @@ func settingsAsUserScript(withWorkDir bool) string {
 		files += ` "${` + hookWorkDirEnv + `}/.claude/settings.json" "${` + hookWorkDirEnv + `}/.claude/settings.local.json"`
 	}
 	return `c="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"; for f in ` + files + `; do ` +
-		`if [ -f "${f}" ]; then printf '%s\n' "` + settingsBeginMarker + ` ${f}"; cat -- "${f}"; ` +
+		`if [ -f "${f}" ]; then printf '\n%s\n' "` + settingsBeginMarker + ` ${f}"; cat -- "${f}"; ` +
 		`printf '\n%s\n' '` + settingsEndMarker + `'; fi; done`
 }
 
@@ -221,6 +221,10 @@ func (r *ccPermissionHookRunner) readSettingsAsUser(ctx context.Context) ([]byte
 		env = core.MergeEnv(env, []string{hookWorkDirEnv + "=" + absWorkDir})
 	}
 	cmd := core.BuildSpawnCommand(readCtx, opts, "/bin/sh", "-c", settingsAsUserScript(r.workDir != ""))
+	// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a child
+	// still holds stdout after sudo is gone.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = core.FilterEnvForSpawn(env, opts)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

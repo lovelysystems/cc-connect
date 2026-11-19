@@ -289,7 +289,7 @@ func TestVerifyRunAsUserCheap_CacheHit(t *testing.T) {
 // backslash-escaped, the arguments are joined into one string and that
 // string runs under `sh -c` in the target's HOME with only the preserved
 // variables set. In record mode it runs nothing; in fail mode it refuses
-// every call.
+// every call; in exists mode every write exits with the "exists" code.
 const fakeSudoScript = `#!/bin/sh
 log=@LOG@
 mode=@MODE@
@@ -312,6 +312,9 @@ while [ $# -gt 0 ]; do
 done
 if [ "$1" = sudo ]; then
 	exit 1
+fi
+if [ "$mode" = exists ] && [ "$1" = /bin/sh ]; then
+	exit 17
 fi
 if [ "$mode" = record ]; then
 	exit 0
@@ -342,7 +345,7 @@ type fakeSudo struct {
 }
 
 // installFakeSudo puts fakeSudoScript first on PATH in the given mode
-// ("exec", "record" or "fail").
+// ("exec", "record", "fail" or "exists").
 func installFakeSudo(t *testing.T, mode string) *fakeSudo {
 	t.Helper()
 	binDir := t.TempDir()
@@ -403,7 +406,7 @@ func TestSaveFilesToDiskAs_RunAsUserWritesBytesThroughSudo(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		t.Fatalf("content = %q, want %q", got, data)
 	}
-	if !strings.Contains(sudo.calls(t), "-n -iu target") {
+	if !strings.Contains(sudo.calls(t), "-n -iu target --preserve-env=") || !strings.Contains(sudo.calls(t), runAsWritePathEnv) {
 		t.Fatalf("write did not go through sudo -n -iu target; sudo log:\n%s", sudo.calls(t))
 	}
 }
@@ -497,6 +500,69 @@ func TestSaveFilesToDiskAs_RunAsUserNeverFollowsPlantedLinkAsSupervisor(t *testi
 				t.Fatalf("supervisor wrote through the planted link: %v", names)
 			}
 		})
+	}
+}
+
+func TestSaveFilesToDiskAs_RunAsUserRefusesDanglingLinkAtDestination(t *testing.T) {
+	cases := []struct {
+		name      string
+		messageID string
+		wantPath  string
+	}{
+		{"flat layout", "", ""},
+		{"scoped layout", "msg-1", "name_1.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installFakeSudo(t, "exec")
+			workDir := t.TempDir()
+			outside := t.TempDir()
+			dir := filepath.Join(workDir, ".cc-connect", "attachments", tc.messageID)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(dir, "name.txt")
+			if err := os.Symlink(filepath.Join(outside, "victim"), link); err != nil {
+				t.Fatal(err)
+			}
+
+			paths := SaveFilesToDiskAs(context.Background(), SpawnOptions{RunAsUser: "target"}, workDir, tc.messageID,
+				[]FileAttachment{{FileName: "name.txt", Data: []byte("x")}})
+
+			var want []string
+			if tc.wantPath != "" {
+				want = []string{filepath.Join(dir, tc.wantPath)}
+			}
+			if !slices.Equal(paths, want) {
+				t.Fatalf("paths = %v, want %v", paths, want)
+			}
+			if names := dirEntries(t, outside); len(names) != 0 {
+				t.Fatalf("write followed the dangling link: %v", names)
+			}
+			if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("planted link was replaced (err %v)", err)
+			}
+		})
+	}
+}
+
+func TestSaveFilesToDiskAs_RunAsUserFakedExistsStopsSuffixing(t *testing.T) {
+	sudo := installFakeSudo(t, "exists")
+	workDir := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	paths := SaveFilesToDiskAs(ctx, SpawnOptions{RunAsUser: "target"}, workDir, "msg-1",
+		[]FileAttachment{{FileName: "name.txt", Data: []byte("x")}})
+
+	if len(paths) != 0 {
+		t.Fatalf("paths = %v, want none", paths)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("suffix loop ran until the deadline")
+	}
+	if n := strings.Count(sudo.calls(t), "/bin/sh -c"); n != maxAsUserSuffix+1 {
+		t.Fatalf("write attempts = %d, want %d", n, maxAsUserSuffix+1)
 	}
 }
 

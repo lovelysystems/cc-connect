@@ -349,12 +349,16 @@ per-spawn check as the agent:
 - **The usage readout.** Its `claude` process runs as the target user in
   the target's `~/.cc-connect/usage-probe`.
 - **Inbound images and files.** They are written as the target user into
-  `<work_dir>/.cc-connect/attachments`.
+  `<work_dir>/.cc-connect/attachments`. With `work_dir` unset, that is
+  cc-connect's own working directory. The target user must be able to
+  create `.cc-connect` there.
 
 If sudo or the per-spawn check fails, the action fails and nothing runs
 as the supervisor instead: the hook is skipped and the request goes to
 the chat's permission prompt, the usage readout returns an error, and the
-attachment is skipped with a log line.
+attachment is skipped with a log line. The hook settings are read once
+per session: if that read fails, the session runs no hooks and every
+request goes to the chat's permission prompt for the rest of the session.
 
 Older cc-connect versions created `<work_dir>/.cc-connect` as the
 supervisor. The target user cannot write into that dir, so every

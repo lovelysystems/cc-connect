@@ -951,7 +951,7 @@ func TestSend_RunAsUserWritesImageAsTarget(t *testing.T) {
 	if !strings.Contains(stdin.String(), matches[0]) {
 		t.Fatalf("prompt does not reference %s:\n%s", matches[0], stdin.String())
 	}
-	if !strings.Contains(sudo.calls(t), "-n -iu target") {
+	if !strings.Contains(sudo.calls(t), "CC_RUNAS_WRITE_PATH") {
 		t.Fatalf("image was not written through sudo; sudo log:\n%s", sudo.calls(t))
 	}
 }
@@ -972,7 +972,7 @@ func TestSend_RunAsUserWritesFileAsTarget(t *testing.T) {
 	if !strings.Contains(stdin.String(), want) {
 		t.Fatalf("prompt does not reference %s:\n%s", want, stdin.String())
 	}
-	if !strings.Contains(sudo.calls(t), "-n -iu target") {
+	if !strings.Contains(sudo.calls(t), "CC_RUNAS_WRITE_PATH") {
 		t.Fatalf("file was not written through sudo; sudo log:\n%s", sudo.calls(t))
 	}
 }

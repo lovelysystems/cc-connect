@@ -460,11 +460,12 @@ func TestBuildHookStdin(t *testing.T) {
 // byte of every argument except alphanumerics, '_', '-' and '$' is
 // backslash-escaped, the arguments are joined into one string and that
 // string runs under `sh -c` in the target's HOME with only the preserved
-// variables set, after a line of login-profile noise on stdout. In record
-// mode it runs nothing; in fail mode it refuses every call.
+// variables set, after login-profile noise with no trailing newline on
+// stdout. In record mode it runs nothing; in fail mode it refuses every call.
+// It reads its mode from a file on each call.
 const fakeSudoScript = `#!/bin/sh
 log=@LOG@
-mode=@MODE@
+mode=$(cat @MODEFILE@)
 home=@HOME@
 innerpath=@PATH@
 printf '%s\n' "$*" >> "$log"
@@ -503,14 +504,15 @@ for v in $preserve; do
 	fi
 done
 IFS=$oldifs
-echo "fake login profile noise"
+printf 'fake login profile noise'
 cd "$home" || exit 1
 exec env -i "$@" /bin/sh -c "$joined"
 `
 
 type fakeSudo struct {
-	log  string
-	home string
+	log      string
+	modeFile string
+	home     string
 }
 
 // installFakeSudo puts fakeSudoScript first on PATH in the given mode
@@ -522,14 +524,15 @@ func installFakeSudo(t *testing.T, mode, extraPath string) *fakeSudo {
 		t.Skip("run_as_user is not supported on Windows")
 	}
 	binDir := t.TempDir()
-	f := &fakeSudo{log: filepath.Join(binDir, "sudo.log"), home: t.TempDir()}
+	f := &fakeSudo{log: filepath.Join(binDir, "sudo.log"), modeFile: filepath.Join(binDir, "mode"), home: t.TempDir()}
+	f.setMode(t, mode)
 	innerPath := "/usr/bin:/bin"
 	if extraPath != "" {
 		innerPath = extraPath + ":" + innerPath
 	}
 	script := strings.NewReplacer(
 		"@LOG@", testShellQuote(f.log),
-		"@MODE@", mode,
+		"@MODEFILE@", testShellQuote(f.modeFile),
 		"@HOME@", testShellQuote(f.home),
 		"@PATH@", testShellQuote(innerPath),
 	).Replace(fakeSudoScript)
@@ -540,6 +543,14 @@ func installFakeSudo(t *testing.T, mode, extraPath string) *fakeSudo {
 	core.ResetVerifyCache()
 	t.Cleanup(core.ResetVerifyCache)
 	return f
+}
+
+// setMode switches the fake to mode for every later call.
+func (f *fakeSudo) setMode(t *testing.T, mode string) {
+	t.Helper()
+	if err := os.WriteFile(f.modeFile, []byte(mode), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *fakeSudo) calls(t *testing.T) string {
@@ -638,6 +649,33 @@ func TestTryHook_RunAsUserSudoFailureRunsNothing(t *testing.T) {
 	writeHookSettings(t, filepath.Join(workDir, ".claude", "settings.json"), "*", hook)
 
 	r := newCCPermissionHookRunner(workDir, core.SpawnOptions{RunAsUser: "target"})
+	_, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
+
+	if ok {
+		t.Fatal("tryHook returned a decision although sudo failed")
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("hook command ran without sudo")
+	}
+}
+
+func TestTryHook_RunAsUserSudoFailureAfterLoadRunsNothing(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	sudo := installFakeSudo(t, "exec", "")
+	workDir := t.TempDir()
+	sentinel := filepath.Join(t.TempDir(), "ran")
+	writeHookSettings(t, filepath.Join(workDir, ".claude", "settings.json"), "Bash",
+		"touch "+testShellQuote(sentinel)+"; echo allow")
+	r := newCCPermissionHookRunner(workDir, core.SpawnOptions{RunAsUser: "target"})
+	if _, ok := r.tryHook(context.Background(), hookContext{toolName: "Read", toolInput: map[string]any{}}); ok {
+		t.Fatal("unexpected decision for a tool no hook matches")
+	}
+	if r.settings == nil {
+		t.Fatal("settings did not load in exec mode")
+	}
+
+	sudo.setMode(t, "fail")
+	core.ResetVerifyCache()
 	_, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
 
 	if ok {

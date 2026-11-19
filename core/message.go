@@ -161,10 +161,10 @@ func SaveFilesToDisk(workDir, messageID string, files []FileAttachment) []string
 	return SaveFilesToDiskAs(context.Background(), SpawnOptions{}, workDir, messageID, files)
 }
 
-// SaveFilesToDiskAs is SaveFilesToDisk with the directories and files created
-// as opts.RunAsUser when opts sets one. In that case the supervisor makes no
-// directory and opens no file under workDir, and both layouts create each file
-// with WriteFileAsUser, which refuses an existing name.
+// SaveFilesToDiskAs saves files under workDir/.cc-connect/attachments and
+// returns their paths. When opts sets RunAsUser, the directories and files
+// are created as that user through WriteFileAsUser, which refuses an existing
+// name, and the supervisor opens nothing under workDir.
 func SaveFilesToDiskAs(ctx context.Context, opts SpawnOptions, workDir, messageID string, files []FileAttachment) []string {
 	if len(files) == 0 {
 		return nil
@@ -269,10 +269,15 @@ func writeUniqueNoOverwrite(dir, name string, data []byte) (string, bool) {
 	}
 }
 
+// maxAsUserSuffix caps the numeric suffixes writeAsUserNoOverwrite tries.
+// The "exists" answer comes from a script the target user's login profile
+// can fake, so the loop must end on its own.
+const maxAsUserSuffix = 100
+
 // writeAsUserNoOverwrite creates dir/name as opts.RunAsUser. With suffix set,
 // a taken name gets a numeric suffix; without it, a taken name is skipped.
 func writeAsUserNoOverwrite(ctx context.Context, opts SpawnOptions, dir, name string, data []byte, suffix bool) (string, bool) {
-	for i := 0; ; i++ {
+	for i := 0; i <= maxAsUserSuffix; i++ {
 		candidate := name
 		if i > 0 {
 			ext := filepath.Ext(name)
@@ -294,6 +299,8 @@ func writeAsUserNoOverwrite(ctx context.Context, opts SpawnOptions, dir, name st
 		slog.Error("SaveFilesToDisk: write as run_as_user failed", "path", path, "error", err)
 		return "", false
 	}
+	slog.Error("SaveFilesToDisk: no free name, skipping file", "dir", dir, "name", name)
+	return "", false
 }
 
 // writeAtomicNoOverwrite writes data to a unique tempfile in dir, then

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -88,6 +89,10 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 		opts := a.spawnOpts
 		opts.WorkDir = ""
 		cmd = core.BuildSpawnCommand(probeCtx, opts, "/bin/sh", "-c", usageProbeAsUserScript)
+		// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a
+		// child still holds stderr after sudo is gone.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+		cmd.WaitDelay = 2 * time.Second
 		cmd.Env = core.FilterEnvForSpawn(env, opts)
 	} else {
 		workDir, err := os.MkdirTemp("", "cc-connect-claude-usage-*")
