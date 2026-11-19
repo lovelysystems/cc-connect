@@ -232,20 +232,18 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	p.handler(p, msg)
 }
 
-// signoffInvoke reads an adaptiveCard/action invoke whose data action or verb
-// is a signoff value. ok is false for any other activity.
+// signoffInvoke reads an adaptiveCard/action invoke whose verb is a signoff
+// value. ok is false for any other activity.
 func signoffInvoke(body []byte) (a *activity, value string, ok bool) {
 	a, err := parseActivity(body)
 	if err != nil || !strings.EqualFold(a.Type, "invoke") || !strings.EqualFold(a.Name, "adaptiveCard/action") {
 		return nil, "", false
 	}
-	verb, dataAction := a.invokeAction()
-	for _, v := range []string{dataAction, verb} {
-		if strings.HasPrefix(v, core.SignoffValuePrefix) {
-			return a, v, true
-		}
+	verb := a.invokeVerb()
+	if !strings.HasPrefix(verb, core.SignoffValuePrefix) {
+		return nil, "", false
 	}
-	return nil, "", false
+	return a, verb, true
 }
 
 // serviceURLTrusted reports whether replies may be sent to the activity's

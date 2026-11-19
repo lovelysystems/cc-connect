@@ -112,7 +112,7 @@ func parseSignoffExecOutput(stdout []byte) (signoffExecOutput, error) {
 	if out.Outcome != SignoffPublished && out.Outcome != SignoffRefused {
 		return out, errors.New("outcome must be published or refused")
 	}
-	if hasLineBreak(out.Message) {
+	if strings.ContainsAny(out.Message, "\r\n\u2028\u2029") {
 		return out, errors.New("message must be one line")
 	}
 	return out, nil

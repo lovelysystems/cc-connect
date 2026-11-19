@@ -189,6 +189,9 @@ func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any
 	}
 	var actions []map[string]any
 	for _, b := range signoffButtons(card) {
+		// A click is answered with the redrawn card, so Teams swaps it in one
+		// step on the clicking client; the posted card is also updated so
+		// every other client shows it.
 		action := map[string]any{
 			"type":    "Action.Execute",
 			"title":   literalBraces(b.Text),

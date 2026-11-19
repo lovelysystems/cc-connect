@@ -111,7 +111,7 @@ Sources read: brief, this log, ch#2022 and ch#2023 with comments, task ch#2320 (
 - Line spacing from the mockup: `name` default, `detail` none, `link` none but small after a `detail`, `heading` medium with a separator; the mark medium and bold; over one spacing for every line; the mockup groups a name with its details and links — `platform/teams/signoff.go:160`.
 - Footer drops the name and its " · " when the clicker has no display name; over a line starting with " · " — `platform/teams/signoff.go:196`.
 - Manual Teams check of the drawn card (U6 execution note) left for the review stop, and the U+2060 word joiner left unbuilt until that check shows Teams substitutes `{{DATE(` in a `TextRun`; over stopping the build; the pipeline has no Teams test channel and the joiner is conditional by the plan — plan U6.
-- One `hasLineBreak` (`\r`, `\n`, U+2028, U+2029) checks the card texts and `signoff_exec`'s `message`, so `message` now also refuses U+2028 and U+2029; over a second check with its own set; one rule for "one line" on both sides — `core/signoff.go:98`, `core/signoff_exec.go:107`.
+- One `hasLineBreak` (`\r`, `\n`, U+2028, U+2029) checks the card texts and `signoff_exec`'s `message`, so `message` now also refuses U+2028 and U+2029; over a second check with its own set; one rule for "one line" on both sides — `core/signoff.go:98`, `core/signoff_exec.go:107`. Split in `## Review`, second round: request text refuses every control character, `message` keeps this set.
 - The word joiner goes between every two adjacent `{`, so `{{{` gets two; over replacing each `{{` once, which leaves a `{{` inside `{{{` — `platform/teams/signoff.go:184`.
 - The plan's "Pinned for the gate" gains the one-line rule; over leaving it to the decisions log; it lists the style names of the body format, and the gate must keep line breaks out — plan "Pinned for the gate".
 - `signoff_exec`'s stderr logged from a deferred call once the outcome is known, at INFO for `published` or `refused` and WARN for `failed`; it now follows the error line on a failure; over logging it before the outcome is known — `core/signoff_exec.go:70`.
@@ -129,14 +129,28 @@ Sources: `ce-code-review` and `tv:review` findings on `328f5a52`, `gh pr view 8`
 - PR #8 is still open (`gh pr view 8`, 2026-11-19); `git merge-tree HEAD origin/taras/runas-agent-files` conflicts in `CHANGES.md` only, as KTD11 expects. Rebase onto #8 once it lands.
 - Answered by this log, not changed: one user's card replacing another user's card in the same Teams conversation (`## Mechanism`, replacement keyed by thread); a failed card post never reaching the agent (plan R9, KTD5: log only).
 
+### Second round
+
+Sources: `ce-code-review` and `tv:review` findings on `062907f5..530c5e8a`; the user's rulings.
+
+- Request text (`title`, every body line's text, `confirm_label`, `cancel_label`) refuses with 400 any control character (U+0000–U+001F, U+007F–U+009F) and U+2028/U+2029; the user's ruling; over the line-break set, which let VT, FF and NEL through, all mandatory breaks in Unicode line breaking — `core/signoff.go:99`.
+- `signoff_exec`'s `message` keeps its line-break rule (`\r`, `\n`, U+2028, U+2029); the user's ruling; the shared helper is split so `message` is unchanged — `core/signoff_exec.go:115`.
+- The plan's "Pinned for the gate", `config.example.toml` (EN, ZH) and `docs/teams.md` state the control-character rule.
+- A signoff invoke is routed on `verb` alone, and the buttons keep `data.action` until the open question below is settled; over reading either key; the card sets both alike, so the second read had no case of its own — `platform/teams/webhook.go:237`.
+- The buttons carry a comment saying the click is answered with the redrawn card and the posted card is also updated; over leaving the reason to this log, which leaves the tree before merge — `platform/teams/signoff.go:192`.
+- Tests added: clicks on one card ask `onClick` one at a time (fails without `clickMu`); `signoffInvoke` with verb only, data only and a non-signoff verb.
+
 ## Teams test
 
 Sources: the user's post of the sample card in a Teams channel; a local Docker run of a click in a channel thread.
 
 - Links are not clickable and markup shows as text, as KTD6 expects.
-- Line breaks: `\n` inside one text splits onto a second line in Teams, so the pick is B: the title, any body line's text and both labels with `\n`, `\r`, U+2028 or U+2029 are refused with 400; the gate must keep line breaks out of the text it sends — `core/signoff.go:75`.
+- Line breaks: `\n` inside one text splits onto a second line in Teams, so the pick is B: the title, any body line's text and both labels with `\n`, `\r`, U+2028 or U+2029 are refused with 400; the gate must keep line breaks out of the text it sends — `core/signoff.go:75`. Widened to every control character in `## Review`, second round.
 - `{{DATE(`: Teams substitutes `{{DATE(…)}}` and `{{TIME(…)}}` inside a `TextRun`, so the U+2060 joiner of KTD6 is built for the title, every body line and both button labels in the Teams drawing; the stored card and core keep the text, the footer keeps its own markup — `platform/teams/signoff.go:184`.
 - Channel click: clicks in a channel thread carry the card's exact conversation id including `;messageid=`, so the exact match is kept — `platform/teams/signoff.go:87`.
+- Execute clicks in a channel thread carry the card's exact conversation id, `;messageid=` included: local Docker logs at 16:52–16:54 show clicks counted on the Execute build in thread `19:…@thread.tacv2;messageid=…`. Answered.
+- A click on an unknown card (after a restart) is answered with the empty message, and the user's click in Teams showed nothing changes on the card; the comment at `platform/teams/signoff.go:43` and `docs/teams.md` say so correctly. Answered.
+- After a restart, dead cards stay as they are, buttons included; the user's pick, over answering their clicks with an invoke error — `docs/teams.md:283`.
 
 ## Execute experiment
 
@@ -169,3 +183,29 @@ Sources: the user's Teams test of the Submit card (button held, both buttons bla
 - Option B, add an optional `project` field like `/send`: an eighth field, on the tripwire list; the gate does not need it.
 - Option C, ship upstream without the check: no change here; two projects sharing a chat get the wrong engine.
 - Recommended: A. The content bot runs one project, so nothing is needed now.
+
+### Dropping `data` from the signoff buttons
+
+- Source: `tv:review` finding 2 (second round).
+- Finding: `data.action` repeats the `verb` and has no reader since routing went to `verb` alone; no `fallback` is set and a `signoff:` value in a Submit message is dropped.
+- Option A, keep `data` in the markup: no change, no Teams test; one unread key on each button.
+- Option B, drop `data`: the card JSON loses one key per button; changes the Teams card markup, so it needs one click test in Teams (desktop and web).
+- Recommended: B at the next Teams test session; nothing breaks while A stands.
+
+### A click racing a replacement is answered with the open card
+
+- Source: `ce-code-review` finding 2 (second round).
+- Logged: "Not on `allow_from`, already resolved, replaced, or refused by core: answered with the card as drawn now … over an empty message; cc-connect holds the card and redrawing it shows nothing new" (`## Execute experiment`). Finding: between core's replacement claim (`core/signoff.go:284`) and `Redraw` setting the mark (`platform/teams/signoff.go:85`), core refuses the click while the card as drawn still has its buttons; if the replacement edit reaches the client before the invoke answer, the answer puts the buttons back. The logged reason does not hold in that window, and the empty answer the log passed over is now seen to leave the card unchanged (`## Teams test`).
+- Option A, keep: no change; in that short window the clicker may see the buttons again until the next click, and nothing runs.
+- Option B, answer with `signoffEmptyAnswer` when `onClick` refuses and no mark is drawn yet: a few lines in `handleSignoffClick`, the "refused by core" test case expects the empty message; changes what Teams receives for that click, so one look in Teams.
+- Option C, core marks the Teams card before its claim is visible: an interface change on `SignoffCardHandle`.
+- Recommended: B.
+
+### The click answer waits behind the replacement edits
+
+- Source: `ce-code-review` residual risk 3 and `tv:review` Question 4 (second round), raised by three reviewers.
+- Finding: `signoffClicked` waits on `<-c.posted` (`core/signoff.go:301`), which closes only after the edit of every older card in the thread, each up to 30 s (`connectorTimeout`); a click on the new card in that window holds the invoke answer, and a slow connector can outlast Teams' invoke timeout, so the clicker sees an error although the click counted.
+- Option A, keep: no change; needs a click within one edit of the card appearing plus a slow connector; nothing runs twice.
+- Option B, close `posted` right after `c.handle` is set: a click on the new card can then reserve the session before an older card's `replaced` reservation, so the agent hears the newer card's outcome first and then "replaced by <newer request_id>" naming a card that is no longer open, against KTD10 (the `replaced` report tells which card is still open) and the report order of KTD12. Not applied for that reason.
+- Option C, claim and reserve every older card first, then close `posted`, then send the edits: keeps the report order; an older card's report turn may start before its ↻ edit lands when the connector is slow; changes the order inside `postSignoffCard` and needs a test for it.
+- Recommended: A now; C if the log shows a late invoke answer.

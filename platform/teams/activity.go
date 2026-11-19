@@ -198,20 +198,17 @@ func (a *activity) cardAction() string {
 	return ""
 }
 
-// invokeAction returns the verb and the data's action key of an
-// adaptiveCard/action invoke.
-func (a *activity) invokeAction() (verb, dataAction string) {
+// invokeVerb returns the verb of an adaptiveCard/action invoke.
+func (a *activity) invokeVerb() string {
 	var v struct {
 		Action struct {
-			Verb string         `json:"verb"`
-			Data map[string]any `json:"data"`
+			Verb string `json:"verb"`
 		} `json:"action"`
 	}
 	if err := json.Unmarshal(a.Value, &v); err != nil {
-		return "", ""
+		return ""
 	}
-	dataAction, _ = v.Action.Data["action"].(string)
-	return v.Action.Verb, dataAction
+	return v.Action.Verb
 }
 
 // cardActionReply maps a card Action.Submit value to the message content the

@@ -123,27 +123,31 @@ func TestSignoffRequestRefusals(t *testing.T) {
 	}
 }
 
-func TestSignoffRequestRefusesLineBreaks(t *testing.T) {
+func TestSignoffRequestRefusesControlCharacters(t *testing.T) {
 	fields := map[string]func(*SignoffRequest, string){
 		"title":         func(r *SignoffRequest, s string) { r.Title = s },
 		"body text":     func(r *SignoffRequest, s string) { r.Body[1].Text = s },
 		"confirm_label": func(r *SignoffRequest, s string) { r.ConfirmLabel = s },
 		"cancel_label":  func(r *SignoffRequest, s string) { r.CancelLabel = s },
 	}
-	breaks := map[string]string{"LF": "\n", "CR": "\r", "U+2028": "\u2028", "U+2029": "\u2029"}
+	refused := map[string]string{
+		"NUL": "\x00", "tab": "\t", "LF": "\n", "VT": "\v", "FF": "\f", "CR": "\r", "ESC": "\x1b", "U+001F": "\x1f",
+		"DEL": "\x7f", "U+0080": "\u0080", "NEL": "\u0085", "U+009F": "\u009f",
+		"U+2028": "\u2028", "U+2029": "\u2029",
+	}
 	for field, set := range fields {
-		for name, br := range breaks {
+		for name, ch := range refused {
 			t.Run(field+" "+name, func(t *testing.T) {
 				req := signoffTestRequest("test:u1", "r1")
-				set(&req, "a"+br+"b")
+				set(&req, "a"+ch+"b")
 				if err := req.validate(); err == nil {
 					t.Fatal("validate accepted the request")
 				}
 			})
 		}
-		t.Run(field+" one line", func(t *testing.T) {
+		t.Run(field+" plain text", func(t *testing.T) {
 			req := signoffTestRequest("test:u1", "r1")
-			set(&req, "a\tb · {{DATE(2026-11-17T10:42:00Z)}}")
+			set(&req, "Grüße 🎉 a · b {{DATE(2026-11-17T10:42:00Z)}}")
 			if err := req.validate(); err != nil {
 				t.Fatalf("validate: %v", err)
 			}

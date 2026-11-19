@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 // SignoffValuePrefix starts the value of every signoff card button.
@@ -72,8 +73,8 @@ func (r *SignoffRequest) validate() error {
 		{"confirm_label", r.ConfirmLabel},
 		{"cancel_label", r.CancelLabel},
 	} {
-		if hasLineBreak(f.value) {
-			return fmt.Errorf("%s must be one line", f.name)
+		if hasControlChar(f.value) {
+			return fmt.Errorf("%s holds a control character", f.name)
 		}
 	}
 	if len(r.Body) == 0 {
@@ -86,17 +87,19 @@ func (r *SignoffRequest) validate() error {
 		if line.Text == "" {
 			return fmt.Errorf("body[%d]: text is required", i)
 		}
-		if hasLineBreak(line.Text) {
-			return fmt.Errorf("body[%d]: text must be one line", i)
+		if hasControlChar(line.Text) {
+			return fmt.Errorf("body[%d]: text holds a control character", i)
 		}
 	}
 	return nil
 }
 
-// hasLineBreak reports whether s holds a line break, the Unicode line and
-// paragraph separators included.
-func hasLineBreak(s string) bool {
-	return strings.ContainsAny(s, "\r\n\u2028\u2029")
+// hasControlChar reports whether s holds a control character (U+0000–U+001F,
+// U+007F–U+009F), U+2028 or U+2029.
+func hasControlChar(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+	})
 }
 
 func (r *SignoffRequest) confirmValue() string {

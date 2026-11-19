@@ -242,10 +242,12 @@ func signoffPost(t *testing.T, p *Platform, s *testSigner, claims jwt.MapClaims,
 	return rec.Code, answer
 }
 
-// signoffClicks stands in for core: a click counts when count is set.
+// signoffClicks stands in for core: a click counts when count is set. With
+// hold set, onClick waits for hold to close before it answers.
 type signoffClicks struct {
 	mu       sync.Mutex
 	count    bool
+	hold     chan struct{}
 	got      []core.SignoffClicker
 	resolved chan struct{}
 }
@@ -256,8 +258,12 @@ func newSignoffClicks(count bool) *signoffClicks {
 
 func (c *signoffClicks) onClick(value string, by core.SignoffClicker) (core.SignoffMark, func()) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.got = append(c.got, by)
+	hold := c.hold
+	c.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
 	if !c.count {
 		return core.SignoffMark{}, nil
 	}
@@ -419,6 +425,65 @@ func TestSignoffInvokeIsAnsweredWithTheCardAndItsMark(t *testing.T) {
 	signoffSameDrawing(t, signoffAnswerCard(t, again), card)
 	if c := clicks.clickers(); len(c) != 1 {
 		t.Fatalf("clicks = %v, want the first only", c)
+	}
+}
+
+func TestSignoffClicksOnOneCardAskOneAtATime(t *testing.T) {
+	p, s := signoffTeamsPlatform(t, &fakeSender{id: "act-9"})
+	clicks := newSignoffClicks(true)
+	clicks.hold = make(chan struct{})
+	signoffPostCard(t, p, clicks)
+
+	answers := make(chan map[string]any, 2)
+	click := func() {
+		_, answer := signoffPost(t, p, s, baseClaims(), signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"))
+		answers <- answer
+	}
+	go click()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(clicks.clickers()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the first click never reached onClick")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	go click()
+	time.Sleep(100 * time.Millisecond)
+	close(clicks.hold)
+
+	for range 2 {
+		select {
+		case answer := <-answers:
+			signoffMarked(t, answer, core.SignoffMarkApproved)
+		case <-time.After(5 * time.Second):
+			t.Fatal("a click was never answered")
+		}
+	}
+	if n := len(clicks.clickers()); n != 1 {
+		t.Fatalf("onClick asked %d times, want once", n)
+	}
+}
+
+func TestSignoffInvokeIsReadFromTheVerb(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "verb and data", value: `{"action":{"type":"Action.Execute","verb":"signoff:r1:n1","data":{"action":"signoff:r1:n1"}}}`, want: "signoff:r1:n1"},
+		{name: "verb only", value: `{"action":{"type":"Action.Execute","verb":"signoff:r1:n1:cancel"}}`, want: "signoff:r1:n1:cancel"},
+		{name: "data only", value: `{"action":{"type":"Action.Execute","data":{"action":"signoff:r1:n1"}}}`},
+		{name: "other verb", value: `{"action":{"type":"Action.Execute","verb":"refresh","data":{"action":"signoff:r1:n1"}}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := signoffInvokeActivity("conv-A;messageid=1", "aad-1", "")
+			a.Value = []byte(c.value)
+			_, value, ok := signoffInvoke(mustJSON(a))
+			if ok != (c.want != "") || value != c.want {
+				t.Fatalf("value, ok = %q, %v; want %q", value, ok, c.want)
+			}
+		})
 	}
 }
 
