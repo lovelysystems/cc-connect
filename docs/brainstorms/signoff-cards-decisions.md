@@ -93,4 +93,23 @@ Sources read: brief, this log, ch#2022 and ch#2023 with comments, task ch#2320 (
 
 ## Build
 
+- Report turn finds agent, session manager and interactive key through `sessionContextForKey` and `interactiveKeyForSessionKey`, and posts with the card's own platform and reply context; over extracting `ExecuteTimerJob`'s resolution into a helper both share; the card already carries the platform and thread the timer derives from the session key, the lookup is the route's own, and timers stay untouched — `core/signoff.go:404`, `core/engine.go:16382`.
+- Report message has no `UserID`; over a sender like the timer's `"timer"`; with `inject_sender` on, a sender line would sit in front of the pinned report text — `core/signoff.go:404`, `core/engine.go:16227`.
+- `Message.Placeholder` reaches `processInteractiveEvents` through `interactiveState.placeholder`, set in the turn's own locked block right before the call and taken at its start; over a new parameter on `processInteractiveEvents`; it has 48 call sites, and nothing runs between set and take — `core/engine.go:4834`.
+- Pending cards are claimed by taking the session's whole pending list under the lock and posting it in request order; over a claim per card; two cards released by one unlock would post in random order — `core/signoff.go:220`.
+- `/ps` refusal tracks each report turn's reservation and counts a hold once that reservation is granted; over a flag set when the report turn is about to start; the hold begins at the grant while `signoff_exec` may still run for minutes — `core/signoff.go:357`.
+- Idle close cancelled when the reservation is granted, by a goroutine waiting on it; over cancelling at the click only; a turn running at the click re-arms the timer just before it hands the lock over — `core/signoff.go:311`, `core/engine.go:3863`.
+- `Session.CancelReservation` added; over leaving a reservation queued when cc-connect stops before the report turn; the next unlock would hand the lock to no one — `core/session.go:139`.
+- `failed` report has no second line; the reason and stderr go to the log; over a cc-connect error text as the second line; the pinned second line is the command's `message` — `core/signoff_exec.go:40`.
+- Empty stdout or `null` gives `failed`, trailing whitespace after the object is accepted; over requiring a trailing newline or none; `echo` adds one — `core/signoff_exec.go:92`.
+- `SignoffValuePrefix` exported from core and read by Teams' intercept; over a Teams-local `"signoff:"`; one definition of the button value — `core/signoff.go:15`.
+- A body line's text may hold a line break; over refusing it; the brief refuses only empty text and unknown styles, and a line break is still plain text — `core/signoff.go:52`.
+- At a click the session is reserved before the card is redrawn; over redraw first; a message typed right after the click must already find the session reserved — `core/signoff.go:277`.
+- Route tries engines in project-name order and takes the first whose agent the caller runs under; over map order; the same request always lands in the same engine — `core/api.go:778`.
+- Route body capped at 1 MiB; over `/send`'s attachment-sized limit; the route carries no attachments — `core/api.go:773`.
+- Teams signoff card posted without the "AI generated" label entity; over `aiCardActivity` as streaming cards use; every word on it is the gate's, not the agent's — `platform/teams/signoff.go:33`.
+- Line spacing from the mockup: `name` default, `detail` none, `link` none but small after a `detail`, `heading` medium with a separator; the mark medium and bold; over one spacing for every line; the mockup groups a name with its details and links — `platform/teams/signoff.go:160`.
+- Footer drops the name and its " · " when the clicker has no display name; over a line starting with " · " — `platform/teams/signoff.go:196`.
+- Manual Teams check of the drawn card (U6 execution note) left for the review stop, and the U+2060 word joiner left unbuilt until that check shows Teams substitutes `{{DATE(` in a `TextRun`; over stopping the build; the pipeline has no Teams test channel and the joiner is conditional by the plan — plan U6.
+
 ## Open questions

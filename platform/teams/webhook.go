@@ -104,7 +104,8 @@ func (p *Platform) handleActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 // dispatch parses an activity, enforces serviceURL binding + authorization +
-// the engagement gate, and forwards a core.Message to the engine. Gated-out or
+// the engagement gate, and forwards a core.Message to the engine. A signoff
+// card button press is taken here and never becomes a message. Gated-out or
 // malformed activities are dropped silently (the webhook still returns 200).
 func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	a, err := parseActivity(body)
@@ -132,6 +133,12 @@ func (p *Platform) dispatch(claims jwt.MapClaims, body []byte) {
 	}
 
 	action := a.cardAction()
+	// Every signoff value is taken here, open card or not, so a stale cancel
+	// value never reaches the engine as the permission keyword "cancel".
+	if strings.HasPrefix(action, core.SignoffValuePrefix) {
+		p.handleSignoffClick(a, action)
+		return
+	}
 	isCardAction := action != ""
 	content := messageContent(a, a.cleanText())
 	// Activity attachments are read in 1:1 chats only; a channel's files and pasted

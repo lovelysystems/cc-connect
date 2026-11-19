@@ -232,6 +232,54 @@ Notes:
 - Same limits as 1:1: file cards only; outbound send is not implemented.
 
 
+## Signoff cards
+
+A root-only program running under a session's agent can post a card with an
+Approve and a Cancel button into that session's thread through
+`POST /signoff/send` on cc-connect's API socket; only a person's click on Approve
+runs the project's `signoff_exec`. The request, its answers and the
+`signoff_exec` contract are in `config.example.toml` ("Signoff cards"). The
+project needs `run_as_user`.
+
+**The card.** A large title, then one line per `body` entry, drawn by its style:
+`heading` small, bold and grey with a separator above it, `name` bold, `detail`
+small and grey, `link` small in the accent colour and not clickable. Every text
+is shown exactly as sent, never read as markdown or HTML. Below them, the two
+buttons with the labels from the request, the confirm button filled. cc-connect
+adds no words of its own. The card goes out directly under the final reply of
+the turn that asked for it, or at once when no turn runs.
+
+**Who may click.** Anyone in the thread whom the bot answers: when `allow_from`
+is set, a click from anyone else is ignored and the card stays open. A click
+counts only in the thread the card was posted in, and only once. Typed words
+such as "approve", "ok" or "allow all" never resolve a card, and a click never
+reaches the agent as a message.
+
+**After the click.** Before anything runs, the card is drawn once more without
+its buttons and with a small line under a divider: a green ✓ (Approve) or a red
+✕ (Cancel), the clicker's name, and the date and time in each viewer's locale and
+time zone. A "Typing…" card appears under it, and the agent's answer to the
+outcome is written into it. Messages typed meanwhile are queued and answered
+after that.
+
+**Replaced.** A newer card in the same thread replaces every older open card
+there: each older one is drawn once more with a grey ↻ and the time, and a click
+on it does nothing.
+
+**What the agent hears.** After every outcome the agent gets a turn in the
+card's session with this text:
+
+```
+Signoff <request_id>: <published|refused|cancelled|failed>
+Signoff <request_id>: replaced by <newer request_id>
+```
+
+When `signoff_exec` answered a `message`, it follows on a second line. The
+nonce is never in it.
+
+Open cards are kept in memory only: after a cc-connect restart, a click on an
+older card does nothing and the card keeps its buttons.
+
 ## Connection type
 
 Webhook (Bot Framework) — **a public HTTPS URL is required**. This is inherent

@@ -3518,3 +3518,31 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
 		t.Errorf("proj2 provider_refs: want [], got %v", refs2)
 	}
 }
+
+func TestLoad_SignoffExec(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+ [[projects]]
+ name = "demo"
+ signoff_exec = "/usr/local/bin/gate publish"
+
+ [projects.agent]
+ type = "claudecode"
+
+ [projects.agent.options]
+ work_dir = "/tmp/demo"
+
+ [[projects.platforms]]
+ type = "telegram"
+
+ [projects.platforms.options]
+ token = "t"
+ `)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if got := cfg.Projects[0].SignoffExec; got != "/usr/local/bin/gate publish" {
+		t.Fatalf("signoff_exec = %q, want /usr/local/bin/gate publish", got)
+	}
+}

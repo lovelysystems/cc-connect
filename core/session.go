@@ -47,6 +47,10 @@ type Session struct {
 
 	mu   sync.Mutex `json:"-"`
 	busy bool       `json:"-"`
+	// releasedCh is closed at the holder's next unlock; nil until Released asks for it.
+	releasedCh chan struct{} `json:"-"`
+	// reservers wait for the lock in arrival order; an unlock hands it to the first.
+	reservers []chan struct{} `json:"-"`
 }
 
 func (s *Session) TryLock() bool {
@@ -59,7 +63,8 @@ func (s *Session) TryLock() bool {
 	return true
 }
 
-// Busy reports whether the session is currently locked for an in-flight turn.
+// Busy reports whether the session is currently locked for an in-flight turn,
+// or held for one about to start.
 // Used by commands (e.g. /ps) that only make sense while a task is running.
 func (s *Session) Busy() bool {
 	s.mu.Lock()
@@ -75,13 +80,80 @@ func (s *Session) UnlockWithoutUpdate() {
 	s.unlock(false)
 }
 
+// unlock releases the lock, or hands it straight to the first waiting
+// reserver, in which case the session stays busy throughout.
 func (s *Session) unlock(update bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.busy = false
+	if len(s.reservers) > 0 {
+		next := s.reservers[0]
+		s.reservers = s.reservers[1:]
+		close(next)
+	} else {
+		s.busy = false
+	}
+	if s.releasedCh != nil {
+		close(s.releasedCh)
+		s.releasedCh = nil
+	}
 	if update {
 		s.UpdatedAt = time.Now()
 	}
+}
+
+// Released returns a channel that is closed when the current holder lets go
+// of the session, also when the lock passes straight to a reserver. When no
+// one holds the session it is already closed.
+func (s *Session) Released() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.busy {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	if s.releasedCh == nil {
+		s.releasedCh = make(chan struct{})
+	}
+	return s.releasedCh
+}
+
+// Reserve takes the lock at once when the session is free; otherwise it
+// queues behind earlier reservers. The returned channel is closed once the
+// caller holds the lock, which it then releases with Unlock.
+func (s *Session) Reserve() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan struct{})
+	if !s.busy {
+		s.busy = true
+		close(ch)
+		return ch
+	}
+	s.reservers = append(s.reservers, ch)
+	return ch
+}
+
+// CancelReservation gives up a reservation made with Reserve. A reservation
+// whose lock was already handed over is released.
+func (s *Session) CancelReservation(reserved <-chan struct{}) {
+	s.mu.Lock()
+	for i, ch := range s.reservers {
+		if ch == reserved {
+			s.reservers = append(s.reservers[:i], s.reservers[i+1:]...)
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.mu.Unlock()
+	s.Unlock()
+}
+
+// ReservationWaiting reports whether a reserver waits for the lock.
+func (s *Session) ReservationWaiting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.reservers) > 0
 }
 
 func (s *Session) AddHistory(role, content string) {

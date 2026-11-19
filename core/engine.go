@@ -449,10 +449,10 @@ type Engine struct {
 	// Default false = show all sessions.
 	filterExternalSessions bool
 
-	// Shell configuration for /shell, cron exec, hooks, webhook exec
+	// Shell configuration for /shell, cron exec, hooks, webhook exec, signoff_exec
 	shell        string // shell binary path (e.g. "sh", "/bin/zsh")
 	shellFlag    string // shell flag (e.g. "-c", "-Command", "/C")
-	shellProfile string // prepended to every command (e.g. "source ~/.zshrc;")
+	shellProfile string // prepended to every command but signoff_exec (e.g. "source ~/.zshrc;")
 
 	// Multi-workspace mode
 	multiWorkspace               bool
@@ -475,6 +475,8 @@ type Engine struct {
 	// Interactive agent session management
 	interactiveMu     sync.Mutex
 	interactiveStates map[string]*interactiveState // key = sessionKey
+
+	signoff signoffs
 
 	platformLifecycleMu sync.Mutex
 	platformReady       map[Platform]bool
@@ -549,6 +551,7 @@ type interactiveState struct {
 	pendingMessages          []queuedMessage // messages queued while session was busy
 	approveAll               bool            // when true, auto-approve all permission requests for this session
 	fromVoice                bool            // true if current turn originated from voice transcription
+	placeholder              StreamingCard   // card already posted for the turn about to start; the turn streams into it
 	sideText                 string
 	deleteMode               *deleteModeState
 	modelSwitch              *modelSwitchState
@@ -3821,6 +3824,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.currentMessageID = msg.MessageID
 	state.fromVoice = msg.FromVoice
 	state.sideText = ""
+	state.placeholder = msg.Placeholder
 	as := state.agentSession // capture under lock to avoid race with cleanup
 	state.mu.Unlock()
 
@@ -4827,7 +4831,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var cardThinkingText string        // latest thinking text
 	var cardAnswerText strings.Builder // accumulated answer text
 
-	if scp, ok := state.platform.(StreamingCardPlatform); ok {
+	if state.placeholder != nil {
+		streamCard = state.placeholder
+		state.placeholder = nil
+		slog.Info("streaming card adopted for turn", "session", sessionKey)
+	} else if scp, ok := state.platform.(StreamingCardPlatform); ok {
 		if sc, err := scp.CreateStreamingCard(e.ctx, state.replyCtx); err != nil {
 			slog.Warn("streaming card creation failed, falling back to normal messages", "error", err)
 		} else {
@@ -5914,6 +5922,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if elapsed := time.Since(replyStart); elapsed >= slowPlatformSend {
 				slog.Warn("slow final reply send", "platform", p.Name(), "elapsed", elapsed, "response_len", len(fullResponse))
 			}
+			// Signoff cards requested during the turn go out directly under its final reply.
+			e.postSignoffCards(session)
 
 			// TTS: async voice reply if enabled (skipped for silent replies)
 			if !isSilent && e.tts != nil && e.tts.Enabled && e.tts.TTS != nil {
@@ -5958,7 +5968,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 			// Check for queued messages — if present, continue the event loop
-			// for the next turn instead of returning.
+			// for the next turn instead of returning. A waiting reservation
+			// goes first: the turn returns and its unlock hands the session over.
 			state.mu.Lock()
 			droppedStale := 0
 			for len(state.pendingMessages) > 0 && e.isQueuedUserMessageStaleForDrainLocked(state, state.pendingMessages[0].userMessageTimeMs) {
@@ -5971,7 +5982,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					"dropped", droppedStale,
 				)
 			}
-			if len(state.pendingMessages) > 0 {
+			if len(state.pendingMessages) > 0 && !session.ReservationWaiting() {
 				queued := state.pendingMessages[0]
 				state.pendingMessages = state.pendingMessages[1:]
 				remainingQueue := len(state.pendingMessages)
@@ -6291,14 +6302,16 @@ func (e *Engine) notifyDroppedQueuedMessages(state *interactiveState, reason err
 	}
 }
 
-// drainPendingMessages processes all queued messages in the state's pendingMessages
+// drainPendingMessages processes the queued messages in the state's pendingMessages
 // queue. It atomically unlocks the session when the queue is empty (while holding
 // state.mu) to close the race window between "queue empty" and "session unlocked".
+// While a reservation waits it unlocks at once, which hands the session to the
+// reserver and leaves the queue for the reserver's turn to drain.
 // Returns true if the session was unlocked by this call.
 func (e *Engine) drainPendingMessages(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string) bool {
 	for {
 		state.mu.Lock()
-		if len(state.pendingMessages) == 0 {
+		if len(state.pendingMessages) == 0 || session.ReservationWaiting() {
 			session.Unlock()
 			state.mu.Unlock()
 			return true
@@ -6436,8 +6449,10 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 	// When the session is idle, injecting via agentSession.Send bypasses the
 	// session lock and races with concurrent normal messages on the CLI's
 	// stdin, so reject instead.
+	// A signoff holding the session for its report turn has no turn in flight
+	// either; text injected then would become the report turn's answer.
 	_, sessions := e.sessionContextForKey(msg.SessionKey)
-	if session := sessions.GetOrCreateActive(msg.SessionKey); !session.Busy() {
+	if session := sessions.GetOrCreateActive(msg.SessionKey); !session.Busy() || e.signoffHoldsIdle(session) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}

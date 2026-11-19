@@ -1118,3 +1118,108 @@ func TestKnownAgentSessionIDs_ResetAllSessionsBug(t *testing.T) {
 	}
 }
 
+
+func TestSessionReserveOnFreeSessionHoldsItAtOnce(t *testing.T) {
+	s := &Session{}
+	select {
+	case <-s.Reserve():
+	default:
+		t.Fatal("reserve on a free session did not hold it at once")
+	}
+	if s.TryLock() {
+		t.Fatal("TryLock succeeded on a reserved session")
+	}
+}
+
+func TestSessionUnlockHandsTheLockToReserversInOrder(t *testing.T) {
+	s := &Session{}
+	if !s.TryLock() {
+		t.Fatal("TryLock on a free session failed")
+	}
+	first := s.Reserve()
+	second := s.Reserve()
+	if !s.ReservationWaiting() {
+		t.Fatal("ReservationWaiting = false with two reservers queued")
+	}
+
+	s.Unlock()
+	if s.TryLock() {
+		t.Fatal("TryLock won the lock during the hand-off")
+	}
+	select {
+	case <-first:
+	default:
+		t.Fatal("first reserver did not get the lock at the unlock")
+	}
+	select {
+	case <-second:
+		t.Fatal("second reserver got the lock before the first let go")
+	default:
+	}
+
+	s.Unlock()
+	select {
+	case <-second:
+	default:
+		t.Fatal("second reserver did not get the lock")
+	}
+	if s.ReservationWaiting() {
+		t.Fatal("ReservationWaiting = true with no reserver left")
+	}
+	s.Unlock()
+	if !s.TryLock() {
+		t.Fatal("session still busy after the last holder let go")
+	}
+}
+
+func TestSessionReleasedClosesAtEveryUnlock(t *testing.T) {
+	s := &Session{}
+	select {
+	case <-s.Released():
+	default:
+		t.Fatal("Released on a free session is not closed")
+	}
+
+	s.TryLock()
+	released := s.Released()
+	select {
+	case <-released:
+		t.Fatal("Released closed while the session is held")
+	default:
+	}
+	reserved := s.Reserve()
+	s.Unlock()
+	<-reserved
+	select {
+	case <-released:
+	default:
+		t.Fatal("Released did not close when the unlock handed the lock over")
+	}
+
+	again := s.Released()
+	s.Unlock()
+	select {
+	case <-again:
+	default:
+		t.Fatal("Released did not close at the reserver's unlock")
+	}
+}
+
+func TestSessionCancelReservation(t *testing.T) {
+	s := &Session{}
+	s.TryLock()
+	queued := s.Reserve()
+	s.CancelReservation(queued)
+	s.Unlock()
+	if !s.TryLock() {
+		t.Fatal("a cancelled queued reservation still took the lock")
+	}
+	s.Unlock()
+
+	held := s.Reserve()
+	<-held
+	s.CancelReservation(held)
+	if !s.TryLock() {
+		t.Fatal("cancelling a granted reservation did not release the lock")
+	}
+}

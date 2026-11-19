@@ -242,6 +242,87 @@ level = "info" # debug, info, warn, error
 # # profile. Secrets belong in the target user's ~/.claude/settings.json
 # # env block, NOT here.
 # run_as_env = ["PGSSLROOTCERT", "PGSSLMODE"]
+
+# =============================================================================
+# Signoff cards (needs run_as_user; Teams only for now)
+# 签核卡片（需要 run_as_user；目前仅 Teams）
+# =============================================================================
+#
+# A root-only program running under a session's agent (e.g. started by the
+# agent's shell via sudo) asks for a card with Approve and Cancel in that
+# session's thread. Only a person's click on Approve runs signoff_exec; the
+# agent can ask for a card but cannot press its buttons.
+# 以 root 运行、位于会话 agent 进程之下的程序（例如由 agent 的 shell 通过 sudo 启动）
+# 请求在该会话的线程中发出带「同意」「取消」按钮的卡片。只有真人点击「同意」才会
+# 运行 signoff_exec；agent 可以请求卡片，但无法点击按钮。
+#
+# Request: POST /signoff/send on the API socket (<data_dir>/run/api.sock), JSON:
+# 请求：在 API socket（<data_dir>/run/api.sock）上 POST /signoff/send，JSON：
+#   {"session_key": "teams:...", "request_id": "r1", "nonce": "<random>",
+#    "title": "5 changes",
+#    "body": [{"style": "heading", "text": "ENTRIES"},
+#             {"style": "name", "text": "herbstfest-2026"},
+#             {"style": "detail", "text": "www.radio24.ch"},
+#             {"style": "link", "text": "https://tickets.example.ch/x"}],
+#    "confirm_label": "Approve", "cancel_label": "Cancel"}
+#   All seven fields are required and no other field is accepted. Styles:
+#   heading, name, detail, link. Every text is shown as written, never as
+#   markdown or HTML; a link is not clickable. request_id and nonce must not
+#   contain ":".
+#   七个字段均为必填，不接受其他字段。style 取值：heading、name、detail、link。
+#   所有文本按原样显示，不解析 markdown 或 HTML；link 不可点击。
+#   request_id 与 nonce 不能包含 ":"。
+# Answers / 响应:
+#   200 {"status":"posted"}  the card goes out under the turn's final reply, or at
+#                            once when no turn runs; a later post failure is only logged
+#                            卡片在本轮最终回复之后发出（无进行中的轮次则立即发出）；之后的发送失败只记录日志
+#   400  malformed request / 请求格式错误
+#   403  the caller does not run under the agent of session_key (checked on Linux
+#        only; elsewhere every caller is refused) / 调用方不在该会话的 agent 进程之下
+#        （仅 Linux 可校验；其他系统一律拒绝）
+#   404  no live agent session for session_key / session_key 没有存活的 agent 会话
+#   422  the project has no run_as_user, or its platform cannot show signoff cards
+#        项目未设置 run_as_user，或其平台不支持签核卡片
+#   A program started from a cron or timer job that runs in a new session per run
+#   is refused (403 or 404): that job's agent is not the thread's session.
+#   由每次运行新建会话的 cron 或 timer 任务启动的程序会被拒绝（403 或 404）：
+#   该任务的 agent 不属于线程的会话。
+#
+# The program learns session_key on its own side. Under run_as_user the agent
+# sees CC_SESSION_KEY only when run_as_env lists it.
+# 程序需自行获知 session_key。在 run_as_user 下，只有 run_as_env 列出
+# CC_SESSION_KEY 时 agent 才能看到它。
+#
+# A newer card in the same thread replaces every older open card there.
+# 同一线程中较新的卡片会替换该线程中所有较早的未决卡片。
+#
+# signoff_exec runs as cc-connect's own user when Approve is clicked, through the
+# project's shell and flag but WITHOUT shell_profile, from "/". Use absolute paths.
+# signoff_exec 在点击「同意」时以 cc-connect 自身的用户运行，使用项目的 shell 和 flag，
+# 但不加载 shell_profile，工作目录为 "/"。请使用绝对路径。
+#   stdin:  {"request_id": "r1", "nonce": "<nonce>",
+#            "clicked_by": {"id": "<platform user id, on Teams the Entra object id>",
+#                           "name": "<display name>"}}
+#   stdout: exactly one JSON object {"outcome": "published"|"refused", "message": "<one line, optional>"}
+#   A non-zero exit, any other output, or running past 5 minutes gives the outcome
+#   "failed". At the limit, or when cc-connect stops, the command's whole process
+#   group is killed and no outcome is reported, so its publish must be
+#   all-or-nothing.
+#   非零退出、任何其他输出或运行超过 5 分钟，结果为 "failed"。到达时限或 cc-connect
+#   停止时，命令的整个进程组会被杀死且不会报告结果，因此发布操作必须是全有或全无。
+#
+# After every outcome the agent gets a turn in the card's session whose text is:
+# 每个结果之后，agent 会在卡片所在会话中收到一轮消息，内容为：
+#   Signoff <request_id>: <published|refused|cancelled|failed>
+#   Signoff <request_id>: replaced by <newer request_id>
+# plus, on a second line, the command's message when there is one.
+# 若命令返回了 message，则在第二行附上。
+#
+# [[projects]]
+# name = "content-bot"
+# run_as_user = "claude"
+# run_as_env = ["CC_SESSION_KEY"]
+# signoff_exec = "/usr/local/bin/gate publish"
 # =============================================================================
 # Streaming Preview / 流式预览
 # =============================================================================

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,10 @@ type APIServer struct {
 	// expansion + envelope). Defaults to DefaultMaxAttachmentSize.
 	maxAttachmentBytes int64
 	mu                 sync.RWMutex
+
+	// signoffCaller reports whether the request comes from a process under
+	// the agent process agentPid; nil means callerUnderAgent.
+	signoffCaller func(r *http.Request, agentPid int) bool
 }
 
 // SendRequest is the JSON body for POST /send.
@@ -105,6 +111,7 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 	s.mux.HandleFunc("/relay/send", s.handleRelaySend)
 	s.mux.HandleFunc("/relay/bind", s.handleRelayBind)
 	s.mux.HandleFunc("/relay/binding", s.handleRelayBinding)
+	s.mux.HandleFunc("/signoff/send", s.handleSignoffSend)
 
 	return s, nil
 }
@@ -172,7 +179,12 @@ func (s *APIServer) sendBodyLimit() int64 {
 }
 
 func (s *APIServer) Start() {
-	s.server = &http.Server{Handler: s.mux}
+	s.server = &http.Server{
+		Handler: s.mux,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, signoffConnKey{}, c)
+		},
+	}
 	go func() {
 		if err := s.server.Serve(s.listener); err != nil && err != http.ErrServerClosed {
 			slog.Error("api server error", "error", err)
@@ -753,6 +765,82 @@ func (s *APIServer) handleTimerDel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiJSON(w, http.StatusOK, map[string]string{"status": "ok", "id": req.ID})
+}
+
+// ── Signoff API ──────────────────────────────────────────────
+
+// signoffBodyLimit caps the /signoff/send request body.
+const signoffBodyLimit = 1 << 20
+
+// handleSignoffSend accepts a signoff card for the thread of session_key. It
+// answers posted before the platform has the card; a post that fails later
+// shows in the log only.
+func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req SignoffRequest
+	dec := json.NewDecoder(io.LimitReader(r.Body, signoffBodyLimit))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := req.validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	names := make([]string, 0, len(s.engines))
+	for name := range s.engines {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	engines := make([]*Engine, 0, len(names))
+	for _, name := range names {
+		engines = append(engines, s.engines[name])
+	}
+	s.mu.RUnlock()
+
+	callerUnder := s.signoffCaller
+	if callerUnder == nil {
+		callerUnder = callerUnderAgent
+	}
+	live := false
+	var engine *Engine
+	var target signoffTarget
+	for _, e := range engines {
+		t, ok := e.signoffTarget(req.SessionKey)
+		if !ok {
+			continue
+		}
+		live = true
+		if callerUnder(r, t.agentPid) {
+			engine, target = e, t
+			break
+		}
+	}
+	if !live {
+		http.Error(w, "no live session for session_key", http.StatusNotFound)
+		return
+	}
+	if engine == nil {
+		slog.Warn("signoff: caller is not under the session's agent", "session_key", req.SessionKey, "request_id", req.RequestID)
+		http.Error(w, "caller is not under the agent of session_key", http.StatusForbidden)
+		return
+	}
+	if engine.runAsUser() == "" {
+		http.Error(w, "project has no run_as_user", http.StatusUnprocessableEntity)
+		return
+	}
+	if _, ok := target.platform.(SignoffCardPlatform); !ok {
+		http.Error(w, fmt.Sprintf("platform %q cannot show signoff cards", target.platform.Name()), http.StatusUnprocessableEntity)
+		return
+	}
+	engine.acceptSignoff(target, req)
+	apiJSON(w, http.StatusOK, map[string]string{"status": "posted"})
 }
 
 // ── Relay API ──────────────────────────────────────────────────
