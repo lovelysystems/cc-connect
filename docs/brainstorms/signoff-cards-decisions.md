@@ -156,6 +156,8 @@ Sources: the user's Teams test of the Submit card (button held, both buttons bla
 - A `signoff:` value arriving as a Submit message is dropped and logged before any message is built; over routing it as a click; no posted card has Submit buttons, so such a value comes from no held card — `platform/teams/webhook.go:141`.
 - Card version stays 1.5; Teams docs ask for 1.5 for Universal Actions, and no `fallback` is set; over an `Action.Submit` fallback; a fallback would bring back the Submit path this branch drops — `platform/teams/card.go:85`.
 - To watch in the Teams test: User Specific Views says "The User Specific Card returned by the bot is sent only to the specific client that requested for it", so others in the channel, and the clicker's other devices, may still see the buttons until they click; their click is answered with the drawn card. Also watch what Teams shows for the empty-message answer.
+- The invoke answer reaches only the clicking client (seen in the user's Teams test: the web client kept the buttons), so a counted click also edits the card's activity by PUT with the same drawing, after the answer and before the placeholder; over the invoke answer alone; a failed PUT is logged and the click goes on — `platform/teams/signoff.go:138`.
+- Teams web shows "Your response was sent to the app" under an `Action.Execute` card even with `msteams.feedback.hide` on the action; the desktop app does not, and Submit hides it on both; the user chose Execute for the instant, flash-free swap and accepts the banner on web — `platform/teams/signoff.go:199`.
 
 ## Open questions
 

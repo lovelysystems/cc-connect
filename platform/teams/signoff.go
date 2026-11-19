@@ -94,9 +94,10 @@ func (c *signoffCard) Redraw(ctx context.Context, mark core.SignoffMark) error {
 // adaptiveCard/action invoke and returns the invoke's answer. A press counts
 // only on an open card, from the conversation it was posted in, by someone
 // allow_from lets through: it is answered with the card drawn with its mark,
-// and resolve is to be called once the answer is written. Any other press is
-// logged, runs nothing and is answered with the card as drawn now, or with
-// signoffEmptyAnswer when cc-connect holds no card it may draw there.
+// and resolve is to be called once the answer is written. resolve edits the
+// posted card to the same drawing, then runs the rest of the click. Any other
+// press is logged, runs nothing and is answered with the card as drawn now, or
+// with signoffEmptyAnswer when cc-connect holds no card it may draw there.
 func (p *Platform) handleSignoffClick(claims jwt.MapClaims, a *activity, value string) (answer invokeResponse, resolve func()) {
 	if !p.serviceURLTrusted(claims, a) {
 		return signoffEmptyAnswer, nil
@@ -127,14 +128,21 @@ func (p *Platform) handleSignoffClick(claims jwt.MapClaims, a *activity, value s
 		slog.Info("teams: signoff click on a resolved card; answered with the card as drawn")
 		return signoffCardAnswer(c.drawn()), nil
 	}
-	mark, resolve := c.onClick(value, core.SignoffClicker{ID: userID(a), Name: a.From.Name})
-	if resolve == nil {
+	mark, rest := c.onClick(value, core.SignoffClicker{ID: userID(a), Name: a.From.Name})
+	if rest == nil {
 		return signoffCardAnswer(c.drawn()), nil
 	}
 	p.signoff.mu.Lock()
 	c.mark = &mark
 	p.signoff.mu.Unlock()
-	return signoffCardAnswer(signoffAdaptiveCard(c.card, &mark)), resolve
+	return signoffCardAnswer(signoffAdaptiveCard(c.card, &mark)), func() {
+		// The invoke answer reaches only the client that clicked; the edit
+		// shows the mark on every other client.
+		if err := c.Redraw(context.Background(), mark); err != nil {
+			slog.Error("teams: redraw clicked signoff card failed", "conversation", c.rc.conversationID, "error", err)
+		}
+		rest()
+	}
 }
 
 // drawn is the card as Teams shows it now.
@@ -187,7 +195,7 @@ func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any
 			"tooltip": "",
 			"verb":    b.Value,
 			"data":    map[string]any{"action": b.Value},
-			// Hides Teams' "Your response was sent to the app" note under the card.
+			// Hides Teams' "Your response was sent to the app" note under the card in the desktop app.
 			"msteams": map[string]any{"feedback": map[string]any{"hide": true}},
 		}
 		if b.Type == "primary" {

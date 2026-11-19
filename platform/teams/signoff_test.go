@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -360,15 +361,35 @@ func TestSignoffPostWithoutActivityIDFails(t *testing.T) {
 	}
 }
 
+// signoffGatedSender holds every edit until answered is closed, and notes an
+// edit that waited in vain.
+type signoffGatedSender struct {
+	*fakeSender
+	answered chan struct{}
+	early    bool
+}
+
+func (g *signoffGatedSender) update(ctx context.Context, rc replyContext, activityID string, a outboundActivity) error {
+	select {
+	case <-g.answered:
+	case <-time.After(2 * time.Second):
+		g.early = true
+	}
+	return g.fakeSender.update(ctx, rc, activityID, a)
+}
+
 func TestSignoffInvokeIsAnsweredWithTheCardAndItsMark(t *testing.T) {
 	fs := &fakeSender{id: "act-9"}
+	gate := &signoffGatedSender{fakeSender: fs, answered: make(chan struct{})}
 	p, s := signoffTeamsPlatform(t, fs)
+	p.conn = gate
 	h, got := collector()
 	p.handler = h
 	clicks := newSignoffClicks(true)
 	signoffPostCard(t, p, clicks)
 
 	code, answer := signoffPost(t, p, s, baseClaims(), signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"))
+	close(gate.answered)
 
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -382,9 +403,13 @@ func TestSignoffInvokeIsAnsweredWithTheCardAndItsMark(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the click was never resolved")
 	}
-	if len(fs.updatedIDs) != 0 {
-		t.Fatalf("the clicked card was also redrawn by an edit: %v", fs.updatedIDs)
+	if gate.early {
+		t.Fatal("the card was edited before the invoke was answered")
 	}
+	if len(fs.updatedIDs) != 1 || fs.updatedIDs[0] != "act-9" {
+		t.Fatalf("updated = %v, want act-9 once", fs.updatedIDs)
+	}
+	signoffSameDrawing(t, fs.updates[0].Attachments[0].Content.(map[string]any), card)
 	if len(*got) != 0 {
 		t.Fatalf("the click became a message: %+v", (*got)[0])
 	}
@@ -394,6 +419,26 @@ func TestSignoffInvokeIsAnsweredWithTheCardAndItsMark(t *testing.T) {
 	signoffSameDrawing(t, signoffAnswerCard(t, again), card)
 	if c := clicks.clickers(); len(c) != 1 {
 		t.Fatalf("clicks = %v, want the first only", c)
+	}
+}
+
+func TestSignoffClickResolvesWhenTheEditFails(t *testing.T) {
+	fs := &fakeSender{id: "act-9"}
+	p, s := signoffTeamsPlatform(t, fs)
+	clicks := newSignoffClicks(true)
+	signoffPostCard(t, p, clicks)
+	fs.err = errors.New("connector down")
+
+	_, answer := signoffPost(t, p, s, baseClaims(), signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"))
+
+	signoffMarked(t, answer, core.SignoffMarkApproved)
+	select {
+	case <-clicks.resolved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the click was never resolved")
+	}
+	if len(fs.updatedIDs) != 1 {
+		t.Fatalf("updated = %v, want one edit", fs.updatedIDs)
 	}
 }
 
