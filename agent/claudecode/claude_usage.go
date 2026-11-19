@@ -128,7 +128,7 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 
 	terminal := newClaudeUsageTerminal()
 	readDone := make(chan error, 1)
-	go func() {
+	go func(done chan<- error) {
 		buf := make([]byte, 4096)
 		for {
 			n, err := ptmx.Read(buf)
@@ -137,14 +137,14 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 			}
 			if err != nil {
 				if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
-					readDone <- nil
+					done <- nil
 				} else {
-					readDone <- err
+					done <- err
 				}
 				return
 			}
 		}
-	}()
+	}(readDone)
 
 	defer func() {
 		if err := ptmx.Close(); err != nil {
@@ -152,7 +152,9 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 		}
 		cancel()
 		// Wait for reader goroutine to finish so it is never leaked.
-		<-readDone
+		if readDone != nil {
+			<-readDone
+		}
 		select {
 		case <-processDone:
 		case <-time.After(2 * time.Second):
@@ -186,6 +188,7 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 			}
 			return "", fmt.Errorf("claudecode: timed out waiting for Claude Code /usage panel: %w", probeCtx.Err())
 		case err := <-readDone:
+			readDone = nil
 			if err != nil {
 				return "", fmt.Errorf("claudecode: read Claude Code /usage output: %w", err)
 			}

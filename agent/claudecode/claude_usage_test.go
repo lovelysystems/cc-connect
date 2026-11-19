@@ -275,14 +275,13 @@ func mustLoadLocation(t *testing.T, name string) *time.Location {
 }
 
 // writeStubClaude puts a `claude` into a new dir that records its working
-// dir and arguments, one per line in brackets, then sleeps without drawing
-// anything. GetUsage returns once its context ends; a probe whose claude
-// exits on its own keeps GetUsage waiting on the pty reader.
+// dir and arguments, one per line in brackets, then exits without drawing
+// anything.
 func writeStubClaude(t *testing.T) (dir, record string) {
 	t.Helper()
 	dir = t.TempDir()
 	record = filepath.Join(t.TempDir(), "claude.record")
-	script := "#!/bin/sh\n{ pwd -P; for a in \"$@\"; do printf '[%s]\\n' \"$a\"; done; } > " + testShellQuote(record) + "\nexec sleep 3\n"
+	script := "#!/bin/sh\n{ pwd -P; for a in \"$@\"; do printf '[%s]\\n' \"$a\"; done; } > " + testShellQuote(record) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -356,5 +355,26 @@ func TestGetUsage_WithoutRunAsUserSkipsSudo(t *testing.T) {
 	}
 	if calls := sudo.calls(t); calls != "" {
 		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
+	}
+}
+
+func TestGetUsage_RunAsUserMissingClaudeReturnsByDeadline(t *testing.T) {
+	installFakeSudo(t, "exec", "")
+	a := &Agent{spawnOpts: core.SpawnOptions{RunAsUser: "target"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.GetUsage(ctx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("GetUsage succeeded without a claude on the target's PATH")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GetUsage did not return after its deadline")
 	}
 }
