@@ -47,5 +47,6 @@
 - A failed settings read as the user leaves the session without hooks (once per session, like a missing file), over retrying on the next permission request; every request then goes to the platform prompt. `agent/claudecode/cc_hooks.go:181`
 - The settings read gets its own 30s timeout, over the session context alone; a hung sudo would otherwise block the first permission request. `agent/claudecode/cc_hooks.go:213`
 - `readSettingsFile` keeps reading the file and hands the bytes to a new `parseSettings`, over a second copy of the JSONC parse for framed output. `agent/claudecode/cc_hooks.go:294`
+- Under `run_as_user` an inbound image is created with `WriteFileAsUser`, which refuses a taken name, over replacing it as `os.WriteFile` does; the name carries a millisecond timestamp, and a file planted at that name is skipped. `agent/claudecode/session.go:993`
 
 ## Open questions

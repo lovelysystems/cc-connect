@@ -62,6 +62,11 @@ type claudeSession struct {
 	gracefulStopTimeout time.Duration
 	ccHooks             *ccPermissionHookRunner // Claude Code PermissionRequest hook runner
 
+	// spawnOpts is the session's run_as_user setting for the processes it
+	// spawns besides the agent itself: hooks and attachment writes. It sets
+	// no WorkDir.
+	spawnOpts core.SpawnOptions
+
 	// startupWarning holds a one-time message to surface to the IM user at
 	// session start (e.g. when a permission mode was silently downgraded).
 	startupWarning string
@@ -359,7 +364,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	// target user's HOME), so the workspace must be re-applied inside the
 	// spawn. WorkDir tells BuildSpawnCommand to wrap the command with a chdir;
 	// the path itself is passed through RunAsChdirEnv below.
-	sideSpawnOpts := spawnOpts
+	sessionSpawnOpts := spawnOpts
 	spawnOpts.WorkDir = workDir
 	cmd := core.BuildSpawnCommand(sessionCtx, spawnOpts, cliBin, allArgs...)
 	cmd.Dir = workDir
@@ -453,7 +458,8 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		cancel:              cancel,
 		done:                make(chan struct{}),
 		gracefulStopTimeout: 120 * time.Second,
-		ccHooks:             newCCPermissionHookRunner(workDir, sideSpawnOpts),
+		ccHooks:             newCCPermissionHookRunner(workDir, sessionSpawnOpts),
+		spawnOpts:           sessionSpawnOpts,
 		startupWarning:      rootDowngradeWarning,
 		promptFilePath:      cleanupPromptPath,
 	}
@@ -966,9 +972,12 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 		})
 	}
 
+	asUser := cs.spawnOpts.IsolationMode()
 	attachDir := filepath.Join(cs.workDir, ".cc-connect", "attachments")
-	if err := os.MkdirAll(attachDir, 0o755); err != nil {
-		slog.Warn("claudeSession: mkdir attachments failed", "error", err, "path", attachDir)
+	if !asUser {
+		if err := os.MkdirAll(attachDir, 0o755); err != nil {
+			slog.Warn("claudeSession: mkdir attachments failed", "error", err, "path", attachDir)
+		}
 	}
 
 	var parts []map[string]any
@@ -979,7 +988,13 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 		ext := extFromMime(img.MimeType)
 		fname := fmt.Sprintf("img_%d_%d%s", time.Now().UnixMilli(), i, ext)
 		fpath := filepath.Join(attachDir, fname)
-		if err := os.WriteFile(fpath, img.Data, 0o644); err != nil {
+		var err error
+		if asUser {
+			err = core.WriteFileAsUser(cs.ctx, cs.spawnOpts, fpath, img.Data)
+		} else {
+			err = os.WriteFile(fpath, img.Data, 0o644)
+		}
+		if err != nil {
 			slog.Error("claudeSession: save image failed", "error", err)
 			continue
 		}
@@ -1001,7 +1016,7 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 	}
 
 	// Save files to disk so Claude Code can read them
-	filePaths := core.SaveFilesToDisk(cs.workDir, messageID, files)
+	filePaths := core.SaveFilesToDiskAs(cs.ctx, cs.spawnOpts, cs.workDir, messageID, files)
 
 	// Build text part: user prompt + file path references
 	textPart := prompt
