@@ -68,6 +68,7 @@ The content bot runs its agent as `claude` while cc-connect runs as root in the 
 - Slash commands that touch the work dir as root (`/memory`, `/diff`, `/show`, `/shell`) stay as they are; they are disabled in the content bots and named as remaining work in the upstream PR (see origin).
 - Session-file operations under the supervisor's `~/.claude/projects` (`ListSessions`, `GetSessionHistory`, `DeleteSession`, `ValidateSessionID` in `agent/claudecode/claudecode.go`, and `transcriptPath` in `agent/claudecode/session.go`) stay as they are. They are reached through `/list`, `/history`, `/delete`, session resume and a path string on hook stdin, not through the brief's three actions. Named as remaining work in the upstream PR alongside the slash commands.
 - `CC_CONNECT_PERMISSION_HOOK_SKIP=1` on the agent spawn is dropped by `FilterEnvForSpawn` under `run_as_user`, so Claude may also run its own hooks. That predates this unit and is left as is.
+- The chdir wrapper in `BuildSpawnCommand` (`"$CC_RUNAS_CHDIR"`, `core/runas.go:174`) stays as it is: a login shell that field-splits the expansion refuses to start the agent on a work dir with a space, which fails closed and predates this unit. No new spawn here sets `WorkDir`. Named as remaining work in the upstream PR.
 - The card route `POST /signoff/send` and its click handling belong to another unit.
 - Other agents' sessions keep today's behaviour; `run_as_user` exists for Claude Code only.
 - The symlink case is hardened under `run_as_user` only; the plain path keeps today's writes (R8).
@@ -97,12 +98,11 @@ The content bot runs its agent as `claude` while cc-connect runs as root in the 
 
 - KTD1. **Each action is a process spawned as the user through `core.BuildSpawnCommand`, preceded by `core.VerifyRunAsUserCheap`.** This is the path the agent spawn already takes, it works when the supervisor is not root but only holds sudo to the target, and once a write or read runs as the user, a planted symlink reaches only what that user could reach anyway. The new spawns leave `cmd.Dir` unset, since `sudo -i` ignores it and a non-root supervisor may not be able to enter the work dir. Rejected: root-side `setuid`/`chown` or symlink-safe opens, which need root and still act as root.
 - KTD2. **Variable payloads cross sudo in preserved env vars referenced as `"${NAME}"`, data crosses on stdin, and anything read back on stdout is framed by marker lines.** `sudo -i` rewrites argv (Sources), so a hook command, a destination path or an empty probe flag passed as argv arrives changed. Each spawn adds its payload variable names to a copy of `SpawnOptions.EnvAllowlist`; login-profile output on stdout is ignored outside the markers.
-- KTD3. **The chdir wrapper in `BuildSpawnCommand` references `"${CC_RUNAS_CHDIR}"`.** Today's `"$CC_RUNAS_CHDIR"` expands unquoted in the target's login shell and splits a work dir that contains a space. The hook spawn is the only new spawn that sets `WorkDir` and uses the wrapper; the attachment write and the usage probe carry their dirs in their own scripts. The fix also corrects the agent spawn under `run_as_user`; the non-isolated path is untouched.
-- KTD4. **Under `run_as_user`, hook settings come from the target user's config home, read in one spawn per session.** The script resolves `${CLAUDE_CONFIG_DIR:-${HOME}/.claude}` in the target's login environment, the dir Claude itself reads as that user and the one `docs/usage.md` tells operators to set up, and prints each existing file among `settings.json` and `settings.local.json` in that dir and in `<workDir>/.claude` between markers, with the work dir passed in a preserved env var. Rejected: the supervisor's `~/.claude`, which the target often cannot read and Claude-as-target never honours. In the content-bot pod both are the same volume.
-- KTD5. **Hooks run as the user with the session work dir as cwd, and are cancelled with SIGTERM plus a `WaitDelay`.** sudo relays SIGTERM but cannot relay the SIGKILL `exec.CommandContext` sends, and without `WaitDelay` a surviving child holding stdout keeps `Wait` blocked past the 60s timeout. Without `run_as_user` the hook keeps today's cwd and cancel (R8).
-- KTD6. **The usage probe runs in `${HOME}/.cc-connect/usage-probe` of the target, created by `mkdir -p` inside the same spawn, with the probe's flags written inside the spawned script.** One spawn, nothing to remove afterwards, one trust entry instead of one per run, and `--tools ""` survives because it never crosses sudo as argv. Rejected: a temp dir made and removed by extra spawns (three spawns, leaks on kill, a new trust entry per run) and a root `os.MkdirTemp` (0700, unusable by the target).
-- KTD7. **Attachments use one write-as-user primitive in `core`, reached through a `SaveFilesToDisk` variant that takes `SpawnOptions`.** The primitive makes missing parent dirs and creates the file with noclobber from stdin, exiting with a distinct code when the name exists, so Go keeps choosing names and the numeric-suffix loop stays. `SaveFilesToDisk` keeps its signature and today's code for every other agent (R9); the Claude Code image write uses the primitive under `run_as_user`.
-- KTD8. **Tests prove "as the user" with a fake `sudo` first on `PATH` that reproduces `sudo -i` argv handling.** `BuildSpawnCommand` and `ExecSudoRunner` resolve `sudo` through `PATH`. The shim records argv, refuses the nested `sudo -n /usr/bin/true` so the per-spawn check passes, exports a marker naming the `-iu` user, joins the command after `--` the way sudo does, and runs it with `/bin/sh -c`. A non-executing variant records only, for the symlink cases. No production seam is added; each test package carries its own copy of the shim.
+- KTD3. **Under `run_as_user`, hook settings come from the target user's config home, read in one spawn per session.** The script resolves `${CLAUDE_CONFIG_DIR:-${HOME}/.claude}` in the target's login environment, the dir Claude itself reads as that user and the one `docs/usage.md` tells operators to set up, and prints each existing file among `settings.json` and `settings.local.json` in that dir and in `<workDir>/.claude` between markers, with the work dir passed in a preserved env var. Rejected: the supervisor's `~/.claude`, which the target often cannot read and Claude-as-target never honours. In the content-bot pod both are the same volume.
+- KTD4. **Hooks run as the user are cancelled with SIGTERM plus a 2s `WaitDelay` (the value `core/hooks.go:180` uses).** sudo relays SIGTERM but cannot relay the SIGKILL `exec.CommandContext` sends, and without `WaitDelay` a surviving child holding stdout keeps `Wait` blocked past the 60s timeout (`agent/claudecode/cc_hooks.go:252`). The hook spawn sets no `WorkDir`: it runs in the target's HOME, where `sudo -i` leaves it, and gets the work dir as `cwd` on stdin as today. Without `run_as_user` the hook keeps today's cwd and cancel (R8).
+- KTD5. **The usage probe runs in `${HOME}/.cc-connect/usage-probe` of the target, created by `mkdir -p` inside the same spawn, with the probe's flags written inside the spawned script.** One spawn, nothing to remove afterwards, one trust entry instead of one per run, and `--tools ""` survives because it never crosses sudo as argv. Rejected: a temp dir made and removed by extra spawns (three spawns, leaks on kill, a new trust entry per run) and a root `os.MkdirTemp` (0700, unusable by the target).
+- KTD6. **Attachments use one write-as-user primitive in `core`, reached through a `SaveFilesToDisk` variant that takes `SpawnOptions`.** The primitive makes missing parent dirs and creates the file with noclobber from stdin, exiting with a distinct code when the name exists, so Go keeps choosing names and the numeric-suffix loop stays. `SaveFilesToDisk` keeps its signature and today's code for every other agent (R9); the Claude Code image write uses the primitive under `run_as_user`.
+- KTD7. **Tests prove "as the user" with a fake `sudo` first on `PATH` that reproduces `sudo -i` argv handling.** `BuildSpawnCommand` and `ExecSudoRunner` resolve `sudo` through `PATH`. The shim records argv, refuses the nested `sudo -n /usr/bin/true` so the per-spawn check passes, exports a marker naming the `-iu` user, joins the command after `--` the way sudo does, and runs it with `/bin/sh -c`. A non-executing variant records only, for the symlink cases. No production seam is added; each test package carries its own copy of the shim.
 
 ### High-Level Technical Design
 
@@ -137,18 +137,16 @@ flowchart TD
 
 ### U1. Spawn plumbing and attachment writer in core
 
-- **Goal:** `core` can create attachment dirs and new files as the `run_as_user` user, `SaveFilesToDisk` has a variant that uses it, and the chdir wrapper survives spaces.
-- **Requirements:** R5, R6, R7, R9 (KTD1, KTD2, KTD3, KTD7).
+- **Goal:** `core` can create attachment dirs and new files as the `run_as_user` user, and `SaveFilesToDisk` has a variant that uses it.
+- **Requirements:** R5, R6, R7, R9 (KTD1, KTD2, KTD6).
 - **Dependencies:** none.
 - **Files:** `core/runas.go`, `core/runas_windows.go`, `core/message.go`, `core/runas_test.go`, `core/message_test.go`.
 - **Approach:**
-  1. Change the wrapper in `BuildSpawnCommand` to `"${CC_RUNAS_CHDIR}"` (KTD3) and update the comment that describes it.
-  2. Add the write primitive next to `BuildSpawnCommand`: per-spawn check, then one spawn whose script makes the parent dirs and creates the destination with noclobber from stdin; destination path in a preserved env var. The script returns the "exists" code only when an explicit test of the destination (`-e` or `-L`) succeeds before the create, which Go maps to an error matching `fs.ErrExist`; every other failure (mkdir, open, write) exits with a generic code that Go maps to skip, so the suffix loop cannot spin on an unwritable dir.
-  3. Add the `SaveFilesToDisk` variant taking `SpawnOptions`. Outside isolation it is `SaveFilesToDisk` unchanged. Inside isolation it calls no `os.MkdirAll`, `os.OpenFile`, `os.CreateTemp` or `os.Link`, and both the scoped and flat layouts use the primitive; the flat layout refuses an existing name, as today.
-  4. Windows stubs: isolation is never on, so the variant is the plain path.
+  1. Add the write primitive next to `BuildSpawnCommand`: per-spawn check, then one spawn whose script makes the parent dirs and creates the destination with noclobber from stdin; destination path in a preserved env var. The script returns the "exists" code only when an explicit test of the destination (`-e` or `-L`) succeeds before the create, which Go maps to an error matching `fs.ErrExist`; every other failure (mkdir, open, write) exits with a generic code that Go maps to skip, so the suffix loop cannot spin on an unwritable dir.
+  2. Add the `SaveFilesToDisk` variant taking `SpawnOptions`. Outside isolation it is `SaveFilesToDisk` unchanged. Inside isolation it calls no `os.MkdirAll`, `os.OpenFile`, `os.CreateTemp` or `os.Link`, and both the scoped and flat layouts use the primitive; the flat layout refuses an existing name, as today.
+  3. Windows stubs: isolation is never on, so the variant is the plain path.
 - **Patterns to follow:** `RunAsChdirEnv` + `mergedAllowlist` for preserved env; `writeUniqueNoOverwrite` suffix loop.
 - **Test scenarios:**
-  - With the executing fake `sudo` and a work dir containing a space, a command spawned with `WorkDir` runs in that dir.
   - With the executing fake `sudo`, the variant writes a binary file byte for byte, and the fake's log shows `-n -iu <user>`.
   - With the executing fake `sudo` and an existing `name.txt`, the second write lands as `name_1.txt`.
   - With the non-executing fake `sudo` and `<workDir>/.cc-connect` a symlink to an outside dir, the outside dir stays empty.
@@ -162,7 +160,7 @@ flowchart TD
 ### U2. Claude Code attachments go through the user write
 
 - **Goal:** `claudeSession.Send` writes images and files as the user under `run_as_user`.
-- **Requirements:** R4, R5, R6, R8 (KTD7).
+- **Requirements:** R4, R5, R6, R8 (KTD6).
 - **Dependencies:** U1.
 - **Files:** `agent/claudecode/session.go`, `agent/claudecode/session_test.go`.
 - **Approach:**
@@ -180,20 +178,19 @@ flowchart TD
 ### U3. Settings hooks read and run as the user
 
 - **Goal:** under `run_as_user`, hook settings are read and hook commands run as the user.
-- **Requirements:** R1, R2, R7, R8 (KTD1, KTD2, KTD4, KTD5).
-- **Dependencies:** U1 (wrapper fix).
+- **Requirements:** R1, R2, R7, R8 (KTD1, KTD2, KTD3, KTD4).
+- **Dependencies:** none.
 - **Files:** `agent/claudecode/cc_hooks.go`, `agent/claudecode/session.go`, `agent/claudecode/cc_hooks_test.go`.
 - **Approach:**
   1. Give the hook runner the session's `SpawnOptions` and work dir (built in `newClaudeSession`).
-  2. Under isolation, load all four settings files (config home and `<workDir>/.claude`) with the one-spawn read (KTD4) and parse each framed file as `readSettingsFile` does; a missing file is absent, as today. Outside isolation, read from the supervisor's config home as today.
-  3. Under isolation, run each hook as `sh -c` on the command taken from a preserved env var, through `BuildSpawnCommand` with `WorkDir` set to the session work dir, env from today's list minus the skip flag, then `FilterEnvForSpawn`, after `VerifyRunAsUserCheap`, with KTD5's cancel. Outside isolation, run it as today.
+  2. Under isolation, load all four settings files (config home and `<workDir>/.claude`) with the one-spawn read (KTD3) and parse each framed file as `readSettingsFile` does; a missing file is absent, as today. Outside isolation, read from the supervisor's config home as today.
+  3. Under isolation, run each hook as `sh -c` on the command taken from a preserved env var, through `BuildSpawnCommand` with no `WorkDir`, env from today's list minus the skip flag, then `FilterEnvForSpawn`, after `VerifyRunAsUserCheap`, with KTD4's cancel. Outside isolation, run it as today.
   4. A failed check, spawn or read is logged and treated like a failed hook today: next hook, then the platform prompt.
 - **Patterns to follow:** spawn block in `newClaudeSession`; `TestTryHook` setup with `CLAUDE_CONFIG_DIR`.
 - **Test scenarios:**
   - Covers the brief case "a settings hook command runs as the `run_as_user` user": with the executing fake `sudo` exporting the user marker, a hook that prints allow only when the marker names the target yields allow.
   - Covers the brief case for session-folder hooks: a hook defined only in `<workDir>/.claude/settings.json` yields allow through the fake `sudo`, and the same for `settings.local.json`; the fake's log shows both the settings read and the hook went through sudo.
   - A multi-line hook command containing single-quoted `$x` runs as written under the fake `sudo`.
-  - Under `run_as_user`, the hook runs with cwd equal to the session work dir.
   - Under `run_as_user` with a fake `sudo` that exits non-zero, `tryHook` returns no decision and no hook command runs directly.
   - Under `run_as_user` with a hook that sleeps past a short context deadline, `tryHook` returns within the deadline plus the `WaitDelay`.
   - Under `run_as_user`, a missing settings file is skipped without error and the others still load; profile noise on stdout outside the markers is ignored.
@@ -203,7 +200,7 @@ flowchart TD
 ### U4. Usage readout runs as the user
 
 - **Goal:** under `run_as_user`, the usage probe's `claude` runs as the user in the target's probe dir.
-- **Requirements:** R3, R7, R8 (KTD1, KTD2, KTD6).
+- **Requirements:** R3, R7, R8 (KTD1, KTD2, KTD5).
 - **Dependencies:** none.
 - **Files:** `agent/claudecode/claude_usage.go`, `agent/claudecode/claude_usage_test.go`.
 - **Approach:**
@@ -226,7 +223,7 @@ flowchart TD
 - **Files:** `docs/usage.md`, `CHANGES.md`.
 - **Approach:**
   1. In "Running agents as a different Unix user (`run_as_user`)", state that settings hooks (read from the target's config home and the work dir), the usage readout and inbound attachment writes run as the target user, that a failed sudo fails the action, and that a root-owned `<workDir>/.cc-connect` from an older version needs `chown -hR <target-user>`. Say that the `-h` form is required: the target can write the work dir and could replace `.cc-connect` with a symlink.
-  2. Add one line under `## v1.5.0` → `### Unreleased` → `#### Fix`, after existing entries, in the form `- **claudecode**: <what changed> (upstream: pending)`. Never edit `CHANGELOG.md`.
+  2. Add one line under `## v1.5.0` → `### Unreleased` → `#### Fix` (the heading does not exist yet under Unreleased, `CHANGES.md:18-20`; add it), after existing entries, in the form `- **claudecode**: <what changed> (upstream: pending)`. Never edit `CHANGELOG.md`.
 - **Test expectation:** none -- documentation only.
 - **Verification:** the docs section names all three actions and the chown step; the `CHANGES.md` entry is short and states what changed.
 

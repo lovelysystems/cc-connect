@@ -22,6 +22,16 @@
 - Each test package carries its own copy of the fake `sudo` shim, over a shared exported test-helper package. `core/runas_test.go`, `agent/claudecode/cc_hooks_test.go`
 - Session-file operations under the supervisor's `~/.claude/projects` (`ListSessions`, `GetSessionHistory`, `DeleteSession`, `ValidateSessionID`, `transcriptPath`) are left alone and named for the upstream PR with the slash commands, over widening this unit; they sit outside the brief's three actions. `agent/claudecode/claudecode.go:461,570,627,731`, `agent/claudecode/session.go:1139`
 
+## Plan review
+
+- Cut: hooks under `run_as_user` running with the session work dir as cwd (old KTD5 clause, U3 step 3's `WorkDir`, U3's cwd test); nothing in the story requires it now: today hooks run in cc-connect's own cwd with no `cmd.Dir` and get the work dir as `cwd` on stdin. `agent/claudecode/cc_hooks.go:255`
+- Cut: the chdir wrapper fix `"${CC_RUNAS_CHDIR}"` (old KTD3, U1 step 1, U1's space test); nothing in the story requires it now: with the hook cwd cut no new spawn sets `WorkDir`, and the split is inherited from the base and fails closed (a probe of sudo's argv escaping shows dash as login shell refusing the agent spawn on a work dir with a space, bash and zsh not splitting); name it for the upstream PR with the other remaining work. `core/runas.go:174`
+- Changed: KTD numbers after the cut shift down by one (old KTD4–KTD8 are now KTD3–KTD7).
+- Changed: the hook `WaitDelay` is pinned to 2s, the value the repo's other shell hook uses, where the plan named no number. `core/hooks.go:180`
+- Changed: U5 adds the `#### Fix` heading under `### Unreleased`, which does not exist yet. `CHANGES.md:18-20`
+- Kept: payloads in preserved env vars and data on stdin, over argv; R1's unchanged hook text needs it, since sudo backslash-escapes every byte but alphanumerics, `_`, `-` and `$`, so a newline becomes a line continuation and `$x` expands in the login shell (reproduced in a probe). `core/runas.go:173-177`
+- Kept: under `run_as_user`, hook settings read as the user from the target's config home, over the supervisor's; the tripwire list names root reads on agent-writable paths, the target generally cannot read the supervisor's home, and `docs/usage.md:458-460` already tells operators to put hooks there; a hook missing after the switch falls through to the platform prompt. `agent/claudecode/cc_hooks.go:131-144`
+
 ## Build
 
 ## Open questions
