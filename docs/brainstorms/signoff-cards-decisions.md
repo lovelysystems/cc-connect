@@ -152,6 +152,16 @@ Sources: the user's post of the sample card in a Teams channel; a local Docker r
 - A click on an unknown card (after a restart) is answered with the empty message, and the user's click in Teams showed nothing changes on the card; the comment at `platform/teams/signoff.go:43` and `docs/teams.md` say so correctly. Answered.
 - After a restart, dead cards stay as they are, buttons included; the user's pick, over answering their clicks with an invoke error — `docs/teams.md:283`.
 
+## Rulings
+
+Source: the user's answers to the open questions after the second review round.
+
+- Engine choice without the caller check: A, kept; the caller check picks the project, upstream too, and the route works on Linux only; the user confirmed.
+- `data` on the signoff buttons: B, dropped; routing reads `verb` only — `platform/teams/signoff.go:211`.
+- A click racing a replacement: B; when core refuses a click on a card with no mark yet, it is answered with `signoffEmptyAnswer`, since the card as drawn would put the buttons back before the ↻ redraw lands — `platform/teams/signoff.go:145`.
+- The click answer waits behind the replacement edits: A for now; C if the log shows a late invoke answer.
+- A click on a card cc-connect no longer holds (after a restart) is answered with a Teams invoke error so the clicker sees the card is dead: `statusCode` 400, `type` `application/vnd.microsoft.error`, `value` `{"code": "BadRequest", "message": "This card is no longer active."}` — `platform/teams/signoff.go:48`. 400 with that type is the only 4xx error row in the response table of https://learn.microsoft.com/en-us/adaptive-cards/authoring-cards/universal-action-model ("The incoming request was invalid"); the page leaves the error object's link as TODO, so `code` follows the Bot Framework `Error` (`code`, `message`) and `BadRequest` is the code the Bot Framework SDK's own `adaptiveCard/action` handler sends with 400 (`botbuilder-core/src/activityHandler.ts`). The empty message was passed over earlier because Teams shows the error as an error, which is the point for this case; the race keeps the empty message because the ↻ redraw explains itself. Untrusted serviceURL and another conversation keep the empty message.
+
 ## Execute experiment
 
 Sources: the user's Teams test of the Submit card (button held, both buttons blank for about a second, then the redrawn card); `git show 17bbc288:platform/teams/gate.go` and `d552f376` on `origin/taras/gate-card-poc`; the Universal Action Model and User Specific Views pages on learn.microsoft.com.
@@ -172,40 +182,3 @@ Sources: the user's Teams test of the Submit card (button held, both buttons bla
 - To watch in the Teams test: User Specific Views says "The User Specific Card returned by the bot is sent only to the specific client that requested for it", so others in the channel, and the clicker's other devices, may still see the buttons until they click; their click is answered with the drawn card. Also watch what Teams shows for the empty-message answer.
 - The invoke answer reaches only the clicking client (seen in the user's Teams test: the web client kept the buttons), so a counted click also edits the card's activity by PUT with the same drawing, after the answer and before the placeholder; over the invoke answer alone; a failed PUT is logged and the click goes on — `platform/teams/signoff.go:138`.
 - Teams web shows "Your response was sent to the app" under an `Action.Execute` card even with `msteams.feedback.hide` on the action; the desktop app does not, and Submit hides it on both; the user chose Execute for the instant, flash-free swap and accepts the banner on web — `platform/teams/signoff.go:199`.
-
-## Open questions
-
-### Engine choice without the caller check, for the upstream PR
-
-- Source: `tv:review` Question 3. Story owner's decision.
-- Logged: "Engine found from `session_key` … keeps the brief's seven fields and the check separable" (`## Mechanism`). Finding: without the check, `handleSignoffSend` takes the first engine in name order with a live session for the key (`core/api.go:811-821`), so two projects whose bots share a chat cannot be told apart; the check is not separable that way.
-- Option A, keep the caller check as what picks the engine, upstream too: no change; the route works on Linux only.
-- Option B, add an optional `project` field like `/send`: an eighth field, on the tripwire list; the gate does not need it.
-- Option C, ship upstream without the check: no change here; two projects sharing a chat get the wrong engine.
-- Recommended: A. The content bot runs one project, so nothing is needed now.
-
-### Dropping `data` from the signoff buttons
-
-- Source: `tv:review` finding 2 (second round).
-- Finding: `data.action` repeats the `verb` and has no reader since routing went to `verb` alone; no `fallback` is set and a `signoff:` value in a Submit message is dropped.
-- Option A, keep `data` in the markup: no change, no Teams test; one unread key on each button.
-- Option B, drop `data`: the card JSON loses one key per button; changes the Teams card markup, so it needs one click test in Teams (desktop and web).
-- Recommended: B at the next Teams test session; nothing breaks while A stands.
-
-### A click racing a replacement is answered with the open card
-
-- Source: `ce-code-review` finding 2 (second round).
-- Logged: "Not on `allow_from`, already resolved, replaced, or refused by core: answered with the card as drawn now … over an empty message; cc-connect holds the card and redrawing it shows nothing new" (`## Execute experiment`). Finding: between core's replacement claim (`core/signoff.go:284`) and `Redraw` setting the mark (`platform/teams/signoff.go:85`), core refuses the click while the card as drawn still has its buttons; if the replacement edit reaches the client before the invoke answer, the answer puts the buttons back. The logged reason does not hold in that window, and the empty answer the log passed over is now seen to leave the card unchanged (`## Teams test`).
-- Option A, keep: no change; in that short window the clicker may see the buttons again until the next click, and nothing runs.
-- Option B, answer with `signoffEmptyAnswer` when `onClick` refuses and no mark is drawn yet: a few lines in `handleSignoffClick`, the "refused by core" test case expects the empty message; changes what Teams receives for that click, so one look in Teams.
-- Option C, core marks the Teams card before its claim is visible: an interface change on `SignoffCardHandle`.
-- Recommended: B.
-
-### The click answer waits behind the replacement edits
-
-- Source: `ce-code-review` residual risk 3 and `tv:review` Question 4 (second round), raised by three reviewers.
-- Finding: `signoffClicked` waits on `<-c.posted` (`core/signoff.go:301`), which closes only after the edit of every older card in the thread, each up to 30 s (`connectorTimeout`); a click on the new card in that window holds the invoke answer, and a slow connector can outlast Teams' invoke timeout, so the clicker sees an error although the click counted.
-- Option A, keep: no change; needs a click within one edit of the card appearing plus a slow connector; nothing runs twice.
-- Option B, close `posted` right after `c.handle` is set: a click on the new card can then reserve the session before an older card's `replaced` reservation, so the agent hears the newer card's outcome first and then "replaced by <newer request_id>" naming a card that is no longer open, against KTD10 (the `replaced` report tells which card is still open) and the report order of KTD12. Not applied for that reason.
-- Option C, claim and reserve every older card first, then close `posted`, then send the edits: keeps the report order; an older card's report turn may start before its ↻ edit lands when the connector is slow; changes the order inside `postSignoffCard` and needs a test for it.
-- Recommended: A now; C if the log shows a late invoke answer.

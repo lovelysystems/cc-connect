@@ -281,7 +281,8 @@ When `signoff_exec` answered a `message`, it follows on a second line. The
 nonce is never in it.
 
 Open cards are kept in memory only: after a cc-connect restart, a click on an
-older card does nothing and the card keeps its buttons.
+older card runs nothing, the card keeps its buttons, and Teams gets the error
+"This card is no longer active." as the answer.
 
 ## Connection type
 

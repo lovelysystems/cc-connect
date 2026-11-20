@@ -40,9 +40,16 @@ type invokeResponse struct {
 	Value      any    `json:"value"`
 }
 
-// signoffEmptyAnswer answers a click on a card cc-connect cannot draw: a
-// message with no text, which leaves the card as it is.
+// signoffEmptyAnswer is a message with no text, which leaves the card as it is.
 var signoffEmptyAnswer = invokeResponse{StatusCode: http.StatusOK, Type: "application/vnd.microsoft.activity.message", Value: ""}
+
+// signoffGoneAnswer is the invoke error for a click on a card cc-connect no
+// longer holds, so the clicker learns the card is dead.
+var signoffGoneAnswer = invokeResponse{
+	StatusCode: http.StatusBadRequest,
+	Type:       "application/vnd.microsoft.error",
+	Value:      map[string]string{"code": "BadRequest", "message": "This card is no longer active."},
+}
 
 func signoffCardAnswer(card map[string]any) invokeResponse {
 	return invokeResponse{StatusCode: http.StatusOK, Type: adaptiveCardContentType, Value: card}
@@ -96,8 +103,10 @@ func (c *signoffCard) Redraw(ctx context.Context, mark core.SignoffMark) error {
 // allow_from lets through: it is answered with the card drawn with its mark,
 // and resolve is to be called once the answer is written. resolve edits the
 // posted card to the same drawing, then runs the rest of the click. Any other
-// press is logged, runs nothing and is answered with the card as drawn now, or
-// with signoffEmptyAnswer when cc-connect holds no card it may draw there.
+// press is logged and runs nothing. A press on a card cc-connect no longer
+// holds is answered with signoffGoneAnswer; one from an untrusted serviceURL or
+// another conversation, or one core refuses on an open card, with
+// signoffEmptyAnswer; any other with the card as drawn now.
 func (p *Platform) handleSignoffClick(claims jwt.MapClaims, a *activity, value string) (answer invokeResponse, resolve func()) {
 	if !p.serviceURLTrusted(claims, a) {
 		return signoffEmptyAnswer, nil
@@ -106,8 +115,8 @@ func (p *Platform) handleSignoffClick(claims jwt.MapClaims, a *activity, value s
 	c := p.signoff.byValue[value]
 	p.signoff.mu.Unlock()
 	if c == nil {
-		slog.Info("teams: signoff click for no held card; answered with an empty message")
-		return signoffEmptyAnswer, nil
+		slog.Info("teams: signoff click for no held card; answered with an error")
+		return signoffGoneAnswer, nil
 	}
 	// The card's text stays out of other conversations.
 	if a.Conversation.ID != c.rc.conversationID {
@@ -130,7 +139,10 @@ func (p *Platform) handleSignoffClick(claims jwt.MapClaims, a *activity, value s
 	}
 	mark, rest := c.onClick(value, core.SignoffClicker{ID: userID(a), Name: a.From.Name})
 	if rest == nil {
-		return signoffCardAnswer(c.drawn()), nil
+		// Core has claimed the card for a replacement whose redraw is still on
+		// its way; the card as drawn would put the buttons back.
+		slog.Info("teams: signoff click refused by core; answered with an empty message")
+		return signoffEmptyAnswer, nil
 	}
 	p.signoff.mu.Lock()
 	c.mark = &mark
@@ -197,7 +209,6 @@ func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any
 			"title":   literalBraces(b.Text),
 			"tooltip": "",
 			"verb":    b.Value,
-			"data":    map[string]any{"action": b.Value},
 			// Hides Teams' "Your response was sent to the app" note under the card in the desktop app.
 			"msteams": map[string]any{"feedback": map[string]any{"hide": true}},
 		}

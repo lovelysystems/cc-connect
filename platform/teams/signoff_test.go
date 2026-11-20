@@ -89,14 +89,14 @@ func TestSignoffCardDrawsEveryTextAsATextRun(t *testing.T) {
 	}
 	for i, a := range actions {
 		hide := a["msteams"].(map[string]any)["feedback"].(map[string]any)["hide"]
-		if a["type"] != "Action.Execute" || hide != true || a["tooltip"] != "" || a["verb"] != a["data"].(map[string]any)["action"] {
+		if _, ok := a["data"]; ok || a["type"] != "Action.Execute" || hide != true || a["tooltip"] != "" {
 			t.Fatalf("action %d = %v", i, a)
 		}
 	}
-	if actions[0]["title"] != "Approve" || actions[0]["style"] != "positive" || actions[0]["data"].(map[string]any)["action"] != "signoff:r1:n1" {
+	if actions[0]["title"] != "Approve" || actions[0]["style"] != "positive" || actions[0]["verb"] != "signoff:r1:n1" {
 		t.Fatalf("confirm = %v", actions[0])
 	}
-	if actions[1]["title"] != "Cancel" || actions[1]["style"] != nil || actions[1]["data"].(map[string]any)["action"] != "signoff:r1:n1:cancel" {
+	if actions[1]["title"] != "Cancel" || actions[1]["style"] != nil || actions[1]["verb"] != "signoff:r1:n1:cancel" {
 		t.Fatalf("cancel = %v", actions[1])
 	}
 }
@@ -221,7 +221,7 @@ func signoffInvokeActivity(conv, user, value string) activity {
 		From:         channelAccount{ID: "29:" + user, AADObjectID: user, Name: "Jane Editor"},
 		Recipient:    channelAccount{ID: "bot-1"},
 		Conversation: conversationAccount{ID: conv},
-		Value:        []byte(`{"action":{"type":"Action.Execute","verb":"` + value + `","data":{"action":"` + value + `"}},"trigger":"manual"}`),
+		Value:        []byte(`{"action":{"type":"Action.Execute","verb":"` + value + `"},"trigger":"manual"}`),
 	}
 }
 
@@ -319,6 +319,14 @@ func signoffEmpty(t *testing.T, answer map[string]any) {
 	t.Helper()
 	if answer["statusCode"] != float64(200) || answer["type"] != "application/vnd.microsoft.activity.message" || answer["value"] != "" {
 		t.Fatalf("answer = %v, want an empty message", answer)
+	}
+}
+
+func signoffGone(t *testing.T, answer map[string]any) {
+	t.Helper()
+	value, _ := answer["value"].(map[string]any)
+	if answer["statusCode"] != float64(400) || answer["type"] != "application/vnd.microsoft.error" || value["code"] != "BadRequest" || value["message"] != "This card is no longer active." {
+		t.Fatalf("answer = %v, want an error for a dead card", answer)
 	}
 }
 
@@ -516,11 +524,12 @@ func TestSignoffClicksThatDoNotCount(t *testing.T) {
 		claims jwt.MapClaims
 		click  activity
 		empty  bool
+		gone   bool
 	}{
-		{name: "unknown card", count: true, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:old:n0"), empty: true},
+		{name: "unknown card", count: true, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:old:n0"), gone: true},
 		{name: "another conversation", count: true, click: signoffInvokeActivity("conv-B", "aad-1", "signoff:r1:n1"), empty: true},
 		{name: "not on allow_from", count: true, allow: "aad-editor", click: signoffInvokeActivity("conv-A;messageid=1", "aad-stranger", "signoff:r1:n1")},
-		{name: "refused by core", count: false, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1")},
+		{name: "refused by core", count: false, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"), empty: true},
 		{name: "untrusted serviceUrl", count: true, claims: jwt.MapClaims{"serviceurl": "https://elsewhere.example/"}, click: signoffInvokeActivity("conv-A;messageid=1", "aad-1", "signoff:r1:n1"), empty: true},
 	}
 	for _, c := range cases {
@@ -542,9 +551,12 @@ func TestSignoffClicksThatDoNotCount(t *testing.T) {
 			if code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", code)
 			}
-			if c.empty {
+			switch {
+			case c.gone:
+				signoffGone(t, answer)
+			case c.empty:
 				signoffEmpty(t, answer)
-			} else {
+			default:
 				signoffSameDrawing(t, signoffAnswerCard(t, answer), open)
 			}
 			if !c.count {
