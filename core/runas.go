@@ -54,14 +54,19 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -81,8 +86,8 @@ func currentUsername() string {
 // target user's HOME, which silently overrides the supervisor's cmd.Dir. The
 // spawned command therefore re-establishes the intended cwd by chdir-ing to
 // this value before exec-ing the real binary. It travels via the environment
-// (not argv) so directories containing spaces or non-ASCII survive sudo's
-// command re-quoting. Callers set it on cmd.Env when SpawnOptions.WorkDir is
+// (not argv), which sudo -i re-quotes for the login shell; see the known gap
+// in BuildSpawnCommand. Callers set it on cmd.Env when SpawnOptions.WorkDir is
 // non-empty; BuildSpawnCommand adds it to the --preserve-env allowlist.
 const RunAsChdirEnv = "CC_RUNAS_CHDIR"
 
@@ -167,8 +172,11 @@ func BuildSpawnCommand(ctx context.Context, opts SpawnOptions, name string, args
 		// cmd.Dir, so the agent would otherwise start in the wrong directory
 		// (e.g. ignoring a multi-workspace binding). Re-establish the intended
 		// cwd inside the spawn. The path travels in $CC_RUNAS_CHDIR (a
-		// preserved env var, set by the caller) rather than argv so paths with
-		// spaces or non-ASCII survive sudo's command re-quoting.
+		// preserved env var, set by the caller) rather than argv.
+		// Known gap: sudo -i leaves '$' unescaped, so the login shell expands
+		// "$CC_RUNAS_CHDIR" outside quotes; a dash login shell splits a path
+		// with spaces and the spawn fails. "${CC_RUNAS_CHDIR}" reaches the
+		// inner sh intact.
 		sudoArgs = append(sudoArgs,
 			"/bin/sh", "-c", "cd \"$"+RunAsChdirEnv+"\" || exit 1; exec \"$@\"", "sh", name)
 	} else {
@@ -176,6 +184,68 @@ func BuildSpawnCommand(ctx context.Context, opts SpawnOptions, name string, args
 	}
 	sudoArgs = append(sudoArgs, args...)
 	return exec.CommandContext(ctx, "sudo", sudoArgs...)
+}
+
+// Environment variables that carry WriteFileAsUser's destination across sudo.
+const (
+	runAsWriteDirEnv  = "CC_RUNAS_WRITE_DIR"
+	runAsWritePathEnv = "CC_RUNAS_WRITE_PATH"
+)
+
+// runAsWriteExistsCode is the exit status writeAsUserScript returns when the
+// destination name is already taken.
+const runAsWriteExistsCode = 17
+
+// writeAsUserScript creates the destination's parent dirs and the destination
+// itself from stdin, refusing a name that already exists. sudo -i joins argv
+// into one string for the login shell, so the script stays on one line and
+// reads its variables only as "${NAME}".
+var writeAsUserScript = `mkdir -p -- "${` + runAsWriteDirEnv + `}" || exit 1; ` +
+	`if [ -e "${` + runAsWritePathEnv + `}" ] || [ -L "${` + runAsWritePathEnv + `}" ]; then exit ` +
+	fmt.Sprint(runAsWriteExistsCode) + `; fi; ` +
+	`set -C; : > "${` + runAsWritePathEnv + `}" || exit 1; ` +
+	`cat >> "${` + runAsWritePathEnv + `}" || { rm -f -- "${` + runAsWritePathEnv + `}"; exit 1; }`
+
+// WriteFileAsUser creates path with data as opts.RunAsUser, making missing
+// parent directories, and gives up after 30s. It never replaces an existing
+// name: when path exists the error matches fs.ErrExist. The supervisor itself
+// opens nothing on the path, so a symlink planted along it reaches only what
+// the target user can already write.
+func WriteFileAsUser(ctx context.Context, opts SpawnOptions, path string, data []byte) error {
+	if !opts.IsolationMode() {
+		return errors.New("WriteFileAsUser: run_as_user is not set")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("write as %q: %w", opts.RunAsUser, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := VerifyRunAsUserCheap(ctx, ExecSudoRunner{}, opts.RunAsUser); err != nil {
+		return fmt.Errorf("write as %q refused: %w", opts.RunAsUser, err)
+	}
+	opts.WorkDir = ""
+	opts.EnvAllowlist = append(append([]string(nil), opts.EnvAllowlist...), runAsWriteDirEnv, runAsWritePathEnv)
+	cmd := BuildSpawnCommand(ctx, opts, "/bin/sh", "-c", writeAsUserScript)
+	cmd.Env = FilterEnvForSpawn(MergeEnv(os.Environ(), []string{
+		runAsWriteDirEnv + "=" + filepath.Dir(absPath),
+		runAsWritePathEnv + "=" + absPath,
+	}), opts)
+	// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a child
+	// still holds stderr after sudo is gone.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Stdin = bytes.NewReader(data)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == runAsWriteExistsCode {
+			return fmt.Errorf("write %s as %q: %w", absPath, opts.RunAsUser, fs.ErrExist)
+		}
+		return fmt.Errorf("write %s as %q: %w: %s", absPath, opts.RunAsUser, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // FilterEnvForSpawn strips env down to the merged allowlist when

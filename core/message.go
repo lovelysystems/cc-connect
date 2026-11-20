@@ -1,7 +1,10 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -155,6 +158,14 @@ type FileAttachment struct {
 //	collisions but does not protect against concurrent calls racing on the
 //	same name — that case is fixed only when messageID is provided.
 func SaveFilesToDisk(workDir, messageID string, files []FileAttachment) []string {
+	return SaveFilesToDiskAs(context.Background(), SpawnOptions{}, workDir, messageID, files)
+}
+
+// SaveFilesToDiskAs saves files under workDir/.cc-connect/attachments and
+// returns their paths. When opts sets RunAsUser, the directories and files
+// are created as that user through WriteFileAsUser, which refuses an existing
+// name, and the supervisor opens nothing under workDir.
+func SaveFilesToDiskAs(ctx context.Context, opts SpawnOptions, workDir, messageID string, files []FileAttachment) []string {
 	if len(files) == 0 {
 		return nil
 	}
@@ -183,8 +194,11 @@ func SaveFilesToDisk(workDir, messageID string, files []FileAttachment) []string
 			scoped = true
 		}
 	}
-	if err := os.MkdirAll(attachDir, 0o755); err != nil {
-		slog.Warn("SaveFilesToDisk: mkdir failed", "dir", attachDir, "error", err)
+	asUser := opts.IsolationMode()
+	if !asUser {
+		if err := os.MkdirAll(attachDir, 0o755); err != nil {
+			slog.Warn("SaveFilesToDisk: mkdir failed", "dir", attachDir, "error", err)
+		}
 	}
 
 	var paths []string
@@ -194,7 +208,13 @@ func SaveFilesToDisk(workDir, messageID string, files []FileAttachment) []string
 			fname = fmt.Sprintf("file_%d_%d", time.Now().UnixNano(), i)
 		}
 		fpath := filepath.Join(attachDir, fname)
-		if scoped {
+		if asUser {
+			var ok bool
+			fpath, ok = writeAsUserNoOverwrite(ctx, opts, attachDir, fname, f.Data, scoped)
+			if !ok {
+				continue
+			}
+		} else if scoped {
 			var ok bool
 			fpath, ok = writeUniqueNoOverwrite(attachDir, fname, f.Data)
 			if !ok {
@@ -247,6 +267,40 @@ func writeUniqueNoOverwrite(dir, name string, data []byte) (string, bool) {
 		}
 		return path, true
 	}
+}
+
+// maxAsUserSuffix caps the numeric suffixes writeAsUserNoOverwrite tries.
+// The "exists" answer comes from a script the target user's login profile
+// can fake, so the loop must end on its own.
+const maxAsUserSuffix = 100
+
+// writeAsUserNoOverwrite creates dir/name as opts.RunAsUser. With suffix set,
+// a taken name gets a numeric suffix; without it, a taken name is skipped.
+func writeAsUserNoOverwrite(ctx context.Context, opts SpawnOptions, dir, name string, data []byte, suffix bool) (string, bool) {
+	for i := 0; i <= maxAsUserSuffix; i++ {
+		candidate := name
+		if i > 0 {
+			ext := filepath.Ext(name)
+			stem := strings.TrimSuffix(name, ext)
+			candidate = fmt.Sprintf("%s_%d%s", stem, i, ext)
+		}
+		path := filepath.Join(dir, candidate)
+		err := WriteFileAsUser(ctx, opts, path, data)
+		if err == nil {
+			return path, true
+		}
+		if errors.Is(err, fs.ErrExist) {
+			if suffix {
+				continue
+			}
+			slog.Error("SaveFilesToDisk: refusing to overwrite existing file", "path", path, "error", err)
+			return "", false
+		}
+		slog.Error("SaveFilesToDisk: write as run_as_user failed", "path", path, "error", err)
+		return "", false
+	}
+	slog.Error("SaveFilesToDisk: no free name, skipping file", "dir", dir, "name", name)
+	return "", false
 }
 
 // writeAtomicNoOverwrite writes data to a unique tempfile in dir, then

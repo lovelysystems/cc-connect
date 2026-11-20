@@ -3,6 +3,8 @@ package claudecode
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -881,7 +883,7 @@ func TestHandleControlRequest_PermissionModes(t *testing.T) {
 				events:  make(chan core.Event, 4),
 				ctx:     ctx,
 				stdin:   stdin,
-				ccHooks: newCCPermissionHookRunner(cfgDir),
+				ccHooks: newCCPermissionHookRunner(cfgDir, core.SpawnOptions{}),
 			}
 			cs.alive.Store(true)
 			cs.autoApprove.Store(tc.auto)
@@ -916,5 +918,151 @@ func TestHandleControlRequest_PermissionModes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func newSendTestSession(t *testing.T, workDir string, opts core.SpawnOptions) (*claudeSession, *bufWriteCloser) {
+	t.Helper()
+	stdin := &bufWriteCloser{}
+	cs := &claudeSession{
+		ctx:       context.Background(),
+		stdin:     stdin,
+		workDir:   workDir,
+		spawnOpts: opts,
+	}
+	cs.alive.Store(true)
+	return cs, stdin
+}
+
+func TestSend_RunAsUserWritesImageAsTarget(t *testing.T) {
+	sudo := installFakeSudo(t, "exec", "")
+	workDir := t.TempDir()
+	cs, stdin := newSendTestSession(t, workDir, core.SpawnOptions{RunAsUser: "target"})
+
+	if err := cs.Send("look", "msg-1", []core.ImageAttachment{{MimeType: "image/png", Data: []byte("png-bytes")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(workDir, ".cc-connect", "attachments", "img_*.png"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("saved images = %v (err %v), want one", matches, err)
+	}
+	if got, _ := os.ReadFile(matches[0]); string(got) != "png-bytes" {
+		t.Fatalf("image content = %q", got)
+	}
+	if !strings.Contains(stdin.String(), matches[0]) {
+		t.Fatalf("prompt does not reference %s:\n%s", matches[0], stdin.String())
+	}
+	if !strings.Contains(sudo.calls(t), "CC_RUNAS_WRITE_PATH") {
+		t.Fatalf("image was not written through sudo; sudo log:\n%s", sudo.calls(t))
+	}
+}
+
+func TestSend_RunAsUserImageSaveFailureStillSendsImage(t *testing.T) {
+	installFakeSudo(t, "fail", "")
+	cs, stdin := newSendTestSession(t, t.TempDir(), core.SpawnOptions{RunAsUser: "target"})
+
+	if err := cs.Send("look", "msg-1", []core.ImageAttachment{{MimeType: "image/png", Data: []byte("png-bytes")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var msg struct {
+		Message struct {
+			Content []struct {
+				Type   string `json:"type"`
+				Text   string `json:"text"`
+				Source struct {
+					Data string `json:"data"`
+				} `json:"source"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdin.Bytes()), &msg); err != nil {
+		t.Fatalf("decode sent message: %v\n%s", err, stdin.String())
+	}
+	var sawImage bool
+	for _, part := range msg.Message.Content {
+		switch part.Type {
+		case "image":
+			sawImage = part.Source.Data == base64.StdEncoding.EncodeToString([]byte("png-bytes"))
+		case "text":
+			if strings.Contains(part.Text, "Images also saved locally") {
+				t.Fatalf("text part names a saved path although the save failed:\n%s", part.Text)
+			}
+		}
+	}
+	if !sawImage {
+		t.Fatalf("image part missing after a failed save:\n%s", stdin.String())
+	}
+}
+
+func TestSend_RunAsUserWritesFileAsTarget(t *testing.T) {
+	sudo := installFakeSudo(t, "exec", "")
+	workDir := t.TempDir()
+	cs, stdin := newSendTestSession(t, workDir, core.SpawnOptions{RunAsUser: "target"})
+
+	if err := cs.Send("read", "msg-1", nil, []core.FileAttachment{{FileName: "notes.txt", Data: []byte("hello")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := filepath.Join(workDir, ".cc-connect", "attachments", "msg-1", "notes.txt")
+	if got, err := os.ReadFile(want); err != nil || string(got) != "hello" {
+		t.Fatalf("file content = %q (err %v), want hello", got, err)
+	}
+	if !strings.Contains(stdin.String(), want) {
+		t.Fatalf("prompt does not reference %s:\n%s", want, stdin.String())
+	}
+	if !strings.Contains(sudo.calls(t), "CC_RUNAS_WRITE_PATH") {
+		t.Fatalf("file was not written through sudo; sudo log:\n%s", sudo.calls(t))
+	}
+}
+
+func TestSend_RunAsUserNeverFollowsPlantedAttachmentsLink(t *testing.T) {
+	installFakeSudo(t, "record", "")
+	workDir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, ".cc-connect"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workDir, ".cc-connect", "attachments")); err != nil {
+		t.Fatal(err)
+	}
+	cs, _ := newSendTestSession(t, workDir, core.SpawnOptions{RunAsUser: "target"})
+
+	if err := cs.Send("x", "msg-1",
+		[]core.ImageAttachment{{MimeType: "image/png", Data: []byte("png")}},
+		[]core.FileAttachment{{FileName: "notes.txt", Data: []byte("hello")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("supervisor wrote through the planted link: %v", entries)
+	}
+}
+
+func TestSend_WithoutRunAsUserWritesDirectly(t *testing.T) {
+	sudo := installFakeSudo(t, "record", "")
+	workDir := t.TempDir()
+	cs, _ := newSendTestSession(t, workDir, core.SpawnOptions{})
+
+	if err := cs.Send("x", "msg-1",
+		[]core.ImageAttachment{{MimeType: "image/png", Data: []byte("png")}},
+		[]core.FileAttachment{{FileName: "notes.txt", Data: []byte("hello")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	images, _ := filepath.Glob(filepath.Join(workDir, ".cc-connect", "attachments", "img_*.png"))
+	if len(images) != 1 {
+		t.Fatalf("saved images = %v, want one", images)
+	}
+	if got, err := os.ReadFile(filepath.Join(workDir, ".cc-connect", "attachments", "msg-1", "notes.txt")); err != nil || string(got) != "hello" {
+		t.Fatalf("file content = %q (err %v), want hello", got, err)
+	}
+	if calls := sudo.calls(t); calls != "" {
+		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
 	}
 }

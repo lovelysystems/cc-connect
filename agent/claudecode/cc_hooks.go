@@ -11,8 +11,49 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/chenhg5/cc-connect/core"
 )
+
+// Under run_as_user, settings are read and hooks run through sudo -i, which
+// joins argv into one string for the target's login shell. The scripts below
+// therefore stay on one line, read variables only as "${NAME}", and frame
+// what they print between marker lines so login-profile output is ignored.
+const (
+	settingsBeginMarker = "@@cc-connect-settings-begin"
+	settingsEndMarker   = "@@cc-connect-settings-end"
+	hookBeginMarker     = "@@cc-connect-hook-begin"
+	hookEndMarker       = "@@cc-connect-hook-end"
+	hookWorkDirEnv      = "CC_RUNAS_HOOK_WORKDIR"
+	hookCommandEnv      = "CC_RUNAS_HOOK_COMMAND"
+)
+
+// hookAsUserScript runs the hook command from hookCommandEnv with sh -c and
+// keeps its exit status.
+func hookAsUserScript(withWorkDir bool) string {
+	cd := ""
+	if withWorkDir {
+		cd = `cd "${` + hookWorkDirEnv + `}" || exit 1; `
+	}
+	return cd + `printf '%s\n' '` + hookBeginMarker + `'; ` +
+		`sh -c "${` + hookCommandEnv + `}"; s=$?; ` +
+		`printf '\n%s\n' '` + hookEndMarker + `'; exit "${s}"`
+}
+
+// settingsAsUserScript prints each existing settings file from the target's
+// Claude config home and, when withWorkDir is set, from the work dir in
+// hookWorkDirEnv, in the order settingsPaths uses.
+func settingsAsUserScript(withWorkDir bool) string {
+	files := `"${c}/settings.json" "${c}/settings.local.json"`
+	if withWorkDir {
+		files += ` "${` + hookWorkDirEnv + `}/.claude/settings.json" "${` + hookWorkDirEnv + `}/.claude/settings.local.json"`
+	}
+	return `c="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"; for f in ` + files + `; do ` +
+		`if [ -f "${f}" ]; then printf '\n%s\n' "` + settingsBeginMarker + ` ${f}"; cat -- "${f}"; ` +
+		`printf '\n%s\n' '` + settingsEndMarker + `'; fi; done`
+}
 
 // ccPermissionHookEntry represents one PermissionRequest hook entry from
 // Claude Code's settings.json.
@@ -57,14 +98,16 @@ type hookContext struct {
 // ccPermissionHookRunner reads and executes Claude Code PermissionRequest
 // hooks. Settings are loaded once on first use and reused for the session.
 type ccPermissionHookRunner struct {
-	workDir  string
-	once     sync.Once
-	settings *ccSettings
+	workDir   string
+	spawnOpts core.SpawnOptions
+	once      sync.Once
+	settings  *ccSettings
 }
 
-func newCCPermissionHookRunner(workDir string) *ccPermissionHookRunner {
+func newCCPermissionHookRunner(workDir string, spawnOpts core.SpawnOptions) *ccPermissionHookRunner {
 	return &ccPermissionHookRunner{
-		workDir: workDir,
+		workDir:   workDir,
+		spawnOpts: spawnOpts,
 	}
 }
 
@@ -75,7 +118,13 @@ func (r *ccPermissionHookRunner) tryHook(
 	ctx context.Context,
 	hctx hookContext,
 ) (ccHookDecision, bool) {
-	r.once.Do(func() { r.settings = r.loadSettings() })
+	r.once.Do(func() {
+		if r.spawnOpts.IsolationMode() {
+			r.settings = r.loadSettingsAsUser(ctx)
+		} else {
+			r.settings = r.loadSettings()
+		}
+	})
 	if r.settings == nil {
 		return ccHookDecision{}, false
 	}
@@ -90,7 +139,13 @@ func (r *ccPermissionHookRunner) tryHook(
 				continue
 			}
 			stdinData := buildHookStdin(hctx)
-			decision, err := runHookCommand(ctx, h.Command, stdinData)
+			var decision ccHookDecision
+			var err error
+			if r.spawnOpts.IsolationMode() {
+				decision, err = runHookCommandAsUser(ctx, r.spawnOpts, r.workDir, h.Command, stdinData)
+			} else {
+				decision, err = runHookCommand(ctx, h.Command, stdinData)
+			}
 			if err != nil {
 				slog.Warn("ccHooks: hook command failed",
 					"command", truncateStr(h.Command, 80), "error", err)
@@ -127,6 +182,103 @@ func (r *ccPermissionHookRunner) loadSettings() *ccSettings {
 	return merged
 }
 
+// loadSettingsAsUser reads and merges the settings files as the run_as_user
+// user, in one spawn. Any failure leaves the session without hooks.
+func (r *ccPermissionHookRunner) loadSettingsAsUser(ctx context.Context) *ccSettings {
+	out, err := r.readSettingsAsUser(ctx)
+	if err != nil {
+		slog.Warn("ccHooks: reading settings as run_as_user failed", "user", r.spawnOpts.RunAsUser, "error", err)
+		return nil
+	}
+	merged := &ccSettings{}
+	found := false
+	for _, f := range parseFramedSettings(out) {
+		s, err := parseSettings(f.path, f.data)
+		if err != nil {
+			slog.Debug("ccHooks: skipping settings file", "path", f.path, "error", err)
+			continue
+		}
+		merged.Hooks.PermissionRequest = append(merged.Hooks.PermissionRequest, s.Hooks.PermissionRequest...)
+		found = true
+	}
+	if !found {
+		slog.Debug("ccHooks: no settings files found", "user", r.spawnOpts.RunAsUser)
+		return nil
+	}
+	return merged
+}
+
+func (r *ccPermissionHookRunner) readSettingsAsUser(ctx context.Context) ([]byte, error) {
+	if err := verifyRunAsUser(ctx, r.spawnOpts.RunAsUser); err != nil {
+		return nil, fmt.Errorf("run_as_user spawn refused: %w", err)
+	}
+
+	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	opts := r.spawnOpts
+	opts.WorkDir = ""
+	opts.EnvAllowlist = append(append([]string(nil), opts.EnvAllowlist...), hookWorkDirEnv)
+	env, err := withHookWorkDirEnv(os.Environ(), r.workDir)
+	if err != nil {
+		return nil, err
+	}
+	cmd := core.BuildSpawnCommand(readCtx, opts, "/bin/sh", "-c", settingsAsUserScript(r.workDir != ""))
+	// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a child
+	// still holds stdout after sudo is gone.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Env = core.FilterEnvForSpawn(env, opts)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("read settings: %w (stderr: %s)", err, truncateStr(strings.TrimSpace(stderr.String()), 200))
+	}
+	return stdout.Bytes(), nil
+}
+
+// withHookWorkDirEnv sets hookWorkDirEnv in env to workDir made absolute.
+func withHookWorkDirEnv(env []string, workDir string) ([]string, error) {
+	if workDir == "" {
+		return env, nil
+	}
+	absWorkDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve work dir: %w", err)
+	}
+	return core.MergeEnv(env, []string{hookWorkDirEnv + "=" + absWorkDir}), nil
+}
+
+type framedSettingsFile struct {
+	path string
+	data []byte
+}
+
+// parseFramedSettings returns the files settingsAsUserScript printed, in
+// order, ignoring every line outside a frame.
+func parseFramedSettings(out []byte) []framedSettingsFile {
+	var files []framedSettingsFile
+	var cur *framedSettingsFile
+	var body []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if cur == nil {
+			if path, ok := strings.CutPrefix(line, settingsBeginMarker+" "); ok {
+				cur = &framedSettingsFile{path: path}
+				body = nil
+			}
+			continue
+		}
+		if line == settingsEndMarker {
+			cur.data = []byte(strings.Join(body, "\n"))
+			files = append(files, *cur)
+			cur = nil
+			continue
+		}
+		body = append(body, line)
+	}
+	return files
+}
+
 // settingsPaths returns the settings.json paths to read, in order.
 func settingsPaths(workDir string) []string {
 	configHome := claudeConfigHomeDir()
@@ -149,6 +301,12 @@ func readSettingsFile(path string) (*ccSettings, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseSettings(path, data)
+}
+
+// parseSettings parses the contents of one settings.json, stripping JSONC
+// comments.
+func parseSettings(path string, data []byte) (*ccSettings, error) {
 	cleaned := stripJSONC(data)
 	var s ccSettings
 	if err := json.Unmarshal(cleaned, &s); err != nil {
@@ -266,6 +424,75 @@ func runHookCommand(
 	}
 
 	return parseHookOutput(stdout.Bytes())
+}
+
+// runHookCommandAsUser runs a hook command as the run_as_user user through
+// sudo, with tool info on stdin.
+func runHookCommandAsUser(
+	ctx context.Context,
+	opts core.SpawnOptions,
+	workDir string,
+	command string,
+	stdinData map[string]any,
+) (ccHookDecision, error) {
+	stdinJSON, err := json.Marshal(stdinData)
+	if err != nil {
+		return ccHookDecision{}, fmt.Errorf("marshal stdin: %w", err)
+	}
+	env := filterEnv(os.Environ(), "CC_CONNECT_PERMISSION_HOOK_SKIP")
+	env = core.MergeEnv(env, []string{hookCommandEnv + "=" + command})
+	env, err = withHookWorkDirEnv(env, workDir)
+	if err != nil {
+		return ccHookDecision{}, err
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	if err := verifyRunAsUser(timeoutCtx, opts.RunAsUser); err != nil {
+		return ccHookDecision{}, fmt.Errorf("run_as_user spawn refused: %w", err)
+	}
+
+	opts.WorkDir = ""
+	opts.EnvAllowlist = append(append([]string(nil), opts.EnvAllowlist...), hookCommandEnv, hookWorkDirEnv)
+	cmd := core.BuildSpawnCommand(timeoutCtx, opts, "/bin/sh", "-c", hookAsUserScript(workDir != ""))
+	// sudo relays SIGTERM to the hook but cannot relay the SIGKILL
+	// CommandContext sends by default. WaitDelay stops Wait from blocking on
+	// a child that still holds stdout after sudo is gone.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Stdin = bytes.NewReader(stdinJSON)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.Env = core.FilterEnvForSpawn(env, opts)
+
+	if err := cmd.Run(); err != nil {
+		return ccHookDecision{}, fmt.Errorf("hook exec as %q: %w (stderr: %s)", opts.RunAsUser, err, truncateStr(strings.TrimSpace(stderr.String()), 200))
+	}
+
+	out, ok := framedHookOutput(stdout.Bytes())
+	if !ok {
+		return ccHookDecision{}, fmt.Errorf("hook exec as %q: no framed output", opts.RunAsUser)
+	}
+	return parseHookOutput(out)
+}
+
+// framedHookOutput returns what the hook printed between the markers
+// hookAsUserScript writes.
+func framedHookOutput(out []byte) ([]byte, bool) {
+	begin := []byte(hookBeginMarker + "\n")
+	end := []byte("\n" + hookEndMarker)
+	start := bytes.Index(out, begin)
+	if start < 0 {
+		return nil, false
+	}
+	rest := out[start+len(begin):]
+	stop := bytes.LastIndex(rest, end)
+	if stop < 0 {
+		return nil, false
+	}
+	return rest[:stop], true
 }
 
 // parseHookOutput parses hook stdout into a decision.

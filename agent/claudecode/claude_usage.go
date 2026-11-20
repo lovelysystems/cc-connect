@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -46,9 +47,20 @@ type claudeUsageProbeState struct {
 	usageSentAt     time.Time
 }
 
+// usageProbeAsUserScript starts the usage probe's claude in a fixed dir under
+// the run_as_user user's HOME. sudo -i joins argv into one string for the
+// login shell, so the flags live in the script, which stays on one line and
+// reads variables only as "${NAME}".
+const usageProbeAsUserScript = `d="${HOME}/.cc-connect/usage-probe"; mkdir -p -- "${d}" && cd -- "${d}" && ` +
+	`export DISABLE_TELEMETRY=true DISABLE_COST_WARNINGS=true && ` +
+	`exec claude --tools '' --permission-mode plan --no-chrome`
+
 func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		return nil, fmt.Errorf("claudecode: 'claude' CLI not found in PATH")
+	// Under run_as_user the target user's PATH decides where claude is.
+	if !a.spawnOpts.IsolationMode() {
+		if _, err := exec.LookPath("claude"); err != nil {
+			return nil, fmt.Errorf("claudecode: 'claude' CLI not found in PATH")
+		}
 	}
 
 	screen, err := a.runClaudeUsageProbe(ctx)
@@ -58,23 +70,40 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	return parseClaudeUsageReport(screen, time.Now())
 }
 
-func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
-	probeCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func (a *Agent) usageProbeCmd(ctx context.Context, env []string) (*exec.Cmd, func(), error) {
+	if a.spawnOpts.IsolationMode() {
+		if err := verifyRunAsUser(ctx, a.spawnOpts.RunAsUser); err != nil {
+			return nil, nil, fmt.Errorf("claudecode: usage probe as run_as_user refused: %w", err)
+		}
+		opts := a.spawnOpts
+		opts.WorkDir = ""
+		cmd := core.BuildSpawnCommand(ctx, opts, "/bin/sh", "-c", usageProbeAsUserScript)
+		// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a
+		// child still holds stderr after sudo is gone.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+		cmd.WaitDelay = 2 * time.Second
+		cmd.Env = core.FilterEnvForSpawn(env, opts)
+		return cmd, func() {}, nil
+	}
 
 	workDir, err := os.MkdirTemp("", "cc-connect-claude-usage-*")
 	if err != nil {
-		return "", fmt.Errorf("claudecode: create usage temp dir: %w", err)
+		return nil, nil, fmt.Errorf("claudecode: create usage temp dir: %w", err)
 	}
-	defer os.RemoveAll(workDir)
-
 	args := []string{
 		"--tools", "",
 		"--permission-mode", "plan",
 		"--no-chrome",
 	}
-	cmd := exec.CommandContext(probeCtx, "claude", args...)
+	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = workDir
+	cmd.Env = env
+	return cmd, func() { _ = os.RemoveAll(workDir) }, nil
+}
+
+func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	env := filterEnv(os.Environ(), "CLAUDECODE")
 	env = append(env, "DISABLE_TELEMETRY=true")
@@ -82,9 +111,14 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 	if extra := a.usageProbeEnv(); len(extra) > 0 {
 		env = core.MergeEnv(env, extra)
 	}
-	cmd.Env = env
 
-	var stderr bytes.Buffer
+	cmd, cleanup, err := a.usageProbeCmd(probeCtx, env)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	var stderr lockedBuffer
 	cmd.Stderr = &stderr
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
@@ -101,7 +135,7 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 
 	terminal := newClaudeUsageTerminal()
 	readDone := make(chan error, 1)
-	go func() {
+	go func(done chan<- error) {
 		buf := make([]byte, 4096)
 		for {
 			n, err := ptmx.Read(buf)
@@ -110,14 +144,14 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 			}
 			if err != nil {
 				if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
-					readDone <- nil
+					done <- nil
 				} else {
-					readDone <- err
+					done <- err
 				}
 				return
 			}
 		}
-	}()
+	}(readDone)
 
 	defer func() {
 		if err := ptmx.Close(); err != nil {
@@ -125,7 +159,9 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 		}
 		cancel()
 		// Wait for reader goroutine to finish so it is never leaked.
-		<-readDone
+		if readDone != nil {
+			<-readDone
+		}
 		select {
 		case <-processDone:
 		case <-time.After(2 * time.Second):
@@ -159,6 +195,7 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 			}
 			return "", fmt.Errorf("claudecode: timed out waiting for Claude Code /usage panel: %w", probeCtx.Err())
 		case err := <-readDone:
+			readDone = nil
 			if err != nil {
 				return "", fmt.Errorf("claudecode: read Claude Code /usage output: %w", err)
 			}
@@ -197,6 +234,25 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 			}
 		}
 	}
+}
+
+// lockedBuffer collects the probe's stderr, which exec copies in from its own
+// goroutine while the poll loop reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (a *Agent) usageProbeEnv() []string {
