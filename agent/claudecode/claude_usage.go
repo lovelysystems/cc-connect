@@ -70,6 +70,37 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	return parseClaudeUsageReport(screen, time.Now())
 }
 
+func (a *Agent) usageProbeCmd(ctx context.Context, env []string) (*exec.Cmd, func(), error) {
+	if a.spawnOpts.IsolationMode() {
+		if err := verifyRunAsUser(ctx, a.spawnOpts.RunAsUser); err != nil {
+			return nil, nil, fmt.Errorf("claudecode: usage probe as run_as_user refused: %w", err)
+		}
+		opts := a.spawnOpts
+		opts.WorkDir = ""
+		cmd := core.BuildSpawnCommand(ctx, opts, "/bin/sh", "-c", usageProbeAsUserScript)
+		// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a
+		// child still holds stderr after sudo is gone.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+		cmd.WaitDelay = 2 * time.Second
+		cmd.Env = core.FilterEnvForSpawn(env, opts)
+		return cmd, func() {}, nil
+	}
+
+	workDir, err := os.MkdirTemp("", "cc-connect-claude-usage-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("claudecode: create usage temp dir: %w", err)
+	}
+	args := []string{
+		"--tools", "",
+		"--permission-mode", "plan",
+		"--no-chrome",
+	}
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Dir = workDir
+	cmd.Env = env
+	return cmd, func() { _ = os.RemoveAll(workDir) }, nil
+}
+
 func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -81,35 +112,11 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 		env = core.MergeEnv(env, extra)
 	}
 
-	var cmd *exec.Cmd
-	if a.spawnOpts.IsolationMode() {
-		if err := verifyRunAsUser(probeCtx, a.spawnOpts.RunAsUser); err != nil {
-			return "", fmt.Errorf("claudecode: usage probe as run_as_user refused: %w", err)
-		}
-		opts := a.spawnOpts
-		opts.WorkDir = ""
-		cmd = core.BuildSpawnCommand(probeCtx, opts, "/bin/sh", "-c", usageProbeAsUserScript)
-		// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a
-		// child still holds stderr after sudo is gone.
-		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-		cmd.WaitDelay = 2 * time.Second
-		cmd.Env = core.FilterEnvForSpawn(env, opts)
-	} else {
-		workDir, err := os.MkdirTemp("", "cc-connect-claude-usage-*")
-		if err != nil {
-			return "", fmt.Errorf("claudecode: create usage temp dir: %w", err)
-		}
-		defer func() { _ = os.RemoveAll(workDir) }()
-
-		args := []string{
-			"--tools", "",
-			"--permission-mode", "plan",
-			"--no-chrome",
-		}
-		cmd = exec.CommandContext(probeCtx, "claude", args...)
-		cmd.Dir = workDir
-		cmd.Env = env
+	cmd, cleanup, err := a.usageProbeCmd(probeCtx, env)
+	if err != nil {
+		return "", err
 	}
+	defer cleanup()
 
 	var stderr lockedBuffer
 	cmd.Stderr = &stderr

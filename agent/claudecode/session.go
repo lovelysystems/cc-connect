@@ -993,10 +993,10 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 		}
 		if err != nil {
 			slog.Error("claudeSession: save image failed", "error", err)
-			continue
+		} else {
+			savedPaths = append(savedPaths, fpath)
+			slog.Debug("claudeSession: image saved", "path", fpath, "size", len(img.Data))
 		}
-		savedPaths = append(savedPaths, fpath)
-		slog.Debug("claudeSession: image saved", "path", fpath, "size", len(img.Data))
 
 		mimeType := img.MimeType
 		if mimeType == "" {

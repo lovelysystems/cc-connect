@@ -20,7 +20,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 #### Fix
 
 - **claudecode**: with `run_as_user`, read and run settings hooks, run the usage readout and
-  write inbound attachments as the target user (upstream: pending)
+  write inbound attachments as the target user; hooks in the supervisor's `~/.claude` no
+  longer run (upstream: pending)
 
 ### 2026-11-09 / v1.5.0-ls.3
 

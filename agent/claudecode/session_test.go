@@ -3,6 +3,8 @@ package claudecode
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -953,6 +955,44 @@ func TestSend_RunAsUserWritesImageAsTarget(t *testing.T) {
 	}
 	if !strings.Contains(sudo.calls(t), "CC_RUNAS_WRITE_PATH") {
 		t.Fatalf("image was not written through sudo; sudo log:\n%s", sudo.calls(t))
+	}
+}
+
+func TestSend_RunAsUserImageSaveFailureStillSendsImage(t *testing.T) {
+	installFakeSudo(t, "fail", "")
+	cs, stdin := newSendTestSession(t, t.TempDir(), core.SpawnOptions{RunAsUser: "target"})
+
+	if err := cs.Send("look", "msg-1", []core.ImageAttachment{{MimeType: "image/png", Data: []byte("png-bytes")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var msg struct {
+		Message struct {
+			Content []struct {
+				Type   string `json:"type"`
+				Text   string `json:"text"`
+				Source struct {
+					Data string `json:"data"`
+				} `json:"source"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdin.Bytes()), &msg); err != nil {
+		t.Fatalf("decode sent message: %v\n%s", err, stdin.String())
+	}
+	var sawImage bool
+	for _, part := range msg.Message.Content {
+		switch part.Type {
+		case "image":
+			sawImage = part.Source.Data == base64.StdEncoding.EncodeToString([]byte("png-bytes"))
+		case "text":
+			if strings.Contains(part.Text, "Images also saved locally") {
+				t.Fatalf("text part names a saved path although the save failed:\n%s", part.Text)
+			}
+		}
+	}
+	if !sawImage {
+		t.Fatalf("image part missing after a failed save:\n%s", stdin.String())
 	}
 }
 

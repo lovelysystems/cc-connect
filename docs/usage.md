@@ -344,8 +344,8 @@ per-spawn check as the agent:
 - **PermissionRequest hooks.** The hook settings are read as the target
   user from the target's Claude config home (`$CLAUDE_CONFIG_DIR`, else
   `~/.claude`) and from `<work_dir>/.claude/settings.json` and
-  `settings.local.json`. Each hook command runs as the target user. Hooks
-  in the supervisor's own `~/.claude` are not used.
+  `settings.local.json`. Each hook command runs as the target user in the
+  work dir. Hooks in the supervisor's own `~/.claude` are not used.
 - **The usage readout.** Its `claude` process runs as the target user in
   the target's `~/.cc-connect/usage-probe`.
 - **Inbound images and files.** They are written as the target user into
@@ -355,13 +355,15 @@ per-spawn check as the agent:
 
 If sudo or the per-spawn check fails, the action fails and nothing runs
 as the supervisor instead: the hook is skipped and the request goes to
-the chat's permission prompt, the usage readout returns an error, and the
-attachment is skipped with a log line. The hook settings are read once
+the chat's permission prompt, the usage readout returns an error, and a
+file attachment is skipped with a log line while an image still reaches the
+agent inline. The hook settings are read once
 per session: if that read fails, the session runs no hooks and every
 request goes to the chat's permission prompt for the rest of the session.
 
 If `<work_dir>/.cc-connect` exists and the target user cannot write it,
-every attachment is skipped until you hand it over:
+every file attachment is skipped, and images reach the agent only inline,
+until you hand it over:
 
 ```bash
 sudo chown -hR <target-user> <work_dir>/.cc-connect

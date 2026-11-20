@@ -625,6 +625,28 @@ func TestTryHook_RunAsUserReadsWorkDirSettingsAsTarget(t *testing.T) {
 	}
 }
 
+func TestTryHook_RunAsUserRunsHookInWorkDir(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	installFakeSudo(t, "exec", "")
+	workDir := filepath.Join(t.TempDir(), "work dir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realWorkDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHookSettings(t, filepath.Join(workDir, ".claude", "settings.json"), "*",
+		`if [ "$(pwd -P)" = `+testShellQuote(realWorkDir)+` ]; then echo allow; else echo deny; fi`)
+
+	r := newCCPermissionHookRunner(workDir, core.SpawnOptions{RunAsUser: "target"})
+	decision, ok := r.tryHook(context.Background(), hookContext{toolName: "Bash", toolInput: map[string]any{}})
+
+	if !ok || decision.Behavior != "allow" {
+		t.Fatalf("decision = %+v, ok = %v; want allow from a hook run in the work dir", decision, ok)
+	}
+}
+
 func TestTryHook_RunAsUserKeepsMultiLineCommandText(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	installFakeSudo(t, "exec", "")
