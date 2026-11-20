@@ -171,7 +171,17 @@ func signoffFooterTexts(t *testing.T, card map[string]any) (symbol map[string]an
 		t.Fatalf("columns = %v", cols)
 	}
 	symbol = cols[0]["items"].([]map[string]any)[0]
-	return symbol, cols[1]["items"].([]map[string]any)[0]["text"].(string)
+	text := cols[1]["items"].([]map[string]any)[0]
+	if text["type"] != "RichTextBlock" {
+		t.Fatalf("footer text = %v, want a RichTextBlock", text)
+	}
+	for _, run := range text["inlines"].([]map[string]any) {
+		if run["type"] != "TextRun" || run["size"] != "Small" || run["isSubtle"] != true {
+			t.Fatalf("footer run = %v, want a small subtle TextRun", run)
+		}
+		line += run["text"].(string)
+	}
+	return symbol, line
 }
 
 func TestSignoffCardRedrawnWithItsMark(t *testing.T) {
@@ -630,5 +640,16 @@ func TestSignoffFooterLeavesOutAnEmptyName(t *testing.T) {
 	_, line := signoffFooterTexts(t, signoffAdaptiveCard(signoffTestCard(), &core.SignoffMark{Kind: core.SignoffMarkApproved, At: time.Now()}))
 	if strings.HasPrefix(line, " · ") {
 		t.Fatalf("footer = %q", line)
+	}
+}
+
+func TestSignoffFooterKeepsTheNameLiteral(t *testing.T) {
+	const wj = "\u2060"
+	at := time.Date(2026, 11, 17, 9, 42, 0, 0, time.UTC)
+	card := signoffAdaptiveCard(signoffTestCard(), &core.SignoffMark{Kind: core.SignoffMarkApproved, By: "**x** {{DATE(x)}}", At: at})
+	_, line := signoffFooterTexts(t, card)
+	want := "**x** {" + wj + "{DATE(x)}} · {{DATE(2026-11-17T09:42:00Z, COMPACT)}}, {{TIME(2026-11-17T09:42:00Z)}}"
+	if line != want {
+		t.Fatalf("footer = %q, want %q", line, want)
 	}
 }

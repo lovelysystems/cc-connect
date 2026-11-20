@@ -3725,7 +3725,9 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 
 	turnStart := time.Now()
 
-	e.i18n.DetectAndSet(msg.Content)
+	if !msg.KeepLanguage {
+		e.i18n.DetectAndSet(msg.Content)
+	}
 	session.AddHistory("user", msg.Content)
 	// Persist user message immediately so crashes between user input and
 	// assistant reply don't lose it (the assistant-side Save below depends

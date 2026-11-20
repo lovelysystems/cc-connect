@@ -836,7 +836,10 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("platform %q cannot show signoff cards", target.platform.Name()), http.StatusUnprocessableEntity)
 		return
 	}
-	engine.acceptSignoff(target, req)
+	if !engine.acceptSignoff(target, req) {
+		http.Error(w, "request_id and nonce were already used", http.StatusConflict)
+		return
+	}
 	apiJSON(w, http.StatusOK, map[string]string{"status": "posted"})
 }
 

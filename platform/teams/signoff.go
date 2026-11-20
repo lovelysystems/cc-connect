@@ -292,11 +292,14 @@ func signoffFooter(mark core.SignoffMark) map[string]any {
 		symbol["text"], symbol["isSubtle"] = "↻", true
 	}
 	at := mark.At.UTC().Format(time.RFC3339)
-	when := "{{DATE(" + at + ", COMPACT)}}, {{TIME(" + at + ")}}"
-	line := when
-	if mark.Kind != core.SignoffMarkReplaced && strings.TrimSpace(mark.By) != "" {
-		line = mark.By + " · " + when
+	run := func(text string) map[string]any {
+		return map[string]any{"type": "TextRun", "text": text, "size": "Small", "isSubtle": true}
 	}
+	var runs []map[string]any
+	if mark.Kind != core.SignoffMarkReplaced && strings.TrimSpace(mark.By) != "" {
+		runs = append(runs, run(literalBraces(mark.By)+" · "))
+	}
+	runs = append(runs, run("{{DATE("+at+", COMPACT)}}, {{TIME("+at+")}}"))
 	return map[string]any{
 		"type":      "ColumnSet",
 		"separator": true,
@@ -304,7 +307,7 @@ func signoffFooter(mark core.SignoffMark) map[string]any {
 		"columns": []map[string]any{
 			{"type": "Column", "width": "auto", "verticalContentAlignment": "Center", "items": []map[string]any{symbol}},
 			{"type": "Column", "width": "stretch", "verticalContentAlignment": "Center", "items": []map[string]any{
-				{"type": "TextBlock", "text": line, "size": "Small", "isSubtle": true, "wrap": true},
+				{"type": "RichTextBlock", "inlines": runs},
 			}},
 		},
 	}

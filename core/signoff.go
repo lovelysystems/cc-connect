@@ -68,11 +68,7 @@ func (r *SignoffRequest) validate() error {
 	if strings.Contains(r.RequestID, ":") || strings.Contains(r.Nonce, ":") {
 		return errors.New("request_id and nonce must not contain ':'")
 	}
-	for _, f := range []struct{ name, value string }{
-		{"title", r.Title},
-		{"confirm_label", r.ConfirmLabel},
-		{"cancel_label", r.CancelLabel},
-	} {
+	for _, f := range required {
 		if hasControlChar(f.value) {
 			return fmt.Errorf("%s holds a control character", f.name)
 		}
@@ -144,6 +140,9 @@ type signoffs struct {
 	// holds are the reservations of report turns that have not started yet,
 	// per session.
 	holds map[*Session][]<-chan struct{}
+	// accepted holds the confirm value of every request accepted in this
+	// process, so a request_id and nonce pair draws at most one card.
+	accepted map[string]bool
 
 	exec      string        // shell command run on Approve
 	execLimit time.Duration // zero means signoffExecLimit
@@ -205,7 +204,9 @@ func (e *Engine) signoffTarget(sessionKey string) (t signoffTarget, ok bool) {
 // acceptSignoff takes a validated card for the session t was looked up for.
 // The card is posted under the final reply of the turn holding the session,
 // or when that turn lets go of the session, or at once when no turn holds it.
-func (e *Engine) acceptSignoff(t signoffTarget, req SignoffRequest) {
+// It returns false, and takes nothing, when the request's request_id and nonce
+// were already accepted.
+func (e *Engine) acceptSignoff(t signoffTarget, req SignoffRequest) bool {
 	c := &signoffCard{
 		req:        req,
 		card:       buildSignoffCard(&req),
@@ -218,7 +219,17 @@ func (e *Engine) acceptSignoff(t signoffTarget, req SignoffRequest) {
 	session := sessions.GetOrCreateActive(req.SessionKey)
 	released := session.Released()
 
+	key := req.confirmValue()
 	e.signoff.mu.Lock()
+	if e.signoff.accepted[key] {
+		e.signoff.mu.Unlock()
+		slog.Warn("signoff: request_id and nonce were already used", "session", req.SessionKey, "request_id", req.RequestID)
+		return false
+	}
+	if e.signoff.accepted == nil {
+		e.signoff.accepted = make(map[string]bool)
+	}
+	e.signoff.accepted[key] = true
 	if e.signoff.pending == nil {
 		e.signoff.pending = make(map[*Session][]*signoffCard)
 	}
@@ -233,6 +244,7 @@ func (e *Engine) acceptSignoff(t signoffTarget, req SignoffRequest) {
 		case <-e.ctx.Done():
 		}
 	}()
+	return true
 }
 
 // postSignoffCards posts the cards waiting for session, in the order they
@@ -447,11 +459,12 @@ func (e *Engine) runSignoffReport(c *signoffCard, session *Session, granted <-ch
 		workspaceDir = strings.TrimSuffix(iKey, ":"+c.sessionKey)
 	}
 	msg := &Message{
-		SessionKey:  c.sessionKey,
-		Platform:    c.platform.Name(),
-		Content:     report,
-		ReplyCtx:    c.replyCtx,
-		Placeholder: placeholder,
+		SessionKey:   c.sessionKey,
+		Platform:     c.platform.Name(),
+		Content:      report,
+		ReplyCtx:     c.replyCtx,
+		Placeholder:  placeholder,
+		KeepLanguage: true,
 	}
 	e.dropSignoffHold(session, granted)
 	e.processInteractiveMessageWith(c.platform, msg, session, agent, sessions, iKey, workspaceDir, c.sessionKey)

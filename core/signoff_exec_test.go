@@ -141,6 +141,15 @@ func TestSignoffExecOutcomeArrivesWhileADescendantHoldsStderr(t *testing.T) {
 	}
 }
 
+func TestSignoffExecOutcomeCountsWhenTheShellExitedZeroAndADescendantOutlivesTheLimit(t *testing.T) {
+	e := newSignoffExecEngine(t, `sleep 5 & echo '{"outcome":"published","message":"live"}'`)
+	e.signoff.execLimit = 300 * time.Millisecond
+
+	if outcome, message := e.runSignoffExec(signoffExecTestInput); outcome != SignoffPublished || message != "live" {
+		t.Fatalf("outcome, message = %q, %q; want published, live", outcome, message)
+	}
+}
+
 func TestSignoffExecSkipsTheShellProfile(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "profile-ran")

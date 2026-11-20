@@ -144,6 +144,35 @@ func TestSignoffAPIRefusesMalformedRequests(t *testing.T) {
 	}
 }
 
+func TestSignoffAPIRefusesARequestIDAndNonceItAlreadyAccepted(t *testing.T) {
+	p := &signoffTestPlatform{}
+	e := signoffAPIEngine(t, &signoffTestAgent{runAs: "claude"}, p, 100)
+	api := &APIServer{engines: map[string]*Engine{"test": e}, signoffCaller: callerUnder(100)}
+	body := signoffAPIBody(t, nil)
+	if rec := postSignoff(api, body); rec.Code != http.StatusOK {
+		t.Fatalf("first request: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	p.waitFor(t, "card:r1")
+
+	rec := postSignoff(api, body)
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "request_id and nonce were already used" {
+		t.Fatalf("second request: status %d, body %s; want 409", rec.Code, rec.Body.String())
+	}
+	time.Sleep(100 * time.Millisecond)
+	cards := 0
+	for _, entry := range p.entries() {
+		if entry == "card:r1" {
+			cards++
+		}
+	}
+	e.signoff.mu.Lock()
+	pending := len(e.signoff.pending)
+	e.signoff.mu.Unlock()
+	if cards != 1 || pending != 0 {
+		t.Fatalf("cards posted = %d, sessions with pending cards = %d; want 1, 0", cards, pending)
+	}
+}
+
 func TestSignoffAPIRefusesASessionKeyWithNoLiveSession(t *testing.T) {
 	p := &signoffTestPlatform{}
 	e := signoffAPIEngine(t, &signoffTestAgent{runAs: "claude"}, p, 100)

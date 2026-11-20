@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -30,10 +29,11 @@ type signoffExecOutput struct {
 }
 
 // runSignoffExec runs signoff_exec for an approved card and returns its
-// outcome and one-line message. A command that is unset, exits non-zero,
-// prints anything but one valid JSON object or outlives the limit gives
-// failed with no message. Once the command has ended, the rest of its process
-// group is killed.
+// outcome and one-line message. A command that is unset, exits non-zero, is
+// killed at the limit or prints anything but one valid JSON object gives failed
+// with no message. A command that exited zero is read from its stdout even when
+// a descendant held a pipe past the limit. Once the command has ended, the rest
+// of its process group is killed.
 //
 // The command runs through the project's shell and flag without
 // shell_profile, from /, so nothing in a directory or profile the agent's
@@ -81,12 +81,14 @@ func (e *Engine) runSignoffExec(in signoffExecInput) (outcome, message string) {
 
 	err = cmd.Run()
 	killProcessGroup(cmd)
-	if ctx.Err() != nil {
-		slog.Error("signoff: signoff_exec ran past its limit or cc-connect stopped", "request_id", in.RequestID, "limit", limit)
-		return SignoffFailed, ""
-	}
-	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
-		slog.Error("signoff: signoff_exec failed", "request_id", in.RequestID, "error", err)
+	// Run also fails when the shell exited zero but the limit or WaitDelay
+	// ended while a descendant held a pipe; the shell's own exit decides.
+	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		if ctx.Err() != nil {
+			slog.Error("signoff: signoff_exec ran past its limit or cc-connect stopped", "request_id", in.RequestID, "limit", limit)
+		} else {
+			slog.Error("signoff: signoff_exec failed", "request_id", in.RequestID, "error", err)
+		}
 		return SignoffFailed, ""
 	}
 	out, err := parseSignoffExecOutput(stdout.Bytes())

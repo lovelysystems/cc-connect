@@ -456,6 +456,8 @@ type Message struct {
 	// Placeholder is a card already posted for this message's turn; the turn
 	// streams its answer into it and posts no streaming card of its own.
 	Placeholder StreamingCard
+	// KeepLanguage means the turn's text does not change the detected language.
+	KeepLanguage bool
 }
 
 // EventType distinguishes different kinds of agent output.
