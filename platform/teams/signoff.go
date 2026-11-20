@@ -209,7 +209,8 @@ func signoffAdaptiveCard(card *core.Card, mark *core.SignoffMark) map[string]any
 			"title":   literalBraces(b.Text),
 			"tooltip": "",
 			"verb":    b.Value,
-			// Hides Teams' "Your response was sent to the app" note under the card in the desktop app.
+			// Hides Teams' "Your response was sent to the app" note in the
+			// desktop app; Teams web still shows it.
 			"msteams": map[string]any{"feedback": map[string]any{"hide": true}},
 		}
 		if b.Type == "primary" {

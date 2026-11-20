@@ -284,6 +284,9 @@ Open cards are kept in memory only: after a cc-connect restart, a click on an
 older card runs nothing, the card keeps its buttons, and Teams gets the error
 "This card is no longer active." as the answer.
 
+Teams web shows "Your response was sent to the app" under the card after a click;
+the desktop app does not.
+
 ## Connection type
 
 Webhook (Bot Framework) — **a public HTTPS URL is required**. This is inherent
