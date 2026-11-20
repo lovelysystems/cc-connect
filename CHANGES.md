@@ -17,6 +17,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+### 2026-11-20 / v1.5.0-ls.4
+
 #### Fix
 
 - **claudecode**: with `run_as_user`, read and run settings hooks, run the usage readout and
