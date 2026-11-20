@@ -569,6 +569,7 @@ func main() {
 		// Wire shell configuration
 		shell, shellFlag, shellProfile := config.EffectiveShell(cfg, &proj)
 		engine.SetShell(shell, shellFlag, shellProfile)
+		engine.SetSignoffExec(proj.SignoffExec)
 
 		// Wire hooks
 		if len(cfg.Hooks) > 0 {

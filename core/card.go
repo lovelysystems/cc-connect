@@ -68,12 +68,30 @@ type CardSelectOption struct {
 	Value string
 }
 
+// CardText renders one line of plain text in a style. The text is shown as
+// written.
+type CardText struct {
+	Text  string
+	Style CardTextStyle
+}
+
+// CardTextStyle is how a CardText line is drawn.
+type CardTextStyle string
+
+const (
+	CardTextHeading CardTextStyle = "heading" // a section heading
+	CardTextName    CardTextStyle = "name"    // the name of an item
+	CardTextDetail  CardTextStyle = "detail"  // a small line about the item above it
+	CardTextLink    CardTextStyle = "link"    // an address, drawn as a link but not clickable
+)
+
 func (CardMarkdown) cardElement() {}
 func (CardDivider) cardElement()  {}
 func (CardActions) cardElement()  {}
 func (CardNote) cardElement()     {}
 func (CardListItem) cardElement() {}
 func (CardSelect) cardElement()   {}
+func (CardText) cardElement()     {}
 
 // CardButton represents a clickable button inside a CardActions element.
 type CardButton struct {

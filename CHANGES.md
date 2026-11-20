@@ -23,6 +23,12 @@ entry that graduated upstream at the re-base keeps its final marker there.
   write inbound attachments as the target user; hooks in the supervisor's `~/.claude` no
   longer run (upstream: pending)
 
+#### Feature
+
+- **core**: signoff cards — `POST /signoff/send` posts an Approve/Cancel card into a
+  session's thread, Approve runs `signoff_exec`, the agent gets the outcome; drawn on
+  Teams (upstream: pending)
+
 ### 2026-11-09 / v1.5.0-ls.3
 
 #### Fix

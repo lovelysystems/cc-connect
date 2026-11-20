@@ -41,6 +41,7 @@ type Platform struct {
 	graph       graphReader // Microsoft Graph reader for channel files and pasted images (nil unless channel_files_enabled)
 	server      *http.Server
 	dispatchSem chan struct{} // bounds concurrent async dispatch goroutines
+	signoff     signoffCards  // posted signoff cards still open for a click
 }
 
 // sender abstracts the Bot Connector calls for testability.
@@ -51,14 +52,15 @@ type sender interface {
 	fetch(ctx context.Context, url string, withToken bool, maxBytes int64) ([]byte, fetchOutcome)
 }
 
-// Optional-interface assertions: the engine type-switches on these to drive
-// streaming preview and prompt formatting.
+// Optional-interface assertions: the engine type-switches on these optional
+// interfaces to pick what the platform can do.
 var (
 	_ core.ReplyContextReconstructor     = (*Platform)(nil)
 	_ core.FormattingInstructionProvider = (*Platform)(nil)
 	_ core.StreamingCardPlatform         = (*Platform)(nil)
 	_ core.ImageSender                   = (*Platform)(nil)
 	_ core.InlineButtonSender            = (*Platform)(nil)
+	_ core.SignoffCardPlatform           = (*Platform)(nil)
 )
 
 // New builds a Teams platform from the config.toml options table.

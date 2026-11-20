@@ -9,6 +9,7 @@ import (
 // See https://learn.microsoft.com/azure/bot-service/rest-api/bot-framework-rest-connector-api-reference.
 type activity struct {
 	Type         string              `json:"type"`
+	Name         string              `json:"name"`
 	ID           string              `json:"id"`
 	Text         string              `json:"text"`
 	ServiceURL   string              `json:"serviceUrl"`
@@ -195,6 +196,19 @@ func (a *activity) cardAction() string {
 		}
 	}
 	return ""
+}
+
+// invokeVerb returns the verb of an adaptiveCard/action invoke.
+func (a *activity) invokeVerb() string {
+	var v struct {
+		Action struct {
+			Verb string `json:"verb"`
+		} `json:"action"`
+	}
+	if err := json.Unmarshal(a.Value, &v); err != nil {
+		return ""
+	}
+	return v.Action.Verb
 }
 
 // cardActionReply maps a card Action.Submit value to the message content the

@@ -585,6 +585,12 @@ type AgentSessionCanceller interface {
 	CancelTurn() error
 }
 
+// AgentProcessReporter is an optional interface for agent sessions backed by a
+// local process. Pid returns 0 when no process runs.
+type AgentProcessReporter interface {
+	Pid() int
+}
+
 // CommandProvider is an optional interface for agents that expose custom slash
 // commands via local files (e.g. .claude/commands/*.md). The engine scans the
 // returned directories for *.md files and registers them as slash commands.
@@ -708,10 +714,56 @@ type StreamingCard interface {
 // StreamingCardPlatform is an optional interface for platforms that support
 // aggregating an entire agent turn into a single updatable card message
 // (e.g. DingTalk AI Card). When the engine detects this interface, it
-// creates a streaming card at the start of each turn and routes all
-// events through it instead of sending individual messages.
+// creates a streaming card at the start of each turn, unless one was already
+// posted for the turn, and routes all events through it instead of sending
+// individual messages.
 type StreamingCardPlatform interface {
 	CreateStreamingCard(ctx context.Context, replyCtx any) (StreamingCard, error)
+}
+
+// SignoffCardPlatform is an optional interface for platforms that can post a
+// signoff card and route its button clicks back. The card is a header, CardText
+// lines and one CardActions row; the platform keeps what it needs to redraw the
+// card and to route a click in memory only. onClick receives the value of the
+// clicked button and who clicked it, for a click in the thread the card was
+// posted in; it decides whether the click counts. For a click that counts it
+// returns the mark to draw under the card and resolve: the platform draws the
+// card without its buttons and with the mark, then calls resolve once, off the
+// goroutine that took the click. resolve is nil for a click that does not count.
+type SignoffCardPlatform interface {
+	PostSignoffCard(ctx context.Context, replyCtx any, card *Card, onClick func(value string, by SignoffClicker) (mark SignoffMark, resolve func())) (SignoffCardHandle, error)
+}
+
+// SignoffCardHandle is a posted signoff card.
+type SignoffCardHandle interface {
+	// Thread names the thread the card was posted in.
+	Thread() string
+	// Redraw draws a replaced card once more without its buttons and with mark
+	// under it. After Redraw the platform routes no more clicks for the card.
+	Redraw(ctx context.Context, mark SignoffMark) error
+}
+
+// SignoffClicker is who clicked a signoff card button: the platform user id
+// and display name.
+type SignoffClicker struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SignoffMarkKind is what ended a signoff card.
+type SignoffMarkKind int
+
+const (
+	SignoffMarkApproved SignoffMarkKind = iota
+	SignoffMarkCancelled
+	SignoffMarkReplaced
+)
+
+// SignoffMark is drawn under a signoff card once it is resolved.
+type SignoffMark struct {
+	Kind SignoffMarkKind
+	By   string // the clicker's name; empty for a replaced card
+	At   time.Time
 }
 
 // CardStatus represents the visual status of a card header.

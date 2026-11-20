@@ -120,11 +120,11 @@ type Config struct {
 	// configuration is intentionally not supported.
 	WorkspaceIdleTimeoutMins *int `toml:"workspace_idle_timeout_mins,omitempty"`
 	// Shell overrides the default shell used for /shell commands, cron exec,
-	// hooks, and webhook exec. On Unix the default is "sh"; on Windows it is
+	// hooks, webhook exec and signoff_exec. On Unix the default is "sh"; on Windows it is
 	// "powershell.exe". Set to an absolute path (e.g. "/bin/zsh") to use a
 	// different shell. Supported: sh, bash, zsh, fish, cmd, powershell, pwsh.
 	Shell string `toml:"shell,omitempty"`
-	// ShellProfile is prepended to every shell command before execution. Useful
+	// ShellProfile is prepended to every shell command but signoff_exec before execution. Useful
 	// for sourcing shell profiles so that user-defined functions and aliases are
 	// available. Example: "source ~/.zshrc"
 	ShellProfile string `toml:"shell_profile,omitempty"`
@@ -564,6 +564,10 @@ type ProjectConfig struct {
 	Shell string `toml:"shell,omitempty"`
 	// ShellProfile overrides the global shell_profile for this project.
 	ShellProfile string `toml:"shell_profile,omitempty"`
+	// SignoffExec is the shell command run as cc-connect's own user when an
+	// editor approves a signoff card. It reads the click as JSON on stdin and
+	// answers the outcome as JSON on stdout.
+	SignoffExec string `toml:"signoff_exec,omitempty"`
 }
 
 type AgentConfig struct {
