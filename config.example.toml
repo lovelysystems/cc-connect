@@ -303,22 +303,24 @@ level = "info" # debug, info, warn, error
 # A newer card in the same thread replaces every older open card there.
 # 同一线程中较新的卡片会替换该线程中所有较早的未决卡片。
 #
-# signoff_exec runs as cc-connect's own user when Approve is clicked, through the
-# project's shell and flag but WITHOUT shell_profile, from "/". Use absolute paths.
-# signoff_exec 在点击「同意」时以 cc-connect 自身的用户运行，使用项目的 shell 和 flag，
-# 但不加载 shell_profile，工作目录为 "/"。请使用绝对路径。
+# signoff_exec runs when Approve is clicked, as the project's run_as_user (as
+# cc-connect's own user when the project has none), through the project's shell
+# and flag but WITHOUT shell_profile, from "/". Use absolute paths.
+# signoff_exec 在点击「同意」时运行：项目设置了 run_as_user 时以该用户运行，否则以
+# cc-connect 自身的用户运行；使用项目的 shell 和 flag，但不加载 shell_profile，
+# 工作目录为 "/"。请使用绝对路径。
 #   stdin:  {"request_id": "r1", "nonce": "<nonce>",
 #            "clicked_by": {"id": "<platform user id, on Teams the Entra object id>",
 #                           "name": "<display name>"}}
 #   stdout: exactly one JSON object {"outcome": "published"|"refused", "message": "<one line, optional>"}
 #   A non-zero exit, any other output, or running past 5 minutes gives the outcome
-#   "failed". When the command exits or reaches the limit, its whole process
-#   group is killed, so no background child keeps running. When cc-connect
-#   stops, the group is killed and no outcome is reported, so its publish must
-#   be all-or-nothing.
-#   非零退出、任何其他输出或运行超过 5 分钟，结果为 "failed"。命令退出或到达时限时，
-#   其整个进程组会被杀死，后台子进程不会继续运行。cc-connect 停止时，进程组会被杀死且
-#   不会报告结果，因此发布操作必须是全有或全无。
+#   "failed". When the command reaches the limit, its whole process group is
+#   stopped; without run_as_user that also happens when it exits, so no
+#   background child keeps running. When cc-connect stops, the group is stopped
+#   and no outcome is reported, so its publish must be all-or-nothing.
+#   非零退出、任何其他输出或运行超过 5 分钟，结果为 "failed"。命令到达时限时，其整个
+#   进程组会被终止；未设置 run_as_user 时，命令退出时也会如此，后台子进程不会继续运行。
+#   cc-connect 停止时，进程组会被终止且不会报告结果，因此发布操作必须是全有或全无。
 #
 # After every outcome the agent gets a turn in the card's session whose text is:
 # 每个结果之后，agent 会在卡片所在会话中收到一轮消息，内容为：

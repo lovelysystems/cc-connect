@@ -564,9 +564,10 @@ type ProjectConfig struct {
 	Shell string `toml:"shell,omitempty"`
 	// ShellProfile overrides the global shell_profile for this project.
 	ShellProfile string `toml:"shell_profile,omitempty"`
-	// SignoffExec is the shell command run as cc-connect's own user when an
-	// editor approves a signoff card. It reads the click as JSON on stdin and
-	// answers the outcome as JSON on stdout.
+	// SignoffExec is the shell command run when an editor approves a signoff
+	// card, as the project's run_as_user when one is set and as cc-connect's
+	// own user otherwise. It reads the click as JSON on stdin and answers the
+	// outcome as JSON on stdout.
 	SignoffExec string `toml:"signoff_exec,omitempty"`
 }
 

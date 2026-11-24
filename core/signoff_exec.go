@@ -12,7 +12,7 @@ import (
 )
 
 // signoffExecLimit is how long signoff_exec may run before its outcome is
-// failed and its process group is killed.
+// failed and its process group is stopped.
 const signoffExecLimit = 5 * time.Minute
 
 // signoffExecInput is the JSON object signoff_exec reads on stdin.
@@ -28,17 +28,19 @@ type signoffExecOutput struct {
 	Message string `json:"message"`
 }
 
-// runSignoffExec runs signoff_exec for an approved card and returns its
-// outcome and one-line message. A command that is unset, exits non-zero, is
-// killed at the limit or prints anything but one valid JSON object gives failed
-// with no message. A command that exited zero is read from its stdout even when
-// a descendant held a pipe past the limit. Once the command has ended, the rest
-// of its process group is killed.
+// runSignoffExec runs signoff_exec for an approved card in sessionKey's
+// session and returns its outcome and one-line message. A command that is
+// unset, exits non-zero, is killed at the limit or prints anything but one
+// valid JSON object gives failed with no message. A command that exited zero
+// is read from its stdout even when a descendant held a pipe past the limit.
 //
 // The command runs through the project's shell and flag without
-// shell_profile, from /, so nothing in a directory or profile the agent's
-// user can write is run with cc-connect's rights.
-func (e *Engine) runSignoffExec(in signoffExecInput) (outcome, message string) {
+// shell_profile, from /. Under run_as_user it runs as that user, and at the
+// limit its process group gets TERM and then KILL. Otherwise it runs as
+// cc-connect's own user, so nothing in a directory or profile the agent's
+// user can write is run, and once it has ended the rest of its process group
+// is killed.
+func (e *Engine) runSignoffExec(sessionKey string, in signoffExecInput) (outcome, message string) {
 	e.signoff.mu.Lock()
 	command, limit := e.signoff.exec, e.signoff.execLimit
 	e.signoff.mu.Unlock()
@@ -57,18 +59,31 @@ func (e *Engine) runSignoffExec(in signoffExecInput) (outcome, message string) {
 
 	ctx, cancel := context.WithTimeout(e.ctx, limit)
 	defer cancel()
-	cmd := shellExecCommand(ctx, e.shell, e.shellFlag, "", command)
-	cmd.Dir = "/"
+	opts := e.commandSpawnOptions()
+	runAs := opts.IsolationMode()
+	cmd, err := buildProjectCommand(ctx, opts, projectCommand{
+		shell: e.shell, flag: e.shellFlag, command: command, dir: "/", env: e.commandEnv(sessionKey),
+	})
+	if err != nil {
+		slog.Error("signoff: signoff_exec not run", "request_id", in.RequestID, "error", err)
+		return SignoffFailed, ""
+	}
 	cmd.Stdin = bytes.NewReader(stdin)
-	// A descendant that left the process group and still holds a pipe must
-	// not keep the session held.
-	cmd.WaitDelay = 2 * time.Second
-	killProcessGroupOnCancel(cmd)
+	if !runAs {
+		// A descendant that left the process group and still holds a pipe
+		// must not keep the session held.
+		cmd.WaitDelay = 2 * time.Second
+		killProcessGroupOnCancel(cmd)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	defer func() {
-		s := strings.TrimSpace(stderr.String())
+		errOut := stderr.Bytes()
+		if runAs {
+			errOut = projectCommandOutput(errOut)
+		}
+		s := strings.TrimSpace(string(errOut))
 		if s == "" {
 			return
 		}
@@ -80,7 +95,9 @@ func (e *Engine) runSignoffExec(in signoffExecInput) (outcome, message string) {
 	}()
 
 	err = cmd.Run()
-	killProcessGroup(cmd)
+	if !runAs {
+		killProcessGroup(cmd)
+	}
 	// Run also fails when the shell exited zero but the limit or WaitDelay
 	// ended while a descendant held a pipe; the shell's own exit decides.
 	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
@@ -91,12 +108,16 @@ func (e *Engine) runSignoffExec(in signoffExecInput) (outcome, message string) {
 		}
 		return SignoffFailed, ""
 	}
-	out, err := parseSignoffExecOutput(stdout.Bytes())
+	out := stdout.Bytes()
+	if runAs {
+		out = projectCommandOutput(out)
+	}
+	answer, err := parseSignoffExecOutput(out)
 	if err != nil {
-		slog.Error("signoff: signoff_exec printed an invalid answer", "request_id", in.RequestID, "error", err, "stdout", truncateStr(stdout.String(), 2000))
+		slog.Error("signoff: signoff_exec printed an invalid answer", "request_id", in.RequestID, "error", err, "stdout", truncateStr(string(out), 2000))
 		return SignoffFailed, ""
 	}
-	return out.Outcome, out.Message
+	return answer.Outcome, answer.Message
 }
 
 // parseSignoffExecOutput reads exactly one JSON object with known fields, an
