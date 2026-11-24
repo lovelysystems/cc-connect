@@ -276,16 +276,15 @@ as replaced. The agent gets no report. The answer is 200 when the card was
 withdrawn, 404 when no such card waits, and 403 for a caller outside the
 session's agent.
 
-**What the agent hears.** After every outcome the agent gets a turn in the
-card's session with this text:
+**What the agent hears.** After a click the agent gets a turn in the card's
+session with this text:
 
 ```
 Signoff <request_id>: <published|refused|cancelled|failed>
-Signoff <request_id>: replaced by <newer request_id>
 ```
 
 When `signoff_exec` answered a `message`, it follows on a second line. The
-nonce is never in it.
+nonce is never in it. A replaced or withdrawn card brings no turn.
 
 Open cards are kept in memory only: after a cc-connect restart, a click on an
 older card runs nothing, the card keeps its buttons, and Teams gets the error

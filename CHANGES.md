@@ -32,6 +32,7 @@ entry that graduated upstream at the re-base keeps its final marker there.
   other users can write the socket's folder (upstream: pending)
 - **core**: `POST /signoff/withdraw` takes back a signoff card nobody clicked yet (upstream:
   pending)
+- **core**: a replaced signoff card no longer sends the agent a report turn (upstream: pending)
 
 ### 2026-11-20 / v1.5.0-ls.4
 

@@ -18,17 +18,19 @@ const SignoffValuePrefix = "signoff:"
 
 const signoffCancelSuffix = ":cancel"
 
-// Outcomes of a signoff card, as the agent's report names them.
+// Outcomes of a clicked signoff card, as the agent's report names them.
 const (
 	SignoffPublished = "published"
 	SignoffRefused   = "refused"
 	SignoffCancelled = "cancelled"
-	SignoffReplaced  = "replaced"
 	SignoffFailed    = "failed"
 )
 
-// SignoffWithdrawn is the logged outcome of a card the agent took back.
-const SignoffWithdrawn = "withdrawn"
+// Logged outcomes of a card that ends without a click.
+const (
+	SignoffReplaced  = "replaced"
+	SignoffWithdrawn = "withdrawn"
+)
 
 // SignoffRequest is the JSON body for POST /signoff/send.
 type SignoffRequest struct {
@@ -319,8 +321,6 @@ func (e *Engine) postSignoffCard(c *signoffCard) {
 		if err := o.handle.Redraw(e.ctx, SignoffMark{Kind: SignoffMarkReplaced, At: time.Now()}); err != nil {
 			slog.Error("signoff: redraw replaced card failed", "session", o.sessionKey, "request_id", o.req.RequestID, "error", err)
 		}
-		session, granted := e.reserveSignoffSession(o.sessionKey)
-		go e.runSignoffReport(o, session, granted, signoffReport(o.req.RequestID, SignoffReplaced+" by "+c.req.RequestID, ""), nil)
 	}
 }
 

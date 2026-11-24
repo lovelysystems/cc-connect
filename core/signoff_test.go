@@ -533,11 +533,7 @@ func TestSignoffNewerCardReplacesTheOlderOneInTheThread(t *testing.T) {
 	if first >= second || second >= replaced {
 		t.Fatalf("log order %q", h.p.entries())
 	}
-	if got := h.agent.nextPrompt(t); got != "Signoff r1: replaced by r2" {
-		t.Fatalf("report = %q", got)
-	}
-	h.agent.answer("noted")
-	h.p.waitFor(t, "final:noted")
+	h.agent.noPrompt(t, 50*time.Millisecond)
 	if n := h.openCards(); n != 1 {
 		t.Fatalf("open cards = %d, want only the newer one", n)
 	}
@@ -993,11 +989,7 @@ func TestSignoffWithdrawDropsACardQueuedBehindAPost(t *testing.T) {
 	}
 	close(hold)
 	h.p.waitFor(t, "card:r1")
-	if got := h.agent.nextPrompt(t); got != "Signoff r0: replaced by r1" {
-		t.Fatalf("report = %q", got)
-	}
-	h.agent.answer("noted")
-	h.p.waitFor(t, "final:noted")
+	h.p.waitFor(t, "redraw:r0:replaced:")
 	time.Sleep(50 * time.Millisecond)
 	if h.p.has("card:r2") || h.p.has("redraw:r2:replaced:") {
 		t.Fatalf("withdrawn card was posted; log %q", h.p.entries())
@@ -1080,11 +1072,7 @@ func TestSignoffWithdrawOfAReplacedCardFindsNothing(t *testing.T) {
 	h.p.waitFor(t, "card:r1")
 	h.request(t, "r2")
 	h.p.waitFor(t, "redraw:r1:replaced:")
-	if got := h.agent.nextPrompt(t); got != "Signoff r1: replaced by r2" {
-		t.Fatalf("report = %q", got)
-	}
-	h.agent.answer("noted")
-	h.p.waitFor(t, "final:noted")
+	h.agent.noPrompt(t, 50*time.Millisecond)
 
 	if h.e.withdrawSignoff(signoffTestKey, "r1") {
 		t.Fatal("a replaced card was withdrawn")
