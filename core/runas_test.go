@@ -373,13 +373,20 @@ type fakeSudo struct {
 // ("exec", "record", "fail", "exists" or "noisy").
 func installFakeSudo(t *testing.T, mode string) *fakeSudo {
 	t.Helper()
+	return installFakeSudoWithPath(t, mode, "/usr/bin:/bin")
+}
+
+// installFakeSudoWithPath is installFakeSudo with innerPath as the PATH the
+// command gets.
+func installFakeSudoWithPath(t *testing.T, mode, innerPath string) *fakeSudo {
+	t.Helper()
 	binDir := t.TempDir()
 	f := &fakeSudo{log: filepath.Join(binDir, "sudo.log"), home: t.TempDir()}
 	script := strings.NewReplacer(
 		"@LOG@", shellQuote(f.log),
 		"@MODE@", mode,
 		"@HOME@", shellQuote(f.home),
-		"@PATH@", shellQuote("/usr/bin:/bin"),
+		"@PATH@", shellQuote(innerPath),
 	).Replace(fakeSudoScript)
 	if err := os.WriteFile(filepath.Join(binDir, "sudo"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)

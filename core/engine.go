@@ -873,8 +873,13 @@ func (e *Engine) reapIdleWorkspaces() {
 	}
 }
 
-// SetHooks configures the lifecycle event hook manager.
+// SetHooks configures the lifecycle event hook manager and hands it the
+// project's run_as_user settings.
 func (e *Engine) SetHooks(hm *HookManager) {
+	if hm != nil {
+		hm.runAs = e.commandSpawnOptions()
+		hm.commandEnv = e.commandEnv
+	}
 	e.hooks = hm
 }
 
@@ -6786,6 +6791,18 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 		repoName := extractRepoName(target)
 		cloneTo := filepath.Join(e.baseDir, repoName)
 
+		if e.projectRunAs.IsolationMode() {
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsCloneProgress, target))
+			err := e.createWorkspaceAsUser(target, cloneTo, true, msg.SessionKey)
+			if err != nil && !errors.Is(err, errWorkspaceExists) {
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsCloneFailed, err))
+				return false
+			}
+			e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(cloneTo))
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, cloneTo))
+			return true
+		}
+
 		if _, err := os.Stat(cloneTo); err == nil {
 			e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(cloneTo))
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, cloneTo))
@@ -8165,7 +8182,7 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 			workDir = wd.GetWorkDir()
 		}
 	}
-	if workDir == "" {
+	if workDir == "" && !e.projectRunAs.IsolationMode() {
 		workDir, _ = os.Getwd()
 	}
 
@@ -8174,29 +8191,23 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 		defer cancel()
 
 		// Get current branch name and short commit ID
-		branchCmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
-		branchCmd.Dir = workDir
-		branchOut, _ := branchCmd.Output()
+		branchOut, _ := e.projectOutput(ctx, workDir, msg.SessionKey, nil, "git", "rev-parse", "--abbrev-ref", "HEAD")
 		currentBranch := strings.TrimSpace(string(branchOut))
 		if currentBranch == "" {
 			currentBranch = "unknown"
 		}
 
-		commitCmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", "HEAD")
-		commitCmd.Dir = workDir
-		commitOut, _ := commitCmd.Output()
+		commitOut, _ := e.projectOutput(ctx, workDir, msg.SessionKey, nil, "git", "rev-parse", "--short", "HEAD")
 		commitID := strings.TrimSpace(string(commitOut))
 		if commitID == "" {
 			commitID = "0000000"
 		}
 
-		gitArgs := []string{"diff"}
+		gitArgs := []string{"git", "diff"}
 		if diffTarget != "" {
 			gitArgs = append(gitArgs, "--", diffTarget)
 		}
-		gitCmd := exec.CommandContext(ctx, "git", gitArgs...)
-		gitCmd.Dir = workDir
-		diffOutput, err := gitCmd.Output()
+		diffOutput, err := e.projectOutput(ctx, workDir, msg.SessionKey, nil, gitArgs...)
 
 		if ctx.Err() == context.DeadlineExceeded {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandTimeout), "git diff"))
@@ -8219,7 +8230,7 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 		// Try diff2html + FileSender
 		if fileSender, ok := p.(FileSender); ok {
 			title := fmt.Sprintf("%s vs %s", currentBranch, target)
-			htmlData, err := e.diff2html(ctx, diffOutput, workDir, title)
+			htmlData, err := e.diff2html(ctx, diffOutput, workDir, msg.SessionKey, title)
 			if err == nil {
 				fileName := fmt.Sprintf("%s-%s.html", currentBranch, commitID)
 				if err := e.waitOutgoing(p); err != nil {
@@ -8245,14 +8256,52 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 	}()
 }
 
-func (e *Engine) diff2html(ctx context.Context, diff []byte, workDir, title string) ([]byte, error) {
-	if _, err := exec.LookPath("diff2html"); err != nil {
-		return nil, err
+func (e *Engine) diff2html(ctx context.Context, diff []byte, workDir, sessionKey, title string) ([]byte, error) {
+	if !e.projectRunAs.IsolationMode() {
+		if _, err := exec.LookPath("diff2html"); err != nil {
+			return nil, err
+		}
 	}
-	cmd := exec.CommandContext(ctx, "diff2html", "-i", "stdin", "-o", "stdout", "--title", title)
-	cmd.Dir = workDir
-	cmd.Stdin = bytes.NewReader(diff)
-	return cmd.Output()
+	return e.projectOutput(ctx, workDir, sessionKey, diff, "diff2html", "-i", "stdin", "-o", "stdout", "--title", title)
+}
+
+// projectOutput runs argv in dir for the project, with stdin when it is not
+// nil, and returns its stdout. Under run_as_user it runs as the project's
+// user, and a program missing from that user's PATH gives an error matching
+// exec.ErrNotFound.
+func (e *Engine) projectOutput(ctx context.Context, dir, sessionKey string, stdin []byte, argv ...string) ([]byte, error) {
+	opts := e.commandSpawnOptions()
+	var cmd *exec.Cmd
+	if !opts.IsolationMode() {
+		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.Dir = dir
+	} else {
+		quoted := make([]string, len(argv))
+		for i, a := range argv {
+			quoted[i] = shellQuote(a)
+		}
+		var err error
+		cmd, err = buildProjectCommand(ctx, opts, projectCommand{
+			shell: "/bin/sh", flag: "-c",
+			command: "command -v " + quoted[0] + " >/dev/null || exit 127; exec " + strings.Join(quoted, " "),
+			dir:     dir, env: e.commandEnv(sessionKey),
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	out, err := cmd.Output()
+	if !opts.IsolationMode() {
+		return out, err
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
+		err = fmt.Errorf("%s as %q: %w", argv[0], opts.RunAsUser, exec.ErrNotFound)
+	}
+	return projectCommandOutput(out), err
 }
 
 // dirApply applies /dir mutations (same semantics as cmdDir). sessionKey is used for GetOrCreateActive.
@@ -16781,12 +16830,21 @@ func (e *Engine) handleWorkspaceInitFlow(p Platform, msg *Message, channelName s
 
 		var err error
 		var message string
+		runAs := e.projectRunAs.IsolationMode()
 		if e.skipGit {
-			err = os.MkdirAll(flow.cloneTo, 0o755)
+			if runAs {
+				err = e.createWorkspaceAsUser("", flow.cloneTo, false, msg.SessionKey)
+			} else {
+				err = os.MkdirAll(flow.cloneTo, 0o755)
+			}
 			message = fmt.Sprintf("mkdir failed: %v", err)
 		} else {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("Cloning `%s` to `%s`...", flow.repoURL, flow.cloneTo))
-			err = gitClone(flow.repoURL, flow.cloneTo)
+			if runAs {
+				err = e.createWorkspaceAsUser(flow.repoURL, flow.cloneTo, false, msg.SessionKey)
+			} else {
+				err = gitClone(flow.repoURL, flow.cloneTo)
+			}
 			message = fmt.Sprintf("Clone failed: %v\nSend a repo URL to try again.", err)
 		}
 		if err != nil {
@@ -16893,6 +16951,44 @@ func extractRepoName(url string) string {
 		return parts[len(parts)-1]
 	}
 	return "workspace"
+}
+
+// workspaceCloneTimeout bounds a workspace clone run as the project's user.
+var workspaceCloneTimeout = 10 * time.Minute
+
+// errWorkspaceExists reports that a new workspace's folder already exists.
+var errWorkspaceExists = errors.New("workspace folder exists")
+
+// createWorkspaceAsUser creates dest as the project's run_as_user: a clone of
+// repoURL, or an empty folder when repoURL is empty. With checkExists it
+// first gives errWorkspaceExists when dest exists, leaving it as it is.
+func (e *Engine) createWorkspaceAsUser(repoURL, dest string, checkExists bool, sessionKey string) error {
+	ctx, cancel := context.WithTimeout(e.ctx, workspaceCloneTimeout)
+	defer cancel()
+	script := ""
+	if checkExists {
+		script = "if [ -e " + shellQuote(dest) + " ]; then exit 3; fi; "
+	}
+	if repoURL == "" {
+		script += "mkdir -p -- " + shellQuote(dest)
+	} else {
+		script += "git clone " + shellQuote(repoURL) + " " + shellQuote(dest)
+	}
+	cmd, err := buildProjectCommand(ctx, e.commandSpawnOptions(), projectCommand{
+		shell: "/bin/sh", flag: "-c", command: script, env: e.commandEnv(sessionKey),
+	})
+	if err != nil {
+		return err
+	}
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if checkExists && errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+		return errWorkspaceExists
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(projectCommandOutput(output))), err)
+	}
+	return nil
 }
 
 func gitClone(repoURL, dest string) error {

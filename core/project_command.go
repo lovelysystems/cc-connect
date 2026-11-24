@@ -29,9 +29,10 @@ const (
 	projectCmdEndMarker   = "@@cc-connect-cmd-end"
 )
 
-// projectCommandOutput returns what a framed command printed on one stream
-// between the begin marker line and the end marker. Output cut off before the
-// end marker is kept up to where it stops.
+// projectCommandOutput returns what a framed command printed between the
+// begin marker line and the end marker, on one stream or on both read through
+// one writer. Output cut off before the end marker is kept up to where it
+// stops.
 func projectCommandOutput(out []byte) []byte {
 	begin := []byte(projectCmdBeginMarker + "\n")
 	start := 0
@@ -42,7 +43,7 @@ func projectCommandOutput(out []byte) []byte {
 		}
 		start = i + 1
 	}
-	rest := out[start+len(begin):]
+	rest := bytes.TrimPrefix(out[start+len(begin):], begin)
 	if stop := bytes.Index(rest, []byte("\n"+projectCmdEndMarker+"\n")); stop >= 0 {
 		return rest[:stop]
 	}

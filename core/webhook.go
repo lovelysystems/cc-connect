@@ -297,16 +297,25 @@ func (ws *WebhookServer) executeShell(engine *Engine, req WebhookRequest, event 
 			workDir = wd.GetWorkDir()
 		}
 	}
-	if workDir == "" {
+	opts := engine.commandSpawnOptions()
+	if workDir == "" && !opts.IsolationMode() {
 		workDir, _ = os.Getwd()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), webhookShellTimeout)
 	defer cancel()
 
-	cmd := shellExecCommand(ctx, engine.shell, engine.shellFlag, engine.shellProfile, req.Exec)
-	cmd.Dir = workDir
-	output, execErr := cmd.CombinedOutput()
+	var output []byte
+	cmd, execErr := buildProjectCommand(ctx, opts, projectCommand{
+		shell: engine.shell, flag: engine.shellFlag, profile: engine.shellProfile, command: req.Exec,
+		dir: workDir, env: engine.commandEnv(sessionKey),
+	})
+	if execErr == nil {
+		output, execErr = cmd.CombinedOutput()
+		if opts.IsolationMode() {
+			output = projectCommandOutput(output)
+		}
+	}
 
 	result := strings.TrimSpace(string(output))
 
