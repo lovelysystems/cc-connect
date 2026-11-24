@@ -369,8 +369,8 @@ Linux and macOS only; elsewhere a project with `run_as_user` stops
 startup.
 
 Every target user can enter `data_dir`, so each can also read, by name,
-the files cc-connect keeps there (cron jobs, relay and workspace
-bindings). Use a dedicated `data_dir` outside any home folder, mode
+the files cc-connect keeps there (session history with every chat
+message of every project, cron jobs, relay and workspace bindings). Use a dedicated `data_dir` outside any home folder, mode
 `0711`, with every folder above it traversable by others, and keep the
 config file outside it.
 

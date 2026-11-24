@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -801,6 +802,29 @@ func TestPicoTTS_HonorsContextCancellation(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Fatalf("Synthesize ignored ctx cancellation, took %v (want < 5s); err=%v", elapsed, err)
+	}
+}
+
+func TestPicoTTS_TextIsNeverAnOption(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake TTS binary uses /bin/sh; not portable to windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-pico2wave")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellQuote(filepath.Join(dir, "args")) + "\nprintf RIFF > \"${2#--wave=}\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "--wave=" + filepath.Join(dir, "clobbered.wav")
+	if _, _, err := NewPicoTTS(path, "en-US").Synthesize(context.Background(), text, TTSSynthesisOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(args), "\n--\n"+text+"\n") {
+		t.Fatalf("pico2wave args = %q, want the text after --", args)
 	}
 }
 

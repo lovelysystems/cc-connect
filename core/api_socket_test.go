@@ -5,6 +5,7 @@ package core
 import (
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -150,18 +151,29 @@ func TestListenSharedSocket_UnsafeFolderOpensNothing(t *testing.T) {
 	}
 }
 
-func TestProbeSocketAccess(t *testing.T) {
-	installFakeSudo(t, "noisy")
-	base := t.TempDir()
-	sock := filepath.Join(base, "run", "api.sock")
+// probeSocket returns a socket path for ProbeSocketAccess and the name of
+// the user running the test, which the fake sudo runs as.
+func probeSocket(t *testing.T) (sock, self string) {
+	t.Helper()
+	u, err := user.Current()
+	if err != nil {
+		t.Skipf("current user: %v", err)
+	}
+	sock = filepath.Join(t.TempDir(), "run", "api.sock")
 	if err := os.MkdirAll(filepath.Dir(sock), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(sock, nil, 0o666); err != nil {
 		t.Fatal(err)
 	}
+	return sock, u.Username
+}
 
-	uid, err := ProbeSocketAccess(t.Context(), "target", sock)
+func TestProbeSocketAccess(t *testing.T) {
+	installFakeSudo(t, "noisy")
+	sock, self := probeSocket(t)
+
+	uid, err := ProbeSocketAccess(t.Context(), self, sock)
 	if err != nil || uid != os.Getuid() {
 		t.Fatalf("uid, err = %d, %v; want %d, nil", uid, err, os.Getuid())
 	}
@@ -169,13 +181,27 @@ func TestProbeSocketAccess(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root enters any folder")
 	}
-	locked := filepath.Join(base, "run")
+	locked := filepath.Dir(sock)
 	if err := os.Chmod(locked, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
-	_, err = ProbeSocketAccess(t.Context(), "target", sock)
+	_, err = ProbeSocketAccess(t.Context(), self, sock)
 	if err == nil || !strings.Contains(err.Error(), "cannot enter "+locked) || !strings.Contains(err.Error(), "data_dir") {
 		t.Fatalf("err = %v, want it to name %s and the fix", err, locked)
+	}
+}
+
+func TestProbeSocketAccess_UIDIgnoresTheUsersProfile(t *testing.T) {
+	shadow := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shadow, "id"), []byte("#!/bin/sh\necho 1050\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installFakeSudoWithPath(t, "noisy", shadow+":/usr/bin:/bin")
+	sock, self := probeSocket(t)
+
+	uid, err := ProbeSocketAccess(t.Context(), self, sock)
+	if err != nil || uid != os.Getuid() {
+		t.Fatalf("uid, err = %d, %v; want %d, nil", uid, err, os.Getuid())
 	}
 }

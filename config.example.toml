@@ -248,11 +248,11 @@ level = "info" # debug, info, warn, error
 # 签核卡片（需要 run_as_user；目前仅 Teams）
 # =============================================================================
 #
-# A root-only program running under a session's agent (e.g. started by the
-# agent's shell via sudo) asks for a card with Approve and Cancel in that
-# session's thread. Only a person's click on Approve runs signoff_exec; the
+# A program running under a session's agent as the project's run_as_user
+# (e.g. the agent's own publish command) asks for a card with Approve and
+# Cancel in that session's thread. Only a person's click on Approve runs signoff_exec; the
 # agent can ask for a card but cannot press its buttons.
-# 以 root 运行、位于会话 agent 进程之下的程序（例如由 agent 的 shell 通过 sudo 启动）
+# 以项目的 run_as_user 运行、位于会话 agent 进程之下的程序（例如 agent 自己的发布命令）
 # 请求在该会话的线程中发出带「同意」「取消」按钮的卡片。只有真人点击「同意」才会
 # 运行 signoff_exec；agent 可以请求卡片，但无法点击按钮。
 #
@@ -287,6 +287,10 @@ level = "info" # debug, info, warn, error
 #        callers are refused / 调用方不在该会话的 agent 进程之下（仅 Linux 可校验；
 #        其他系统一律拒绝）。校验需要 agent 报告其进程 id，目前仅 Claude Code 支持，
 #        其他 agent 的调用方一律拒绝
+#   403  forbidden: the caller is no project's agent, or session_key's session is
+#        in a project outside the caller's (see "Who may use the API socket" in
+#        docs/usage.md) / forbidden：调用方不是任何项目的 agent，或 session_key
+#        的会话属于调用方项目之外的项目
 #   404  no live agent session for session_key / session_key 没有存活的 agent 会话
 #   422  the project has no run_as_user, or its platform cannot show signoff cards
 #        项目未设置 run_as_user，或其平台不支持签核卡片

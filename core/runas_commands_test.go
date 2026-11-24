@@ -113,14 +113,16 @@ func TestRunShellWithProgress_RunAsTimeoutStops(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e, _ := newRunAsEngine(t, "noisy", p, &stubAgent{})
 
+	pidFile := filepath.Join(t.TempDir(), "pid")
 	start := time.Now()
-	err := e.runShellWithProgress(p, "ctx", "echo started; sleep 30", "", "", time.Second, 4000)
+	err := e.runShellWithProgress(p, "ctx", `echo started; echo "$$" > `+shellQuote(pidFile)+`; sleep 30`, "", "", time.Second, 4000)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("err = %v", err)
 	}
 	if d := time.Since(start); d > 5*time.Second {
 		t.Fatalf("timeout took %s", d)
 	}
+	waitGone(t, pidFile)
 	got := waitSent(t, p, "(timeout)")
 	if !strings.Contains(got, "started") || strings.Contains(got, "noise") {
 		t.Fatalf("timeout message = %q", got)
@@ -285,7 +287,7 @@ func installFakeGit(t *testing.T, hang bool) (binDir, log string) {
 	log = filepath.Join(binDir, "git.log")
 	body := `printf '%s\n' "$*" > ` + shellQuote(log) + `; mkdir -p "$3"`
 	if hang {
-		body = `sleep 60`
+		body = `echo "$$" > ` + shellQuote(filepath.Join(binDir, "pid")) + `; sleep 60`
 	}
 	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -364,4 +366,5 @@ func TestWorkspaceInit_RunAsHangingCloneStops(t *testing.T) {
 	if err == nil || time.Since(start) > 5*time.Second {
 		t.Fatalf("err = %v after %s", err, time.Since(start))
 	}
+	waitGone(t, filepath.Join(gitDir, "pid"))
 }
