@@ -240,6 +240,8 @@ type signoffTestPlatform struct {
 	log      []string
 	handles  map[string]*signoffTestHandle
 	failPost bool
+	// holdPost, when set, keeps every post waiting until it is closed.
+	holdPost chan struct{}
 }
 
 func (p *signoffTestPlatform) record(entry string) {
@@ -273,8 +275,11 @@ func (p *signoffTestPlatform) CreateStreamingCard(context.Context, any) (Streami
 
 func (p *signoffTestPlatform) PostSignoffCard(_ context.Context, replyCtx any, card *Card, onClick func(string, SignoffClicker) (SignoffMark, func())) (SignoffCardHandle, error) {
 	p.mu.Lock()
-	fail := p.failPost
+	fail, hold := p.failPost, p.holdPost
 	p.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
 	actions := card.Elements[len(card.Elements)-1].(CardActions)
 	id := strings.Split(actions.Buttons[0].Value, ":")[1]
 	if fail {
@@ -877,5 +882,266 @@ func TestSignoffReportKeepsTheDetectedLanguage(t *testing.T) {
 	h.p.waitFor(t, "final:noted")
 	if lang := h.e.i18n.CurrentLang(); lang != LangChinese {
 		t.Fatalf("language = %q after the report turn, want %q", lang, LangChinese)
+	}
+}
+
+// --- withdraw ---
+
+func TestSignoffWithdrawDrawsAnOpenCardAsReplaced(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	h.request(t, "r1")
+	card := h.p.handle(t, "r1")
+
+	if !h.e.withdrawSignoff(signoffTestKey, "r1") {
+		t.Fatal("open card was not withdrawn")
+	}
+	h.p.waitFor(t, "redraw:r1:replaced:")
+	if n := h.openCards(); n != 0 {
+		t.Fatalf("open cards = %d, want 0", n)
+	}
+	card.approve("Jane Editor")
+	time.Sleep(50 * time.Millisecond)
+	if h.p.has("redraw:r1:approved:Jane Editor") {
+		t.Fatal("a click on a withdrawn card was taken")
+	}
+	h.agent.noPrompt(t, 50*time.Millisecond)
+}
+
+func TestSignoffWithdrawDropsACardBeforeItIsPosted(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	session := h.session()
+	if !session.TryLock() {
+		t.Fatal("could not hold the session")
+	}
+	h.request(t, "r1")
+	if !h.e.withdrawSignoff(signoffTestKey, "r1") {
+		t.Fatal("pending card was not withdrawn")
+	}
+	session.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	if h.p.has("card:r1") {
+		t.Fatalf("withdrawn card was posted; log %q", h.p.entries())
+	}
+	h.agent.noPrompt(t, 50*time.Millisecond)
+}
+
+func TestSignoffWithdrawLeavesTheOtherPendingCardsToBePosted(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	session := h.session()
+	if !session.TryLock() {
+		t.Fatal("could not hold the session")
+	}
+	h.request(t, "r1")
+	h.request(t, "r2")
+	if !h.e.withdrawSignoff(signoffTestKey, "r1") {
+		t.Fatal("pending card was not withdrawn")
+	}
+	session.Unlock()
+	h.p.waitFor(t, "card:r2")
+	time.Sleep(50 * time.Millisecond)
+	if h.p.has("card:r1") {
+		t.Fatalf("withdrawn card was posted; log %q", h.p.entries())
+	}
+}
+
+// waitPosting waits until n cards have left pending and wait for their post.
+func (h *signoffHarness) waitPosting(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.e.signoff.mu.Lock()
+		posting := len(h.e.signoff.posting)
+		h.e.signoff.mu.Unlock()
+		if posting == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d cards wait for their post, want %d", posting, n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (h *signoffHarness) holdPosts() chan struct{} {
+	hold := make(chan struct{})
+	h.p.mu.Lock()
+	h.p.holdPost = hold
+	h.p.mu.Unlock()
+	return hold
+}
+
+func TestSignoffWithdrawDropsACardQueuedBehindAPost(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	h.request(t, "r0")
+	h.p.waitFor(t, "card:r0")
+	session := h.session()
+	if !session.TryLock() {
+		t.Fatal("could not hold the session")
+	}
+	h.request(t, "r1")
+	h.request(t, "r2")
+	hold := h.holdPosts()
+	session.Unlock()
+	h.waitPosting(t, 2)
+
+	if !h.e.withdrawSignoff(signoffTestKey, "r2") {
+		t.Fatal("queued card was not withdrawn")
+	}
+	close(hold)
+	h.p.waitFor(t, "card:r1")
+	if got := h.agent.nextPrompt(t); got != "Signoff r0: replaced by r1" {
+		t.Fatalf("report = %q", got)
+	}
+	h.agent.answer("noted")
+	h.p.waitFor(t, "final:noted")
+	time.Sleep(50 * time.Millisecond)
+	if h.p.has("card:r2") || h.p.has("redraw:r2:replaced:") {
+		t.Fatalf("withdrawn card was posted; log %q", h.p.entries())
+	}
+	h.agent.noPrompt(t, 50*time.Millisecond)
+}
+
+func TestSignoffWithdrawOfACardWhosePostFailsFindsNothing(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	hold := h.holdPosts()
+	h.p.mu.Lock()
+	h.p.failPost = true
+	h.p.mu.Unlock()
+	h.request(t, "r1")
+	h.waitPosting(t, 1)
+
+	withdrawn := make(chan bool, 1)
+	go func() { withdrawn <- h.e.withdrawSignoff(signoffTestKey, "r1") }()
+	close(hold)
+	if <-withdrawn {
+		t.Fatal("a card whose post failed was withdrawn")
+	}
+	if h.p.has("redraw:r1:replaced:") {
+		t.Fatal("a card that never went out was redrawn")
+	}
+}
+
+func TestSignoffWithdrawWaitsForACardBeingPosted(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	hold := h.holdPosts()
+	h.request(t, "r1")
+	h.waitPosting(t, 1)
+
+	withdrawn := make(chan bool, 1)
+	go func() { withdrawn <- h.e.withdrawSignoff(signoffTestKey, "r1") }()
+	select {
+	case <-withdrawn:
+		t.Fatal("withdraw answered before the post did")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(hold)
+	if !<-withdrawn {
+		t.Fatal("card being posted was not withdrawn")
+	}
+	posted := h.p.waitFor(t, "card:r1")
+	if replaced := h.p.waitFor(t, "redraw:r1:replaced:"); replaced < posted {
+		t.Fatalf("log order %q", h.p.entries())
+	}
+	if n := h.openCards(); n != 0 {
+		t.Fatalf("open cards = %d, want 0", n)
+	}
+}
+
+func TestSignoffWithdrawOfAClickedCardFindsNothing(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	h.request(t, "r1")
+	h.p.handle(t, "r1").cancel("Jane Editor")
+	h.p.waitFor(t, "redraw:r1:cancelled:Jane Editor")
+
+	if h.e.withdrawSignoff(signoffTestKey, "r1") {
+		t.Fatal("a clicked card was withdrawn")
+	}
+	if got := h.agent.nextPrompt(t); got != "Signoff r1: cancelled" {
+		t.Fatalf("report = %q", got)
+	}
+	h.agent.answer("noted")
+	h.p.waitFor(t, "final:noted")
+	if h.p.has("redraw:r1:replaced:") {
+		t.Fatal("a clicked card was redrawn as replaced")
+	}
+}
+
+func TestSignoffWithdrawOfAReplacedCardFindsNothing(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	h.request(t, "r1")
+	h.p.waitFor(t, "card:r1")
+	h.request(t, "r2")
+	h.p.waitFor(t, "redraw:r1:replaced:")
+	if got := h.agent.nextPrompt(t); got != "Signoff r1: replaced by r2" {
+		t.Fatalf("report = %q", got)
+	}
+	h.agent.answer("noted")
+	h.p.waitFor(t, "final:noted")
+
+	if h.e.withdrawSignoff(signoffTestKey, "r1") {
+		t.Fatal("a replaced card was withdrawn")
+	}
+	if n := h.openCards(); n != 1 {
+		t.Fatalf("open cards = %d, want the newer one", n)
+	}
+}
+
+func TestSignoffWithdrawOfAnUnknownCardFindsNothing(t *testing.T) {
+	h := newSignoffHarness(t)
+	h.turn(t, "m0", "hello", "hi")
+	h.request(t, "r1")
+	h.p.waitFor(t, "card:r1")
+
+	if h.e.withdrawSignoff(signoffTestKey, "r9") {
+		t.Fatal("an unknown request_id was withdrawn")
+	}
+	if h.e.withdrawSignoff("test:thread-2", "r1") {
+		t.Fatal("a card of another session was withdrawn")
+	}
+	if h.p.has("redraw:r1:replaced:") || h.openCards() != 1 {
+		t.Fatalf("card r1 changed; log %q", h.p.entries())
+	}
+}
+
+func TestSignoffWithdrawAndAClickRacingOnlyOneWins(t *testing.T) {
+	for i := range 20 {
+		h := newSignoffHarness(t)
+		h.turn(t, "m0", "hello", "hi")
+		h.request(t, "r1")
+		card := h.p.handle(t, "r1")
+		actions := card.card.Elements[len(card.card.Elements)-1].(CardActions)
+
+		start := make(chan struct{})
+		var clicked, withdrawn bool
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, resolve := card.onClick(actions.Buttons[1].Value, SignoffClicker{ID: "aad-jane", Name: "Jane Editor"})
+			clicked = resolve != nil
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			withdrawn = h.e.withdrawSignoff(signoffTestKey, "r1")
+		}()
+		close(start)
+		wg.Wait()
+		if clicked == withdrawn {
+			t.Fatalf("run %d: click won %v, withdraw won %v; want exactly one", i, clicked, withdrawn)
+		}
+		if n := h.openCards(); n != 0 {
+			t.Fatalf("run %d: open cards = %d, want 0", i, n)
+		}
+		_ = h.e.Stop()
 	}
 }

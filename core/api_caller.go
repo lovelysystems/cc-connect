@@ -49,6 +49,7 @@ func (s *APIServer) routes() []apiRoute {
 		{path: "/relay/bind", rule: routeOwnUser, handler: s.handleRelayBind},
 		{path: "/relay/binding", rule: routeOwnUser, handler: s.handleRelayBinding},
 		{path: "/signoff/send", rule: routeProjectScoped, handler: s.handleSignoffSend},
+		{path: "/signoff/withdraw", rule: routeProjectScoped, handler: s.handleSignoffWithdraw},
 	}
 }
 

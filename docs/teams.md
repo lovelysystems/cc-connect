@@ -269,6 +269,13 @@ after that.
 there: each older one is drawn once more with a grey ↻ and the time, and a click
 on it does nothing.
 
+**Withdrawn.** `POST /signoff/withdraw` with `{"session_key": "…", "request_id":
+"…"}`, from under the same agent, takes back a card nobody clicked yet. A card
+still waiting for its turn's final reply is never posted; a posted one is drawn
+as replaced. The agent gets no report. The answer is 200 when the card was
+withdrawn, 404 when no such card waits, and 403 for a caller outside the
+session's agent.
+
 **What the agent hears.** After every outcome the agent gets a turn in the
 card's session with this text:
 

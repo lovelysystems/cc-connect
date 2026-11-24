@@ -356,8 +356,8 @@ uid from the socket's peer credentials:
   another project. With no project named, a user with one project gets
   that project. `/send` with `work_dir` or `cwd` (`cc-connect send
   --cwd`) is refused. `/relay/send` works only `from` one of its projects
-  that is bound in the chat. `/signoff/send` answers a session of another
-  project as if it did not exist. `/sessions`, `/relay/bind` and
+  that is bound in the chat. `/signoff/send` and `/signoff/withdraw`
+  answer a session of another project as if it did not exist. `/sessions`, `/relay/bind` and
   `/relay/binding` are refused.
 
 While no project sets `run_as_user`, the socket stays mode `0600`. With

@@ -30,6 +30,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
   its own projects, and with such a project the socket is `0666` (upstream: pending)
 - **core**: a `run_as_user` project stops startup when its user cannot reach the API socket or
   other users can write the socket's folder (upstream: pending)
+- **core**: `POST /signoff/withdraw` takes back a signoff card nobody clicked yet (upstream:
+  pending)
 
 ### 2026-11-20 / v1.5.0-ls.4
 
