@@ -46,9 +46,9 @@ func TestProjectCommandOutput(t *testing.T) {
 	const b, e = projectCmdBeginMarker, projectCmdEndMarker
 	for in, want := range map[string]string{
 		"noise\n" + b + "\n{\"a\":1}\n\n" + e + "\nlogout\n": "{\"a\":1}\n",
-		b + "\nno newline\n" + e + "\n":                     "no newline",
-		"x" + b + "\nnot at line start":                     "",
-		"noise\n" + b + "\ncut off":                         "cut off",
+		b + "\nno newline\n" + e + "\n":                      "no newline",
+		"x" + b + "\nnot at line start":                      "",
+		"noise\n" + b + "\ncut off":                          "cut off",
 	} {
 		if got := string(projectCommandOutput([]byte(in))); got != want {
 			t.Errorf("projectCommandOutput(%q) = %q, want %q", in, got, want)

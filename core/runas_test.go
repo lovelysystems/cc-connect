@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -786,9 +787,11 @@ func TestBuildProjectCommand_RunAsDropsLoginNoise(t *testing.T) {
 		t.Fatal(err)
 	}
 	var outBuf, errBuf bytes.Buffer
+	var mu sync.Mutex
 	var lines []string
-	outLines := newCommandLineWriter(true, func(s string) { lines = append(lines, "out:"+s) })
-	errLines := newCommandLineWriter(true, func(s string) { lines = append(lines, "err:"+s) })
+	add := func(s string) { mu.Lock(); lines = append(lines, s); mu.Unlock() }
+	outLines := newCommandLineWriter(true, func(s string) { add("out:" + s) })
+	errLines := newCommandLineWriter(true, func(s string) { add("err:" + s) })
 	cmd.Stdout = io.MultiWriter(&outBuf, outLines)
 	cmd.Stderr = io.MultiWriter(&errBuf, errLines)
 	if err := cmd.Run(); err != nil {

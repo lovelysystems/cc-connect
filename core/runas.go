@@ -264,7 +264,7 @@ const (
 // The command keeps the script's stdin through fd 3 and runs in a process
 // group of its own (setsid, else job control). On TERM the script sends TERM
 // to that group, then KILL a second later, so a command that ignores TERM or
-// left children behind still stops. The script itself is what sudo relays
+// left children behind still stops, and it closes the frame before it exits. The script itself is what sudo relays
 // TERM to, since the spawn starts with exec.
 func projectCommandScript(pwsh bool) string {
 	run := `"${` + projectCmdShellEnv + `}" `
@@ -273,13 +273,13 @@ func projectCommandScript(pwsh bool) string {
 	}
 	run += `"${` + projectCmdFlagEnv + `}" "${` + projectCmdTextEnv + `}" <&3 3<&- &`
 	begin := `printf '%s\n' '` + projectCmdBeginMarker + `'`
-	end := `printf '\n%s\n' '` + projectCmdEndMarker + `'`
+	end := `printf "\n%s\n" "` + projectCmdEndMarker + `"`
 	kill := func(sig string) string {
 		return `kill -s ` + sig + ` -- -"${p}" 2>/dev/null || kill -s ` + sig + ` "${p}" 2>/dev/null; `
 	}
 	return `exec 3<&0; ` + begin + `; ` + begin + ` >&2; ` +
 		`if [ -n "${` + projectCmdDirEnv + `}" ]; then cd "${` + projectCmdDirEnv + `}" || { ` + end + `; ` + end + ` >&2; exit 1; }; fi; ` +
-		`p=; trap 'if [ -n "${p}" ]; then ` + kill("TERM") + `sleep 1; ` + kill("KILL") + `fi; exit 143' TERM; ` +
+		`p=; trap 'if [ -n "${p}" ]; then ` + kill("TERM") + `sleep 1; ` + kill("KILL") + `fi; ` + end + `; ` + end + ` >&2; exit 143' TERM; ` +
 		`if command -v setsid >/dev/null 2>&1; then setsid ` + run + ` else set -m 2>/dev/null; ` + run + ` set +m; fi; ` +
 		`p=${!}; wait "${p}" 2>/dev/null; s=${?}; ` + end + `; ` + end + ` >&2; exit "${s}"`
 }
