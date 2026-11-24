@@ -113,11 +113,11 @@ func (e *engagement) persistLocked() {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(e.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(e.path), 0o755); err != nil {
 		slog.Warn("teams: cannot create engagement dir", "error", err)
 		return
 	}
-	if err := core.AtomicWriteFile(e.path, data, 0o600); err != nil {
+	if err := core.AtomicWriteFile(e.path, data, 0o644); err != nil {
 		slog.Warn("teams: cannot persist engagement store", "error", err)
 	}
 }

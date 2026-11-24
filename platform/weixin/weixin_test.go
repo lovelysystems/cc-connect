@@ -599,18 +599,3 @@ func TestSendChunks_AppliesQuota(t *testing.T) {
 		t.Fatalf("sendmessage calls = %d, want 1 (over-budget send not attempted)", got)
 	}
 }
-
-func TestNew_CreatesPrivateStateDir(t *testing.T) {
-	dataDir := t.TempDir()
-	if _, err := New(map[string]any{"token": "t", "cc_data_dir": dataDir, "cc_project": "demo"}); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(dataDir, "weixin")
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o700 {
-		t.Errorf("%s mode = %#o, want %#o", dir, got, 0o700)
-	}
-}

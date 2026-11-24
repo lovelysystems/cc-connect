@@ -23,7 +23,6 @@ entry that graduated upstream at the re-base keeps its final marker there.
   `[[hooks]]`, `/diff`, the workspace clone and `signoff_exec` as the target user; the agent
   keeps `CC_PROJECT`, `CC_SESSION_KEY` and `CC_DATA_DIR` (upstream: pending)
 - **tts**: pass `--` before the text to pico2wave (upstream: pending)
-- **core**: write the `data_dir` stores `0600` (upstream: pending)
 
 #### Feature
 

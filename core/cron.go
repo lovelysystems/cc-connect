@@ -122,7 +122,7 @@ type CronStore struct {
 
 func NewCronStore(dataDir string) (*CronStore, error) {
 	dir := filepath.Join(dataDir, "crons")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, "jobs.json")
@@ -146,7 +146,7 @@ func (s *CronStore) save() error {
 	if err != nil {
 		return err
 	}
-	return AtomicWriteFile(s.path, data, 0o600)
+	return AtomicWriteFile(s.path, data, 0o644)
 }
 
 func (s *CronStore) Add(job *CronJob) error {

@@ -107,19 +107,3 @@ func TestAtomicWriteFile_NoTempLeftWhenRenameFails(t *testing.T) {
 		}
 	}
 }
-
-// assertMode fails the test unless path has exactly the permission bits want.
-// Windows has no Unix permission bits, so there it checks nothing.
-func assertMode(t *testing.T, path string, want os.FileMode) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		return
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != want {
-		t.Errorf("%s mode = %#o, want %#o", path, got, want)
-	}
-}

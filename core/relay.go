@@ -409,11 +409,11 @@ func (rm *RelayManager) saveLocked() {
 		slog.Error("relay: failed to marshal bindings", "error", err)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(rm.storePath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(rm.storePath), 0o755); err != nil {
 		slog.Error("relay: failed to create dir", "error", err)
 		return
 	}
-	if err := AtomicWriteFile(rm.storePath, data, 0o600); err != nil {
+	if err := AtomicWriteFile(rm.storePath, data, 0o644); err != nil {
 		slog.Error("relay: failed to write bindings", "path", rm.storePath, "error", err)
 	}
 }

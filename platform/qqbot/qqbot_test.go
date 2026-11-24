@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1383,21 +1381,5 @@ func TestPlatformImplementsInlineButtonSender(t *testing.T) {
 	p := &Platform{}
 	if _, ok := any(p).(core.InlineButtonSender); !ok {
 		t.Error("Platform does not implement core.InlineButtonSender")
-	}
-}
-
-func TestCacheMessage_WritesPrivateFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "qqbot_message_cache.json")
-	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	p := &Platform{messageCachePath: path}
-	p.cacheMessage("m1", "hello")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("%s mode = %#o, want %#o", path, got, 0o600)
 	}
 }

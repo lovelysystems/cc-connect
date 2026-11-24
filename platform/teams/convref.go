@@ -120,7 +120,7 @@ func (s *convRefStore) persistLocked() {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		slog.Warn("teams: cannot create conversation-reference dir", "error", err)
 		return
 	}

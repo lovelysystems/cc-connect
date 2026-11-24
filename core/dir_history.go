@@ -157,12 +157,12 @@ func (dh *DirHistory) saveLocked() {
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dh.storePath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dh.storePath), 0700); err != nil {
 		slog.Error("dir_history: failed to create dir", "error", err)
 		return
 	}
 
-	if err := AtomicWriteFile(dh.storePath, data, 0o600); err != nil {
+	if err := AtomicWriteFile(dh.storePath, data, 0644); err != nil {
 		slog.Error("dir_history: failed to write", "path", dh.storePath, "error", err)
 	}
 }

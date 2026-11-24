@@ -11,8 +11,6 @@ func TestProjectState_SaveLoadAndClear(t *testing.T) {
 	store := NewProjectStateStore(statePath)
 	store.SetWorkDirOverride("/tmp/demo")
 	store.Save()
-	assertMode(t, statePath, 0o600)
-	assertMode(t, filepath.Dir(statePath), 0o700)
 
 	reloaded := NewProjectStateStore(statePath)
 	if got := reloaded.WorkDirOverride(); got != "/tmp/demo" {

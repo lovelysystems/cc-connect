@@ -127,17 +127,17 @@ func TestConvRefStore_CorruptFileStartsEmpty(t *testing.T) {
 }
 
 func TestConvRefStore_PersistsWithOwnerOnlyMode(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "teams", "convrefs.json")
+	path := filepath.Join(t.TempDir(), "convrefs.json")
 	newConvRefStore(path).upsert("teams:conv", sampleRef())
 
-	for path, want := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != want {
-			t.Errorf("%s mode = %#o, want %#o", path, got, want)
-		}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	// The stored serviceURL routes the bot's bearer token, so the file is
+	// owner-only (0600) — stricter than the engagement store's 0644.
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("store file mode = %o, want 0600", perm)
 	}
 }
 

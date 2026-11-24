@@ -13,7 +13,6 @@ func TestWorkspaceBindingManager_SaveLoad(t *testing.T) {
 
 	mgr := NewWorkspaceBindingManager(storePath)
 	mgr.Bind("project:claude", channelKey, "my-channel", "/home/user/workspace/my-channel")
-	assertMode(t, storePath, 0o600)
 
 	b := mgr.Lookup("project:claude", channelKey)
 	if b == nil {

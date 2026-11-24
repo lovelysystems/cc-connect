@@ -777,11 +777,11 @@ func (sm *SessionManager) saveLocked() {
 		slog.Error("session: failed to marshal", "error", err)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(sm.storePath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sm.storePath), 0o755); err != nil {
 		slog.Error("session: failed to create dir", "error", err)
 		return
 	}
-	if err := AtomicWriteFile(sm.storePath, data, 0o600); err != nil {
+	if err := AtomicWriteFile(sm.storePath, data, 0o644); err != nil {
 		slog.Error("session: failed to write", "path", sm.storePath, "error", err)
 	}
 }

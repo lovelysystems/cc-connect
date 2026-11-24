@@ -216,7 +216,7 @@ func New(opts map[string]any) (core.Platform, error) {
 	p.api = newAPIClient(baseURL, token, routeTag, httpClient)
 
 	if stateDir != "" {
-		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
 			return nil, fmt.Errorf("weixin: create state dir: %w", err)
 		}
 		p.syncBufPath = filepath.Join(stateDir, "get_updates.buf")

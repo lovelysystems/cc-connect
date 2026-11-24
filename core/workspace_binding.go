@@ -208,7 +208,7 @@ func (m *WorkspaceBindingManager) saveLocked() {
 		slog.Error("workspace bindings: marshal error", "err", err)
 		return
 	}
-	if err := AtomicWriteFile(m.storePath, data, 0o600); err != nil {
+	if err := AtomicWriteFile(m.storePath, data, 0o644); err != nil {
 		slog.Error("workspace bindings: save error", "err", err)
 		return
 	}
