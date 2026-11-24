@@ -226,6 +226,11 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "message, tts_text, or attachment is required", http.StatusBadRequest)
 		return
 	}
+	project, allowed := callerProject(w, requestCaller(r), req.Project)
+	if !allowed {
+		return
+	}
+	req.Project = project
 
 	s.mu.RLock()
 	var engine *Engine
@@ -362,7 +367,10 @@ func (s *APIServer) handleCronAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve project: use provided, or pick single engine
-	project := req.Project
+	project, allowed := callerProject(w, requestCaller(r), req.Project)
+	if !allowed {
+		return
+	}
 	if project == "" {
 		s.mu.RLock()
 		if len(s.engines) == 1 {
@@ -427,12 +435,20 @@ func (s *APIServer) handleCronList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	caller := requestCaller(r)
 	project := r.URL.Query().Get("project")
+	if project != "" && !caller.allows(project) {
+		http.Error(w, apiForbidden, http.StatusForbidden)
+		return
+	}
 	var jobs []*CronJob
 	if project != "" {
 		jobs = s.cron.Store().ListByProject(project)
 	} else {
 		jobs = s.cron.Store().List()
+	}
+	if caller.scoped {
+		jobs = slices.DeleteFunc(jobs, func(j *CronJob) bool { return !caller.allows(j.Project) })
 	}
 
 	apiJSON(w, http.StatusOK, jobs)
@@ -460,7 +476,7 @@ func (s *APIServer) handleCronDel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.cron.RemoveJob(req.ID) {
+	if !s.cronJobHidden(r, req.ID) && s.cron.RemoveJob(req.ID) {
 		apiJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	} else {
 		http.Error(w, fmt.Sprintf("job %q not found", req.ID), http.StatusNotFound)
@@ -489,7 +505,13 @@ func (s *APIServer) handleCronExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.cron.RunJobNow(req.ID); err != nil {
+	var err error
+	if s.cronJobHidden(r, req.ID) {
+		err = fmt.Errorf("%w: %q", ErrCronJobNotFound, req.ID)
+	} else {
+		err = s.cron.RunJobNow(req.ID)
+	}
+	if err != nil {
 		if errors.Is(err, ErrCronJobNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -521,7 +543,7 @@ func (s *APIServer) handleCronInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := s.cron.store.Get(id)
-	if job == nil {
+	if job == nil || !requestCaller(r).allows(job.Project) {
 		http.Error(w, fmt.Sprintf("job %q not found", id), http.StatusNotFound)
 		return
 	}
@@ -561,6 +583,14 @@ func (s *APIServer) handleCronEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.cronJobHidden(r, req.ID) {
+		http.Error(w, fmt.Sprintf("job %q not found", req.ID), http.StatusBadRequest)
+		return
+	}
+	if project, ok := req.Value.(string); ok && req.Field == "project" && !requestCaller(r).allows(project) {
+		http.Error(w, apiForbidden, http.StatusForbidden)
+		return
+	}
 	if err := s.cron.UpdateJob(req.ID, req.Field, req.Value); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -623,7 +653,10 @@ func (s *APIServer) handleTimerAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	project := req.Project
+	project, allowed := callerProject(w, requestCaller(r), req.Project)
+	if !allowed {
+		return
+	}
 	if project == "" {
 		s.mu.RLock()
 		if len(s.engines) == 1 {
@@ -686,7 +719,12 @@ func (s *APIServer) handleTimerList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	caller := requestCaller(r)
 	project := r.URL.Query().Get("project")
+	if project != "" && !caller.allows(project) {
+		http.Error(w, apiForbidden, http.StatusForbidden)
+		return
+	}
 	var jobs []*TimerJob
 	if project != "" {
 		jobs = s.timer.Store().ListByProject(project)
@@ -697,7 +735,7 @@ func (s *APIServer) handleTimerList(w http.ResponseWriter, r *http.Request) {
 	// Filter to pending only
 	var pending []*TimerJob
 	for _, j := range jobs {
-		if !j.Fired {
+		if !j.Fired && caller.allows(j.Project) {
 			pending = append(pending, j)
 		}
 	}
@@ -722,7 +760,7 @@ func (s *APIServer) handleTimerInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := s.timer.Store().Get(id)
-	if job == nil {
+	if job == nil || !requestCaller(r).allows(job.Project) {
 		http.Error(w, "timer not found", http.StatusNotFound)
 		return
 	}
@@ -752,7 +790,7 @@ func (s *APIServer) handleTimerDel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.timer.RemoveJob(req.ID) {
+	if s.timerJobHidden(r, req.ID) || !s.timer.RemoveJob(req.ID) {
 		http.Error(w, "timer not found", http.StatusNotFound)
 		return
 	}
@@ -854,6 +892,11 @@ func (s *APIServer) handleRelaySend(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.To == "" || req.Message == "" || req.SessionKey == "" {
 		http.Error(w, "to, session_key, and message are required", http.StatusBadRequest)
+		return
+	}
+	// A scoped caller reaches only agents its own project shares a chat with.
+	if caller := requestCaller(r); caller.scoped && (req.From == "" || !caller.allows(req.From) || !s.relay.boundInChat(req.SessionKey, req.From)) {
+		http.Error(w, apiForbidden, http.StatusForbidden)
 		return
 	}
 

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -20,20 +21,40 @@ const (
 	testUIDStranger = 7199
 )
 
-// scopeTestEngine is the engine of a project whose agent runs as user.
+// scopeTestSessionKey is the session key of project's live chat in
+// scopeTestEngine.
+func scopeTestSessionKey(project string) string {
+	return "test:chat-" + project + ":user"
+}
+
+// scopeTestEngine is the engine of a project whose agent runs as user, with
+// a live chat under scopeTestSessionKey.
 func scopeTestEngine(t *testing.T, name, user string) *Engine {
 	t.Helper()
-	e := NewEngine(name, &stubAgent{}, nil, "", LangEnglish)
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine(name, &stubAgent{}, []Platform{p}, "", LangEnglish)
 	t.Cleanup(func() { _ = e.Stop() })
 	e.SetRunAs(user, nil)
+	e.interactiveStates[scopeTestSessionKey(name)] = &interactiveState{platform: p, replyCtx: "chat-" + name}
 	return e
 }
 
 // scopeTestServer serves the API routes for project a (agent_a), projects b
 // and c (agent_b) and project d (no run_as_user), and takes every request as
-// sent by uid.
+// sent by uid. Each project has a cron job job-<project>; a and b have a
+// timer timer-<project>.
 func scopeTestServer(t *testing.T, uid int) *APIServer {
 	t.Helper()
+	cronStore, err := NewCronStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	timerStore, err := NewTimerStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	timers := NewTimerScheduler(timerStore)
+	t.Cleanup(timers.Stop)
 	s := &APIServer{
 		engines: map[string]*Engine{
 			"a": scopeTestEngine(t, "a", "agent_a"),
@@ -41,8 +62,22 @@ func scopeTestServer(t *testing.T, uid int) *APIServer {
 			"c": scopeTestEngine(t, "c", "agent_b"),
 			"d": scopeTestEngine(t, "d", ""),
 		},
+		cron:      NewCronScheduler(cronStore),
+		timer:     timers,
+		relay:     NewRelayManager(""),
 		mux:       http.NewServeMux(),
 		callerUID: func(*http.Request) (int, error) { return uid, nil },
+	}
+	for name, e := range s.engines {
+		s.relay.RegisterEngine(name, e)
+		if err := cronStore.Add(&CronJob{ID: "job-" + name, Project: name, SessionKey: scopeTestSessionKey(name), CronExpr: "0 6 * * *", Prompt: "p"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"a", "b"} {
+		if err := timerStore.Add(&TimerJob{ID: "timer-" + name, Project: name, SessionKey: scopeTestSessionKey(name), ScheduledAt: time.Now().Add(time.Hour), Prompt: "p"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	s.SetRunAsUserIDs(map[string]int{"agent_a": testUIDAgentA, "agent_b": testUIDAgentB})
 	for _, rt := range s.routes() {
