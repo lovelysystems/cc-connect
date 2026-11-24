@@ -65,6 +65,15 @@ func TestEngagement_PersistsAcrossRestart(t *testing.T) {
 	if !e1.isEngaged("conv-A") {
 		t.Fatal("conv-A should be engaged in first instance")
 	}
+	for path, want := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %#o, want %#o", path, got, want)
+		}
+	}
 
 	// Second "process": a fresh engagement loading the same path resumes state.
 	e2 := newEngagement(path)

@@ -1223,3 +1223,12 @@ func TestSessionCancelReservation(t *testing.T) {
 		t.Fatal("cancelling a granted reservation did not release the lock")
 	}
 }
+
+func TestSessionManager_SaveWritesPrivateStore(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "sessions", "demo.json")
+	sm := NewSessionManager(storePath)
+	sm.GetOrCreateActive("user1")
+	sm.Save()
+	assertMode(t, storePath, 0o600)
+	assertMode(t, filepath.Dir(storePath), 0o700)
+}

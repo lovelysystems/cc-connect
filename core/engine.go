@@ -112,7 +112,7 @@ func SaveRestartNotify(dataDir string, req RestartRequest) error {
 		slog.Warn("SaveRestartNotify: mkdir failed", "dir", dir, "error", err)
 	}
 	data, _ := json.Marshal(req)
-	return os.WriteFile(filepath.Join(dir, "restart_notify"), data, 0o644)
+	return os.WriteFile(filepath.Join(dir, "restart_notify"), data, 0o600)
 }
 
 // ConsumeRestartNotify reads and deletes the restart notification file.

@@ -109,6 +109,27 @@ func runScenario(t *testing.T, sup string) {
 			bridge.waitReply(t, "from-agent "+p.user)
 		}
 	})
+	t.Run("agent users cannot read the stores in data_dir", func(t *testing.T) {
+		var sessions []string
+		waitFor(20*time.Second, func() bool {
+			sessions, _ = filepath.Glob(filepath.Join(dataDir, "sessions", "*.json"))
+			return len(sessions) > 0
+		})
+		if len(sessions) == 0 {
+			t.Fatal("no session store was written")
+		}
+		for _, path := range append(sessions, filepath.Join(dataDir, "crons", "jobs.json")) {
+			if _, err := os.Stat(path); err != nil {
+				t.Fatal(err)
+			}
+			for _, user := range []string{"agent_a", "agent_b"} {
+				out, err := runAs(user, "", "cat", path)
+				if err == nil || !strings.Contains(out, "Permission denied") {
+					t.Errorf("%s reading %s: %v\n%s", user, path, err, out)
+				}
+			}
+		}
+	})
 	t.Run("signoff for another project's live session answers like a missing one", func(t *testing.T) {
 		runAPICases(t, []apiCase{
 			{"agent_a posts into B", "agent_a", "POST", "/signoff/send", signoffBody(sessionKey("B")), 404},

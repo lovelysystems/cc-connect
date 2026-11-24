@@ -734,6 +734,15 @@ func TestAvailableModels_PersistsDiscoveryOnColdStart(t *testing.T) {
 	if len(cache.Models) != 2 || cache.Models[0].Name != "fresh/model" || cache.Models[1].Name != "second/model" {
 		t.Fatalf("persisted cache models = %v, want discovered models", cache.Models)
 	}
+	for path, want := range map[string]os.FileMode{cachePath: 0o600, filepath.Dir(cachePath): 0o700} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %#o, want %#o", path, got, want)
+		}
+	}
 
 	inMemory := a.persistentModels()
 	if len(inMemory) != 2 || inMemory[0].Name != "fresh/model" || inMemory[1].Name != "second/model" {

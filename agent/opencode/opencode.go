@@ -388,14 +388,14 @@ func (a *Agent) storePersistentModelCache(snapshot opencodeModelDiscoverySnapsho
 	}
 
 	if snapshot.cachePath != "" {
-		if err := os.MkdirAll(filepath.Dir(snapshot.cachePath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(snapshot.cachePath), 0o700); err != nil {
 			return err
 		}
 		data, err := json.Marshal(cache)
 		if err != nil {
 			return err
 		}
-		if err := core.AtomicWriteFile(snapshot.cachePath, data, 0o644); err != nil {
+		if err := core.AtomicWriteFile(snapshot.cachePath, data, 0o600); err != nil {
 			return err
 		}
 	}

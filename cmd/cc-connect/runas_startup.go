@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +21,8 @@ import (
 )
 
 // runRunAsUserStartupChecks runs preflight gates + isolation audit for
-// every project that sets run_as_user. Runs in parallel across projects.
+// every project that sets run_as_user, and checks the config file at
+// configPath. Runs in parallel across projects.
 // Fatal on any failure. Must be called BEFORE any engine is constructed.
 //
 // Returns nil if every project's run_as_user configuration is clean, or
@@ -28,7 +32,7 @@ import (
 // On Windows, this is a no-op because config validation already rejects
 // run_as_user at parse time. We still call it so the wiring is in place
 // for future platforms.
-func runRunAsUserStartupChecks(ctx context.Context, cfg *config.Config) error {
+func runRunAsUserStartupChecks(ctx context.Context, cfg *config.Config, configPath string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
@@ -123,6 +127,10 @@ func runRunAsUserStartupChecks(ctx context.Context, cfg *config.Config) error {
 	// Log every outcome — warnings, fatals, and clean passes — so the
 	// operator has a single visible record of what was checked.
 	var fatals []error
+	if err := checkConfigFile(configPath, cfg.DataDir); err != nil {
+		slog.Error("run_as_user: config file FATAL", "error", err)
+		fatals = append(fatals, err)
+	}
 	for _, o := range outcomes {
 		for _, w := range o.preflight.Warnings {
 			slog.Warn("run_as_user: preflight warning", "project", o.project, "message", w)
@@ -154,9 +162,36 @@ func runRunAsUserStartupChecks(ctx context.Context, cfg *config.Config) error {
 	}
 
 	if len(fatals) > 0 {
-		return fmt.Errorf("run_as_user startup checks failed for %d project(s); see logs above", len(fatals))
+		return fmt.Errorf("run_as_user startup checks found %d problem(s); see logs above", len(fatals))
 	}
 	return nil
+}
+
+// checkConfigFile returns an error when the config file at configPath is
+// inside dataDir and group or others can read it: every run_as_user agent can
+// enter dataDir, so it could read the config and the tokens in it.
+func checkConfigFile(configPath, dataDir string) error {
+	resolve := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			p = real
+		}
+		return p
+	}
+	rel, err := filepath.Rel(resolve(dataDir), resolve(configPath))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		return fmt.Errorf("check config file %s: %w", configPath, err)
+	}
+	if info.Mode().Perm()&0o044 == 0 {
+		return nil
+	}
+	return fmt.Errorf("config file %s is inside data_dir %s and readable by other users, so run_as_user agents can read it. Move it outside data_dir, or run chmod 600 %s", configPath, dataDir, configPath)
 }
 
 // socketProbe returns the uid of user after checking, as that user, that it

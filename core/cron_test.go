@@ -80,6 +80,8 @@ func TestCronStore_MutePersistence(t *testing.T) {
 	if !store.SetMute("persist1", true) {
 		t.Fatal("SetMute should return true")
 	}
+	assertMode(t, filepath.Join(dir, "crons", "jobs.json"), 0o600)
+	assertMode(t, filepath.Join(dir, "crons"), 0o700)
 
 	store2, err := NewCronStore(dir)
 	if err != nil {
