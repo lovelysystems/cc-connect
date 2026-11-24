@@ -10,28 +10,50 @@ import (
 	"syscall"
 )
 
+// SocketPeerCredentialsSupported reports whether the API socket can tell
+// which user is calling.
+func SocketPeerCredentialsSupported() bool { return true }
+
+// socketPeerUID returns the uid of the process on the other end of a Unix
+// socket connection.
+func socketPeerUID(c net.Conn) (int, error) {
+	cred, err := socketPeerUcred(c)
+	if err != nil {
+		return 0, err
+	}
+	return int(cred.Uid), nil
+}
+
 // socketPeerPid returns the pid of the process on the other end of a Unix
 // socket connection.
 func socketPeerPid(c net.Conn) (int, error) {
+	cred, err := socketPeerUcred(c)
+	if err != nil {
+		return 0, err
+	}
+	return int(cred.Pid), nil
+}
+
+func socketPeerUcred(c net.Conn) (*syscall.Ucred, error) {
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
-		return 0, errors.New("not a unix socket connection")
+		return nil, errors.New("not a unix socket connection")
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	var cred *syscall.Ucred
 	var credErr error
 	if err := raw.Control(func(fd uintptr) {
 		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 	}); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if credErr != nil {
-		return 0, credErr
+		return nil, credErr
 	}
-	return int(cred.Pid), nil
+	return cred, nil
 }
 
 // processParentPid reads the parent pid of pid from /proc.

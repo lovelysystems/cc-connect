@@ -43,6 +43,12 @@ type APIServer struct {
 	// signoffCaller reports whether the request comes from a process under
 	// the agent process agentPid; nil means callerUnderAgent.
 	signoffCaller func(r *http.Request, agentPid int) bool
+
+	// runAsUserIDs maps each run_as_user name to its uid.
+	runAsUserIDs map[string]int
+	// callerUID returns the uid of the process that sent r; nil means
+	// requestPeerUID.
+	callerUID func(r *http.Request) (int, error)
 }
 
 // SendRequest is the JSON body for POST /send.
@@ -96,23 +102,9 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 		engines:            make(map[string]*Engine),
 		maxAttachmentBytes: DefaultMaxAttachmentSize,
 	}
-	s.mux.HandleFunc("/send", s.handleSend)
-	s.mux.HandleFunc("/sessions", s.handleSessions)
-	s.mux.HandleFunc("/cron/add", s.handleCronAdd)
-	s.mux.HandleFunc("/cron/list", s.handleCronList)
-	s.mux.HandleFunc("/cron/info", s.handleCronInfo)
-	s.mux.HandleFunc("/cron/edit", s.handleCronEdit)
-	s.mux.HandleFunc("/cron/del", s.handleCronDel)
-	s.mux.HandleFunc("/timer/add", s.handleTimerAdd)
-	s.mux.HandleFunc("/timer/list", s.handleTimerList)
-	s.mux.HandleFunc("/timer/info", s.handleTimerInfo)
-	s.mux.HandleFunc("/timer/del", s.handleTimerDel)
-	s.mux.HandleFunc("/cron/exec", s.handleCronExec)
-	s.mux.HandleFunc("/cron/run", s.handleCronExec)
-	s.mux.HandleFunc("/relay/send", s.handleRelaySend)
-	s.mux.HandleFunc("/relay/bind", s.handleRelayBind)
-	s.mux.HandleFunc("/relay/binding", s.handleRelayBinding)
-	s.mux.HandleFunc("/signoff/send", s.handleSignoffSend)
+	for _, rt := range s.routes() {
+		s.handle(rt)
+	}
 
 	return s, nil
 }
@@ -183,7 +175,7 @@ func (s *APIServer) Start() {
 	s.server = &http.Server{
 		Handler: s.mux,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			return context.WithValue(ctx, signoffConnKey{}, c)
+			return context.WithValue(ctx, apiConnKey{}, c)
 		},
 	}
 	go func() {
