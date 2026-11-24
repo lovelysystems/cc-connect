@@ -454,6 +454,11 @@ type Engine struct {
 	shellFlag    string // shell flag (e.g. "-c", "-Command", "/C")
 	shellProfile string // prepended to every command but signoff_exec (e.g. "source ~/.zshrc;")
 
+	// projectRunAs is the project's run_as_user and run_as_env from config.
+	// Commands cc-connect runs for the project run as that user, and the API
+	// socket scopes that user's requests to the projects it runs.
+	projectRunAs SpawnOptions
+
 	// Multi-workspace mode
 	multiWorkspace               bool
 	baseDir                      string
@@ -873,6 +878,33 @@ func (e *Engine) reapIdleWorkspaces() {
 // SetHooks configures the lifecycle event hook manager.
 func (e *Engine) SetHooks(hm *HookManager) {
 	e.hooks = hm
+}
+
+// SetRunAs sets the project's run_as_user and run_as_env. Call it before
+// SetHooks, which hands them to the hook manager.
+func (e *Engine) SetRunAs(user string, env []string) {
+	e.projectRunAs = SpawnOptions{RunAsUser: user, EnvAllowlist: append([]string(nil), env...)}
+}
+
+// commandSpawnOptions returns a copy of the spawn options project commands
+// run with.
+func (e *Engine) commandSpawnOptions() SpawnOptions {
+	opts := e.projectRunAs
+	opts.EnvAllowlist = append([]string(nil), opts.EnvAllowlist...)
+	return opts
+}
+
+// commandEnv returns the variables a project command gets under run_as_user
+// so it can call the cc-connect CLI back.
+func (e *Engine) commandEnv(sessionKey string) []string {
+	env := []string{"CC_PROJECT=" + e.name}
+	if e.dataDir != "" {
+		env = append(env, "CC_DATA_DIR="+e.dataDir)
+	}
+	if sessionKey != "" {
+		env = append(env, "CC_SESSION_KEY="+sessionKey)
+	}
+	return env
 }
 
 // SetShell configures the shell binary, flag, and shell profile used for exec.

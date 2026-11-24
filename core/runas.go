@@ -248,6 +248,86 @@ func WriteFileAsUser(ctx context.Context, opts SpawnOptions, path string, data [
 	return nil
 }
 
+// Environment variables that carry a project command across sudo.
+const (
+	projectCmdShellEnv = "CC_RUNAS_CMD_SHELL"
+	projectCmdFlagEnv  = "CC_RUNAS_CMD_FLAG"
+	projectCmdTextEnv  = "CC_RUNAS_CMD"
+	projectCmdDirEnv   = "CC_RUNAS_CMD_DIR"
+)
+
+// projectCommandScript runs the command in the project command variables as
+// the target and frames its output with the marker lines. sudo -i joins argv
+// into one line for the login shell, so the script stays on one line and
+// reads every variable as "${NAME}".
+//
+// The command keeps the script's stdin through fd 3 and runs in a process
+// group of its own (setsid, else job control). On TERM the script sends TERM
+// to that group, then KILL a second later, so a command that ignores TERM or
+// left children behind still stops. The script itself is what sudo relays
+// TERM to, since the spawn starts with exec.
+func projectCommandScript(pwsh bool) string {
+	run := `"${` + projectCmdShellEnv + `}" `
+	if pwsh {
+		run += `-NoProfile -ExecutionPolicy Bypass `
+	}
+	run += `"${` + projectCmdFlagEnv + `}" "${` + projectCmdTextEnv + `}" <&3 3<&- &`
+	begin := `printf '%s\n' '` + projectCmdBeginMarker + `'`
+	end := `printf '\n%s\n' '` + projectCmdEndMarker + `'`
+	kill := func(sig string) string {
+		return `kill -s ` + sig + ` -- -"${p}" 2>/dev/null || kill -s ` + sig + ` "${p}" 2>/dev/null; `
+	}
+	return `exec 3<&0; ` + begin + `; ` + begin + ` >&2; ` +
+		`if [ -n "${` + projectCmdDirEnv + `}" ]; then cd "${` + projectCmdDirEnv + `}" || { ` + end + `; ` + end + ` >&2; exit 1; }; fi; ` +
+		`p=; trap 'if [ -n "${p}" ]; then ` + kill("TERM") + `sleep 1; ` + kill("KILL") + `fi; exit 143' TERM; ` +
+		`if command -v setsid >/dev/null 2>&1; then setsid ` + run + ` else set -m 2>/dev/null; ` + run + ` set +m; fi; ` +
+		`p=${!}; wait "${p}" 2>/dev/null; s=${?}; ` + end + `; ` + end + ` >&2; exit "${s}"`
+}
+
+// buildProjectCommand returns the command cc-connect runs for a project.
+// Without run_as_user it is the plain shellExecCommand in c.dir. Under
+// run_as_user it runs as the target through sudo -i, after the per-spawn
+// sudo check, with only the allowlisted environment plus c.env; its output
+// is framed (read it with commandLineWriter or projectCommandOutput) and a
+// cancelled context sends TERM, which the script passes on to the command's
+// process group. With c.dir empty the command starts in the target's home.
+func buildProjectCommand(ctx context.Context, opts SpawnOptions, c projectCommand) (*exec.Cmd, error) {
+	if !opts.IsolationMode() {
+		cmd := shellExecCommand(ctx, c.shell, c.flag, c.profile, c.command)
+		cmd.Dir = c.dir
+		return cmd, nil
+	}
+	if err := VerifyRunAsUserCheap(ctx, ExecSudoRunner{}, opts.RunAsUser); err != nil {
+		return nil, fmt.Errorf("run as %q refused: %w", opts.RunAsUser, err)
+	}
+	command := c.command
+	if c.profile != "" {
+		command = c.profile + "\n" + command
+	}
+	env := append([]string{
+		projectCmdShellEnv + "=" + c.shell,
+		projectCmdFlagEnv + "=" + c.flag,
+		projectCmdTextEnv + "=" + command,
+		projectCmdDirEnv + "=" + c.dir,
+	}, c.env...)
+	opts.WorkDir = ""
+	opts.EnvAllowlist = append([]string(nil), opts.EnvAllowlist...)
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok {
+			opts.EnvAllowlist = append(opts.EnvAllowlist, k)
+		}
+	}
+	base := strings.ToLower(filepath.Base(c.shell))
+	pwsh := strings.HasPrefix(base, "powershell") || strings.HasPrefix(base, "pwsh")
+	cmd := BuildSpawnCommand(ctx, opts, "exec", "/bin/sh", "-c", projectCommandScript(pwsh))
+	cmd.Env = FilterEnvForSpawn(MergeEnv(os.Environ(), env), opts)
+	// sudo relays SIGTERM but not SIGKILL. WaitDelay ends Wait when a child
+	// still holds an output pipe after sudo is gone.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	return cmd, nil
+}
+
 // FilterEnvForSpawn strips env down to the merged allowlist when
 // opts.IsolationMode() is true. Belt-and-braces with sudo's own
 // --preserve-env, but having cc-connect's spawn argv be the single
