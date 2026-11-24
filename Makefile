@@ -67,7 +67,7 @@ endif
 _BUILD_TAGS := $(strip $(_EXCLUDE_TAGS) goolm)
 _TAGS_FLAG  := $(if $(_BUILD_TAGS),-tags '$(_BUILD_TAGS)',)
 
-.PHONY: build run clean test test-fast test-full test-smoke test-e2e test-release test-release-local test-performance pre-test lint release release-all web
+.PHONY: build run clean test test-fast test-full test-smoke test-e2e test-release test-release-local test-performance test-runas pre-test lint release release-all web
 
 web:
 	@if [ ! -d web/node_modules ]; then cd web && npm install; fi
@@ -123,6 +123,12 @@ test-e2e: pre-test
 # Performance benchmarks only
 test-performance: pre-test
 	go test -bench=. -benchmem -tags=performance ./tests/performance/...
+
+# Multi-user run_as_user test. Needs root on Linux and changes the host (users,
+# a sudoers rule, /var/lib/cc-e2e, /srv/cc-e2e): run it in a throwaway
+# container or CI runner.
+test-runas:
+	go test -v -count=1 -tags=runas,no_web ./tests/runas/...
 
 # Release test: full + performance benchmarks
 test-release: pre-test

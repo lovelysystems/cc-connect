@@ -179,3 +179,19 @@ jobs:
 
       - name: Run performance benchmarks
         run: go test -bench=. -benchmem -tags=performance,no_web ./tests/performance/...
+
+  runas-test:
+    runs-on: ubuntu-latest
+    needs: unit-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run multi-user run_as_user test as root
+        run: sudo -E env "PATH=$PATH" go test -v -count=1 -tags=runas,no_web ./tests/runas/...
