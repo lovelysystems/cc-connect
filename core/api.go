@@ -88,7 +88,7 @@ func NewAPIServer(dataDir string, shared bool) (*APIServer, error) {
 	var sockPath string
 	if shared {
 		var err error
-		listener, sockPath, err = listenSharedSocket(sockDir, os.Lstat)
+		listener, sockPath, err = listenSharedSocket(sockDir, os.Lstat, os.Stat)
 		if err != nil {
 			return nil, err
 		}
@@ -239,8 +239,15 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "message, tts_text, or attachment is required", http.StatusBadRequest)
 		return
 	}
-	project, allowed := callerProject(w, requestCaller(r), req.Project)
+	caller := requestCaller(r)
+	project, allowed := callerProject(w, caller, req.Project)
 	if !allowed {
+		return
+	}
+	// cc-connect would stat a work_dir as its own user, so a scoped caller
+	// could learn which paths exist outside its reach.
+	if caller.scoped && (req.WorkDir != "" || req.CWD != "") {
+		http.Error(w, apiForbidden, http.StatusForbidden)
 		return
 	}
 	req.Project = project
@@ -849,19 +856,18 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 		callerUnder = callerUnderAgent
 	}
 	caller := requestCaller(r)
-	live, outside := false, false
+	live := false
 	var engine *Engine
 	var target signoffTarget
 	for i, e := range engines {
+		if !caller.allows(names[i]) {
+			continue
+		}
 		t, ok := e.signoffTarget(req.SessionKey)
 		if !ok {
 			continue
 		}
 		live = true
-		if !caller.allows(names[i]) {
-			outside = true
-			continue
-		}
 		if callerUnder(r, t.agentPid) {
 			engine, target = e, t
 			break
@@ -869,10 +875,6 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if !live {
 		http.Error(w, "no live session for session_key", http.StatusNotFound)
-		return
-	}
-	if engine == nil && outside {
-		http.Error(w, apiForbidden, http.StatusForbidden)
 		return
 	}
 	if engine == nil {

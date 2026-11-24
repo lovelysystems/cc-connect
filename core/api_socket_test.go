@@ -99,7 +99,7 @@ func TestListenSharedSocket_ResolvesLinkAndOpens0666(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen []string
-	l, sockPath, err := listenSharedSocket(link, folderLstat(&seen))
+	l, sockPath, err := listenSharedSocket(link, folderLstat(&seen), fakeFolders(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestListenSharedSocket_ResolvesLinkAndOpens0666(t *testing.T) {
 		t.Fatalf("socket path = %s, want it in %s", sockPath, resolved)
 	}
 	for _, p := range seen {
-		if strings.HasPrefix(p, link) {
+		if strings.HasPrefix(p, link+"/") {
 			t.Fatalf("checked %s through the link", p)
 		}
 	}
@@ -128,7 +128,7 @@ func TestListenSharedSocket_FailsWhenSocketFileIsReplaced(t *testing.T) {
 		}
 		return fakeFileInfo{name: p, mode: fs.ModeDir | 0o755}, nil
 	}
-	l, _, err := listenSharedSocket(runDir, lstat)
+	l, _, err := listenSharedSocket(runDir, lstat, fakeFolders(nil))
 	if err == nil {
 		_ = l.Close()
 		t.Fatal("want error for a socket replaced by a regular file")
@@ -142,12 +142,81 @@ func TestListenSharedSocket_UnsafeFolderOpensNothing(t *testing.T) {
 	runDir := t.TempDir()
 	resolved, _ := filepath.EvalSymlinks(runDir)
 	parent := filepath.Dir(resolved)
-	_, _, err := listenSharedSocket(runDir, fakeFolders(map[string]fakeFileInfo{parent: {mode: fs.ModeDir | 0o777}}))
+	_, _, err := listenSharedSocket(runDir, fakeFolders(map[string]fakeFileInfo{parent: {mode: fs.ModeDir | 0o777}}), fakeFolders(nil))
 	if err == nil || !strings.Contains(err.Error(), parent) {
 		t.Fatalf("err = %v, want it to name %s", err, parent)
 	}
 	if _, err := os.Lstat(filepath.Join(resolved, "api.sock")); err == nil {
 		t.Fatal("socket created in an unsafe folder")
+	}
+}
+
+func TestListenSharedSocket_RefusesALinkInAFolderOthersCanWrite(t *testing.T) {
+	base := shortTempDir(t)
+	real := filepath.Join(base, "real-run")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "run")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	stat := fakeFolders(map[string]fakeFileInfo{base: {mode: fs.ModeDir | 0o777}})
+	l, _, err := listenSharedSocket(link, fakeFolders(nil), stat)
+	if err == nil {
+		_ = l.Close()
+		t.Fatal("want error for a link in a folder others can write")
+	}
+	if !strings.Contains(err.Error(), base+" has mode 777") {
+		t.Fatalf("err = %v, want it to name %s", err, base)
+	}
+	if _, err := os.Lstat(filepath.Join(real, "api.sock")); err == nil {
+		t.Fatal("socket created behind a link others can repoint")
+	}
+}
+
+// diskLinks answers lstat with each path's real type from disk, as a
+// root-owned 0755 entry unless tree names the path.
+func diskLinks(tree map[string]fakeFileInfo) func(string) (fs.FileInfo, error) {
+	return func(p string) (fs.FileInfo, error) {
+		if info, ok := tree[p]; ok {
+			return info, nil
+		}
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, err
+		}
+		return fakeFileInfo{name: p, mode: info.Mode().Type() | 0o755}, nil
+	}
+}
+
+func TestListenSharedSocket_RefusesALinkInsideALinkTarget(t *testing.T) {
+	base := shortTempDir(t)
+	resolvedBase, _ := filepath.EvalSymlinks(base)
+	for _, d := range []string{"real-run", "shared"} {
+		if err := os.Mkdir(filepath.Join(base, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(base, "real-run"), filepath.Join(base, "shared", "current")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "run")
+	if err := os.Symlink(filepath.Join(base, "shared", "current"), link); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(resolvedBase, "shared")
+	lstat := diskLinks(map[string]fakeFileInfo{shared: {mode: fs.ModeDir | 0o777}})
+	l, _, err := listenSharedSocket(link, lstat, fakeFolders(nil))
+	if err == nil {
+		_ = l.Close()
+		t.Fatal("want error for a link in a folder others can write, reached through another link")
+	}
+	if !strings.Contains(err.Error(), shared+" has mode 777") {
+		t.Fatalf("err = %v, want it to name %s", err, shared)
+	}
+	if _, err := os.Lstat(filepath.Join(base, "real-run", "api.sock")); err == nil {
+		t.Fatal("socket created behind a link others can repoint")
 	}
 }
 

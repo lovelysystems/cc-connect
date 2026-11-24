@@ -354,14 +354,19 @@ uid from the socket's peer credentials:
   projects: another project's name is refused, another project's job
   answers as if it did not exist, and `cron edit` cannot move a job to
   another project. With no project named, a user with one project gets
-  that project. `/relay/send` works only `from` one of its projects that
-  is bound in the chat. `/sessions`, `/relay/bind` and `/relay/binding`
-  are refused.
+  that project. `/send` with `work_dir` or `cwd` (`cc-connect send
+  --cwd`) is refused. `/relay/send` works only `from` one of its projects
+  that is bound in the chat. `/signoff/send` answers a session of another
+  project as if it did not exist. `/sessions`, `/relay/bind` and
+  `/relay/binding` are refused.
 
 While no project sets `run_as_user`, the socket stays mode `0600`. With
 one, the socket becomes `0666`, after cc-connect checked that every
 folder from the socket's folder up to `/`, symlinks resolved, is owned
 by root or by cc-connect's user and is not writable by group or others.
+The folders on `data_dir` as configured must pass the same check, and
+so must the folder holding each symlink on the way to the socket,
+including a symlink inside another symlink's target.
 cc-connect then checks, as each target user, that the user can enter
 each of those folders and write the socket. Any failure stops startup
 with a message naming the folder and the fix. Peer credentials exist on

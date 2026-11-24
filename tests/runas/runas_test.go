@@ -109,10 +109,10 @@ func runScenario(t *testing.T, sup string) {
 			bridge.waitReply(t, "from-agent "+p.user)
 		}
 	})
-	t.Run("signoff for another project's live session is refused", func(t *testing.T) {
+	t.Run("signoff for another project's live session answers like a missing one", func(t *testing.T) {
 		runAPICases(t, []apiCase{
-			{"agent_a posts into B", "agent_a", "POST", "/signoff/send", signoffBody(sessionKey("B")), 403},
-			{"agent_b posts into A", "agent_b", "POST", "/signoff/send", signoffBody(sessionKey("A")), 403},
+			{"agent_a posts into B", "agent_a", "POST", "/signoff/send", signoffBody(sessionKey("B")), 404},
+			{"agent_b posts into A", "agent_b", "POST", "/signoff/send", signoffBody(sessionKey("A")), 404},
 			{"stranger posts into A", "stranger", "POST", "/signoff/send", signoffBody(sessionKey("A")), 403},
 		})
 	})
@@ -343,7 +343,12 @@ func apiCases(owners []string) []apiCase {
 			apiCase{u + " reads a relay binding", u, "GET", "/relay/binding?chat_id=chatR", "", 403},
 		)
 	}
+	send := func(field string) string {
+		return fmt.Sprintf(`{"project":"A","session_key":%q,"message":"hi",%q:"/"}`, sessionKey("A"), field)
+	}
 	return append(cases,
+		apiCase{"agent_a sends to A with work_dir", "agent_a", "POST", "/send", send("work_dir"), 403},
+		apiCase{"agent_a sends to A with cwd", "agent_a", "POST", "/send", send("cwd"), 403},
 		apiCase{"agent_a relays from B", "agent_a", "POST", "/relay/send", relay("B"), 403},
 		apiCase{"agent_a relays from A, not bound in the chat", "agent_a", "POST", "/relay/send", relay("A"), 403},
 		apiCase{"agent_a relays from no project", "agent_a", "POST", "/relay/send", relay(""), 403},

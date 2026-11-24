@@ -91,6 +91,28 @@ func TestAPIScopeSendWithoutProjectUsesTheCallersOnlyProject(t *testing.T) {
 	wantStatus(t, "cc-connect's own user", rec, http.StatusBadRequest, required)
 }
 
+func TestAPIScopeSendRefusesAWorkDirFromAScopedCaller(t *testing.T) {
+	missing := "/cc-connect-test-no-such-folder"
+	s := scopeTestServer(t, testUIDAgentA)
+	for name, req := range map[string]SendRequest{
+		"work_dir": {Project: "a", SessionKey: scopeTestSessionKey("a"), Message: "x", WorkDir: missing},
+		"cwd":      {Project: "a", SessionKey: scopeTestSessionKey("a"), Message: "x", CWD: missing},
+	} {
+		rec := postAPI(t, s, "/send", req)
+		wantStatus(t, "agent_a with "+name, rec, http.StatusForbidden, apiForbidden)
+	}
+	if got := sentTo(s, "a"); len(got) != 0 {
+		t.Fatalf("project a got %q", got)
+	}
+
+	for name, uid := range map[string]int{"root": 0, "cc-connect's own user": os.Geteuid()} {
+		rec := postAPI(t, scopeTestServer(t, uid), "/send", SendRequest{Project: "a", SessionKey: scopeTestSessionKey("a"), Message: "x", CWD: missing})
+		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), `work_dir "`+missing+`"`) {
+			t.Errorf("%s with cwd: %d %q, want the engine's work_dir error", name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestAPIScopeCronAndTimerAddActOnlyForTheCallersProjects(t *testing.T) {
 	cronAdd := func(project string) CronAddRequest {
 		return CronAddRequest{Project: project, SessionKey: scopeTestSessionKey("a"), CronExpr: "0 6 * * *", Prompt: "p"}

@@ -287,11 +287,10 @@ level = "info" # debug, info, warn, error
 #        callers are refused / 调用方不在该会话的 agent 进程之下（仅 Linux 可校验；
 #        其他系统一律拒绝）。校验需要 agent 报告其进程 id，目前仅 Claude Code 支持，
 #        其他 agent 的调用方一律拒绝
-#   403  forbidden: the caller is no project's agent, or session_key's session is
-#        in a project outside the caller's (see "Who may use the API socket" in
-#        docs/usage.md) / forbidden：调用方不是任何项目的 agent，或 session_key
-#        的会话属于调用方项目之外的项目
-#   404  no live agent session for session_key / session_key 没有存活的 agent 会话
+#   403  forbidden: the caller is no project's agent (see "Who may use the API
+#        socket" in docs/usage.md) / forbidden：调用方不是任何项目的 agent
+#   404  no live agent session for session_key in the caller's projects /
+#        调用方的项目中 session_key 没有存活的 agent 会话
 #   422  the project has no run_as_user, or its platform cannot show signoff cards
 #        项目未设置 run_as_user，或其平台不支持签核卡片
 #   A program started from a cron or timer job that runs in a new session per run

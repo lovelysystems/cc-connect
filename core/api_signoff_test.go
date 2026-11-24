@@ -230,11 +230,12 @@ func scopedSignoffAPI(t *testing.T, uid, callerPid int, live ...string) (api *AP
 	return api, pa, pb
 }
 
-func TestSignoffAPIRefusesASessionOfAnotherProject(t *testing.T) {
+func TestSignoffAPIAnswersASessionOfAnotherProjectLikeAMissingOne(t *testing.T) {
 	api, pa, pb := scopedSignoffAPI(t, testUIDAgentA, 200, "b")
+	missing := serveAPI(api, http.MethodPost, "/signoff/send", bytes.NewReader(signoffAPIBody(t, func(b map[string]any) { b["session_key"] = "test:elsewhere" })))
 	rec := serveAPI(api, http.MethodPost, "/signoff/send", bytes.NewReader(signoffAPIBody(t, nil)))
-	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != apiForbidden {
-		t.Fatalf("status %d, body %s; want 403 %s", rec.Code, rec.Body.String(), apiForbidden)
+	if missing.Code != http.StatusNotFound || rec.Code != missing.Code || rec.Body.String() != missing.Body.String() {
+		t.Fatalf("another project's session: %d %q; missing session: %d %q; want both the 404", rec.Code, rec.Body.String(), missing.Code, missing.Body.String())
 	}
 	time.Sleep(50 * time.Millisecond)
 	if len(pa.entries()) != 0 || len(pb.entries()) != 0 {
