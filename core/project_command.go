@@ -127,3 +127,11 @@ func (w *commandLineWriter) flush() {
 	}
 	w.emit(s)
 }
+
+// shellQuote wraps s in POSIX single quotes, escaping embedded quotes.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
