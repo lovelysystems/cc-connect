@@ -18,11 +18,14 @@ package core
 // binary.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -234,4 +237,46 @@ func indent(s, prefix string) string {
 		lines[i] = prefix + l
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ProbeSocketAccess runs one command as user that prints the user's uid and
+// checks that the user can enter every folder from / down to the API
+// socket's folder and write the socket at sockPath. It returns the uid, or
+// an error that names the first folder the user cannot enter and the fix.
+func ProbeSocketAccess(ctx context.Context, user, sockPath string) (int, error) {
+	var folders []string
+	for d := filepath.Dir(sockPath); ; d = filepath.Dir(d) {
+		folders = append([]string{shellQuote(d)}, folders...)
+		if d == filepath.Dir(d) {
+			break
+		}
+	}
+	script := `id -u || exit 1; for d in ` + strings.Join(folders, " ") + `; do ` +
+		`[ -x "$d" ] || { printf '%s\n' "$d"; exit 2; }; done; [ -w ` + shellQuote(sockPath) + ` ] || exit 3`
+	cmd, err := buildProjectCommand(ctx, SpawnOptions{RunAsUser: user}, projectCommand{shell: "/bin/sh", flag: "-c", command: script})
+	if err != nil {
+		return 0, err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	lines := strings.Split(strings.TrimSpace(string(projectCommandOutput(stdout.Bytes()))), "\n")
+	uid, uidErr := strconv.Atoi(strings.TrimSpace(lines[0]))
+	var exitErr *exec.ExitError
+	code := 0
+	if errors.As(runErr, &exitErr) {
+		code = exitErr.ExitCode()
+	}
+	switch {
+	case code == 2 && len(lines) > 1:
+		return 0, fmt.Errorf("user %q cannot enter %s, so its agent cannot reach the API socket %s. Set data_dir to a dedicated folder outside any home folder, with every folder above it traversable by others (chmod o+x)", user, lines[1], sockPath)
+	case code == 3:
+		return 0, fmt.Errorf("user %q cannot write the API socket %s", user, sockPath)
+	case runErr != nil:
+		return 0, fmt.Errorf("probe API socket access as %q: %w: %s", user, runErr, strings.TrimSpace(string(projectCommandOutput(stderr.Bytes()))))
+	case uidErr != nil:
+		return 0, fmt.Errorf("probe API socket access as %q: read uid: %w", user, uidErr)
+	}
+	return uid, nil
 }

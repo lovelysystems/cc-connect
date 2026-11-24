@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/user"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -155,4 +157,56 @@ func runRunAsUserStartupChecks(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("run_as_user startup checks failed for %d project(s); see logs above", len(fatals))
 	}
 	return nil
+}
+
+// socketProbe returns the uid of user after checking, as that user, that it
+// can reach the API socket at sockPath.
+type socketProbe func(ctx context.Context, user, sockPath string) (int, error)
+
+// openAPISocket opens the API socket before any engine starts. Without a
+// run_as_user project it is cc-connect's own socket, and a failure only
+// warns and returns no server. With one, the socket is shared with the
+// projects' users; a platform without peer credentials, a socket that cannot
+// be opened safely, or a project user that cannot reach it is an error, and
+// each user's uid is handed to the server.
+func openAPISocket(ctx context.Context, cfg *config.Config, peerCredentials bool, probe socketProbe) (*core.APIServer, error) {
+	var users []string
+	for _, proj := range cfg.Projects {
+		if proj.RunAsUser != "" && !slices.Contains(users, proj.RunAsUser) {
+			users = append(users, proj.RunAsUser)
+		}
+	}
+	if len(users) == 0 {
+		srv, err := core.NewAPIServer(cfg.DataDir, false)
+		if err != nil {
+			slog.Warn("api server unavailable", "error", err)
+			return nil, nil
+		}
+		return srv, nil
+	}
+	if !peerCredentials {
+		return nil, fmt.Errorf("run_as_user needs the API socket to read each caller's uid, which cc-connect cannot do on %s; remove run_as_user or run on Linux or macOS", runtime.GOOS)
+	}
+	srv, err := core.NewAPIServer(cfg.DataDir, true)
+	if err != nil {
+		return nil, fmt.Errorf("open the API socket for run_as_user: %w", err)
+	}
+	ids := make(map[string]int, len(users))
+	var errs []error
+	for _, user := range users {
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		uid, err := probe(probeCtx, user, srv.SocketPath())
+		cancel()
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		ids[user] = uid
+	}
+	if err := errors.Join(errs...); err != nil {
+		srv.Stop()
+		return nil, err
+	}
+	srv.SetRunAsUserIDs(ids)
+	return srv, nil
 }

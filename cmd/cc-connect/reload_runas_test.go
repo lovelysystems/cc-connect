@@ -21,7 +21,7 @@ func TestReloadConfigKeepsTheSocketScopeOfRunAsUser(t *testing.T) {
 	t.Cleanup(func() { _ = engine.Stop() })
 	engine.SetRunAs("agent_a", nil)
 
-	api, err := core.NewAPIServer(dir)
+	api, err := core.NewAPIServer(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}

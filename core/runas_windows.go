@@ -70,3 +70,8 @@ func buildProjectCommand(ctx context.Context, _ SpawnOptions, c projectCommand) 
 	cmd.Dir = c.dir
 	return cmd, nil
 }
+
+// ProbeSocketAccess always fails on Windows.
+func ProbeSocketAccess(context.Context, string, string) (int, error) {
+	return 0, errors.New("run_as_user is not supported on Windows")
+}

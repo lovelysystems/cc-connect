@@ -355,6 +355,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The API socket opens here, before any engine, platform, cron or timer
+	// starts, so a run_as_user project that cannot use it stops startup now.
+	apiSrv, err := openAPISocket(context.Background(), cfg, core.SocketPeerCredentialsSupported(), core.ProbeSocketAccess)
+	if err != nil {
+		slog.Error("api socket: startup checks failed, refusing to start", "error", err)
+		os.Exit(1)
+	}
+
 	engines := make([]*core.Engine, 0, len(cfg.Projects))
 	effectiveWorkDirs := make([]string, 0, len(cfg.Projects))
 
@@ -1259,10 +1267,7 @@ func main() {
 	}
 
 	// Start internal API server for CLI send
-	apiSrv, err := core.NewAPIServer(cfg.DataDir)
-	if err != nil {
-		slog.Warn("api server unavailable", "error", err)
-	} else {
+	if apiSrv != nil {
 		globalAPIServer = apiSrv
 		apiSrv.SetMaxAttachmentSize(resolveMaxAttachmentSize(cfg))
 

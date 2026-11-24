@@ -75,24 +75,38 @@ type SendRequest struct {
 	AtAll      bool              `json:"at_all,omitempty"`
 }
 
-// NewAPIServer creates an API server on a Unix socket.
-func NewAPIServer(dataDir string) (*APIServer, error) {
+// NewAPIServer creates an API server on the Unix socket <dataDir>/run/api.sock.
+// Without shared the socket is mode 0600, for cc-connect's own user and root.
+// With shared it is mode 0666 for the agents of run_as_user projects, opened
+// only after its folders passed listenSharedSocket's checks.
+func NewAPIServer(dataDir string, shared bool) (*APIServer, error) {
 	sockDir := filepath.Join(dataDir, "run")
 	if err := os.MkdirAll(sockDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create run dir: %w", err)
 	}
-	sockPath := filepath.Join(sockDir, "api.sock")
+	var listener net.Listener
+	var sockPath string
+	if shared {
+		var err error
+		listener, sockPath, err = listenSharedSocket(sockDir, os.Lstat)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		sockPath = filepath.Join(sockDir, "api.sock")
 
-	// Remove stale socket
-	os.Remove(sockPath)
+		// Remove stale socket
+		_ = os.Remove(sockPath)
 
-	listener, err := net.Listen("unix", sockPath)
-	if err != nil {
-		return nil, fmt.Errorf("listen unix socket: %w", err)
-	}
-	if err := os.Chmod(sockPath, 0o600); err != nil {
-		_ = listener.Close()
-		return nil, fmt.Errorf("chmod socket: %w", err)
+		var err error
+		listener, err = net.Listen("unix", sockPath)
+		if err != nil {
+			return nil, fmt.Errorf("listen unix socket: %w", err)
+		}
+		if err := os.Chmod(sockPath, 0o600); err != nil {
+			_ = listener.Close()
+			return nil, fmt.Errorf("chmod socket: %w", err)
+		}
 	}
 
 	s := &APIServer{
