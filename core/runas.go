@@ -266,12 +266,15 @@ const (
 // into one line for the login shell, so the script stays on one line and
 // reads every variable as "${NAME}".
 //
-// The command keeps the script's stdin through fd 3 and runs in a process
-// group of its own (setsid, else job control). On TERM the script sends TERM
-// to that group, then KILL a second later, so a command that ignores TERM or
-// left children behind still stops, and it closes the frame before it exits.
+// The command runs in the background, in a process group of its own (setsid,
+// else job control), and keeps the script's stdin through fd 3; a background
+// job otherwise reads /dev/null. Job control goes off right after the start,
+// since bash prints a "Done" job line into the stderr frame. On TERM the
+// script sends TERM to that group, then KILL a second later, so a command
+// that ignores TERM or left children behind still stops, and it closes the
+// frame before it exits, ahead of the login shell's logout output.
 // The script itself is what sudo relays TERM to, since the spawn starts with
-// exec.
+// exec; a dash login shell keeps a plain command as its child.
 func projectCommandScript(pwsh bool) string {
 	run := `"${` + projectCmdShellEnv + `}" `
 	if pwsh {
