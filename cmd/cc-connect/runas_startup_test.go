@@ -144,3 +144,47 @@ func TestOpenAPISocket_RunAsProbeFailureStops(t *testing.T) {
 		t.Fatal("socket left open after a failed probe")
 	}
 }
+
+func writeConfigFile(t *testing.T, dir string, mode os.FileMode) string {
+	t.Helper()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("data_dir = \"x\"\n"), mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCheckConfigFile_ReadableInsideDataDirStops(t *testing.T) {
+	dataDir := t.TempDir()
+	configPath := writeConfigFile(t, dataDir, 0o644)
+	err := checkConfigFile(configPath, dataDir)
+	if err == nil {
+		t.Fatal("want an error for a readable config inside data_dir")
+	}
+	for _, want := range []string{configPath, "outside data_dir", "chmod 600"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+func TestCheckConfigFile_PrivateOrOutsideDataDirPasses(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := checkConfigFile(writeConfigFile(t, dataDir, 0o600), dataDir); err != nil {
+		t.Errorf("0600 config inside data_dir: %v", err)
+	}
+	if err := checkConfigFile(writeConfigFile(t, t.TempDir(), 0o644), dataDir); err != nil {
+		t.Errorf("0644 config outside data_dir: %v", err)
+	}
+}
+
+func TestRunRunAsUserStartupChecks_WithoutRunAsIgnoresConfigMode(t *testing.T) {
+	dataDir := t.TempDir()
+	configPath := writeConfigFile(t, dataDir, 0o644)
+	if err := runRunAsUserStartupChecks(context.Background(), runAsConfig(dataDir, ""), configPath); err != nil {
+		t.Fatalf("without run_as_user: %v", err)
+	}
+}

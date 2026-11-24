@@ -125,11 +125,11 @@ func (ps *ProjectStateStore) saveLocked() {
 		slog.Error("project_state: failed to marshal", "error", err)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(ps.storePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(ps.storePath), 0o700); err != nil {
 		slog.Error("project_state: failed to create dir", "path", ps.storePath, "error", err)
 		return
 	}
-	if err := AtomicWriteFile(ps.storePath, data, 0o644); err != nil {
+	if err := AtomicWriteFile(ps.storePath, data, 0o600); err != nil {
 		slog.Error("project_state: failed to write", "path", ps.storePath, "error", err)
 	}
 }

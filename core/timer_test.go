@@ -208,6 +208,8 @@ func TestTimerStore_Persistence(t *testing.T) {
 	if err := store1.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	assertMode(t, filepath.Join(dir, "timers", "jobs.json"), 0o600)
+	assertMode(t, filepath.Join(dir, "timers"), 0o700)
 
 	// Reload from disk
 	store2, err := NewTimerStore(dir)

@@ -373,11 +373,19 @@ with a message naming the folder and the fix. Peer credentials exist on
 Linux and macOS only; elsewhere a project with `run_as_user` stops
 startup.
 
-Every target user can enter `data_dir`, so each can also read, by name,
-the files cc-connect keeps there (session history with every chat
-message of every project, cron jobs, relay and workspace bindings). Use a dedicated `data_dir` outside any home folder, mode
-`0711`, with every folder above it traversable by others, and keep the
-config file outside it.
+Every target user can enter `data_dir`. cc-connect writes its stores
+there (session history, cron jobs, timers, relay and workspace bindings)
+mode `0600` in folders mode `0700`, and tightens existing ones at
+startup, so a target user cannot read them. What stays readable to
+every target user is `run/` and the prompt files in `agent-prompts/`,
+which hold the system and platform prompts of every project. Files you
+put in `data_dir` yourself, such as `config/minimax.json`, keep their
+own mode.
+`cc-connect agent-sid` reads `data_dir` directly, so it does not work
+for a target user. Use a dedicated `data_dir` outside any home folder,
+mode `0711`, with every folder above it traversable by others. A config
+file inside `data_dir` that group or others can read stops startup; keep
+the config outside `data_dir`, or `chmod 600` it.
 
 ### What runs as the target user
 
@@ -635,6 +643,9 @@ them first.
   the target user cannot traverse folder `F`. Set `data_dir` to a
   dedicated folder outside any home folder, with every folder above it
   traversable by others (`chmod o+x`).
+- **"config file X is inside data_dir D and readable by other users"** —
+  every target user can enter `data_dir`. Move the config outside
+  `data_dir`, or run `chmod 600 X`.
 - **"user X cannot write the API socket"**, **"API socket S changed after
   it was opened"**, or **"open the API socket for run_as_user"** — the
   socket could not be opened or made safe; the message names the cause.

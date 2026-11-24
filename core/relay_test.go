@@ -594,3 +594,10 @@ func TestHandleRelay_MultiWorkspaceRequiresWorkspaceBinding(t *testing.T) {
 		t.Fatalf("expected no global relay session, got %q", got)
 	}
 }
+
+func TestRelayManager_BindWritesPrivateStore(t *testing.T) {
+	dataDir := t.TempDir()
+	rm := NewRelayManager(dataDir)
+	rm.Bind("feishu", "chat-1", map[string]string{"a": "bot-a"})
+	assertMode(t, filepath.Join(dataDir, "relay_bindings.json"), 0o600)
+}

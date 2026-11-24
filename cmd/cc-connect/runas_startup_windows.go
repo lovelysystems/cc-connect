@@ -10,7 +10,7 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
-func runRunAsUserStartupChecks(_ context.Context, _ *config.Config) error {
+func runRunAsUserStartupChecks(_ context.Context, _ *config.Config, _ string) error {
 	return nil
 }
 

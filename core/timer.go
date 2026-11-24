@@ -96,7 +96,7 @@ type TimerStore struct {
 
 func NewTimerStore(dataDir string) (*TimerStore, error) {
 	dir := filepath.Join(dataDir, "timers")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, "jobs.json")
@@ -120,7 +120,7 @@ func (s *TimerStore) save() error {
 	if err != nil {
 		return err
 	}
-	return AtomicWriteFile(s.path, data, 0o644)
+	return AtomicWriteFile(s.path, data, 0o600)
 }
 
 func (s *TimerStore) Add(job *TimerJob) error {

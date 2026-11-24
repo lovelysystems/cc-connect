@@ -345,12 +345,13 @@ func main() {
 	}
 
 	setupLogger(cfg.Log.Level, logWriter)
+	tightenDataDir(cfg.DataDir)
 
 	// run_as_user preflight + isolation audit. MUST run before any engine
 	// or agent is constructed. If any project fails, abort startup
 	// entirely — never half-spawn. See core/runas_check.go and
 	// core/runas_audit.go for the checks themselves.
-	if err := runRunAsUserStartupChecks(context.Background(), cfg); err != nil {
+	if err := runRunAsUserStartupChecks(context.Background(), cfg, configPath); err != nil {
 		slog.Error("run_as_user: startup checks failed, refusing to start", "error", err)
 		os.Exit(1)
 	}

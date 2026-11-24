@@ -180,6 +180,7 @@ func TestHeartbeatScheduler_Persistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state file should exist: %v", err)
 	}
+	assertMode(t, stateFile, 0o600)
 	var states map[string]*heartbeatPersisted
 	if err := json.Unmarshal(data, &states); err != nil {
 		t.Fatalf("parse state file: %v", err)

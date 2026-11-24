@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -328,4 +329,12 @@ func TestRestartNotify_PanicInSendRecovered(t *testing.T) {
 	if got := plat.sentTexts(); len(got) != 0 {
 		t.Fatalf("a panicking stub should never record a successful send, got %v", got)
 	}
+}
+
+func TestSaveRestartNotify_WritesPrivateFile(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := SaveRestartNotify(dataDir, RestartRequest{SessionKey: "tg:1:1", Platform: "telegram"}); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, filepath.Join(dataDir, "run", "restart_notify"), 0o600)
 }
