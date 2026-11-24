@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1064,5 +1065,60 @@ func TestSend_WithoutRunAsUserWritesDirectly(t *testing.T) {
 	}
 	if calls := sudo.calls(t); calls != "" {
 		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
+	}
+}
+
+func TestNewClaudeSession_RunAsUserKeepsCCEnv(t *testing.T) {
+	binDir := t.TempDir()
+	envOut := filepath.Join(t.TempDir(), "env.out")
+	claude := "#!/bin/sh\nenv > " + testShellQuote(envOut) + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(claude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sudo := installFakeSudo(t, "exec", binDir)
+	t.Setenv("CC_TEST_SECRET", "s3cret")
+
+	cs, err := newClaudeSession(context.Background(), t.TempDir(), "claude", nil, "", "", "", "", "", "", "", nil, nil, nil,
+		[]string{"CC_PROJECT=proj", "CC_SESSION_KEY=teams:c:u", "CC_DATA_DIR=/var/lib/cc"}, "", false,
+		core.SpawnOptions{RunAsUser: "target"}, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	deadline := time.Now().Add(5 * time.Second)
+	var env []byte
+	for len(env) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("fake claude never ran; sudo log:\n%s", sudo.calls(t))
+		}
+		time.Sleep(20 * time.Millisecond)
+		env, _ = os.ReadFile(envOut)
+	}
+	for _, want := range []string{"CC_PROJECT=proj", "CC_SESSION_KEY=teams:c:u", "CC_DATA_DIR=/var/lib/cc"} {
+		if !strings.Contains(string(env), want+"\n") {
+			t.Errorf("agent env misses %s:\n%s", want, env)
+		}
+	}
+	if strings.Contains(string(env), "s3cret") {
+		t.Errorf("secret crossed sudo:\n%s", env)
+	}
+	spawned := false
+	for _, line := range strings.Split(sudo.calls(t), "\n") {
+		if !strings.Contains(line, " claude ") {
+			continue
+		}
+		spawned = true
+		_, rest, _ := strings.Cut(line, "--preserve-env=")
+		list, _, _ := strings.Cut(rest, " ")
+		preserved := strings.Split(list, ",")
+		for _, name := range []string{"CC_PROJECT", "CC_SESSION_KEY", "CC_DATA_DIR"} {
+			if !slices.Contains(preserved, name) {
+				t.Errorf("--preserve-env misses %s: %s", name, line)
+			}
+		}
+	}
+	if !spawned {
+		t.Fatalf("no claude spawn in sudo log:\n%s", sudo.calls(t))
 	}
 }

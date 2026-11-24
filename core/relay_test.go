@@ -516,6 +516,20 @@ func TestHandleRelay_SingleWorkspaceUsesGlobalAgentAndSourceSessionKey(t *testin
 	}
 }
 
+func TestHandleRelay_SessionEnvCarriesDataDir(t *testing.T) {
+	e := newTestEngine()
+	e.SetDataDir("/var/lib/cc-test")
+	agent := &sessionEnvRecordingAgent{session: newResultAgentSession("global")}
+	e.agent = agent
+
+	if _, err := e.HandleRelay(context.Background(), "source", "discord:C1:U1", "hello"); err != nil {
+		t.Fatalf("HandleRelay() error = %v", err)
+	}
+	if got := agent.EnvValue("CC_DATA_DIR"); got != "/var/lib/cc-test" {
+		t.Fatalf("CC_DATA_DIR = %q, want /var/lib/cc-test", got)
+	}
+}
+
 func TestHandleRelay_MultiWorkspaceRoutesBySourceSessionKey(t *testing.T) {
 	baseDir := t.TempDir()
 	channelID := "C42"

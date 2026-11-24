@@ -92,7 +92,9 @@ func currentUsername() string {
 const RunAsChdirEnv = "CC_RUNAS_CHDIR"
 
 // DefaultEnvAllowlist is the minimal env preserved across the sudo
-// boundary. Deliberately excluded:
+// boundary: the locale and terminal, and the CC_* variables the agent needs
+// to find the API socket and call the cc-connect CLI back for its own
+// project and session. Deliberately excluded:
 //   - HOME / USER / LOGNAME / SHELL — sudo -i overrides them
 //   - PWD — sudo -i overrides cmd.Dir, so the intended cwd is re-applied
 //     inside the spawn via RunAsChdirEnv (see BuildSpawnCommand)
@@ -105,6 +107,9 @@ const RunAsChdirEnv = "CC_RUNAS_CHDIR"
 //     the target user's own shell profile.
 //   - anything secret
 var DefaultEnvAllowlist = []string{
+	"CC_DATA_DIR",
+	"CC_PROJECT",
+	"CC_SESSION_KEY",
 	"LANG",
 	"LC_ALL",
 	"LC_CTYPE",

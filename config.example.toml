@@ -237,9 +237,9 @@ level = "info" # debug, info, warn, error
 # name = "claude-sandboxed"
 # run_as_user = "partseeker-coder"
 # # Extra env vars to forward across the sudo boundary. The default
-# # allowlist (PATH, LANG, LC_*, TERM) is always included; only list
-# # names that the target user cannot reasonably set in their own shell
-# # profile. Secrets belong in the target user's ~/.claude/settings.json
+# # allowlist (LANG, LC_*, TERM, CC_PROJECT, CC_SESSION_KEY, CC_DATA_DIR)
+# # is always included; only list names that the target user cannot
+# # reasonably set in their own shell profile. Secrets belong in the target user's ~/.claude/settings.json
 # # env block, NOT here.
 # run_as_env = ["PGSSLROOTCERT", "PGSSLMODE"]
 
@@ -295,10 +295,9 @@ level = "info" # debug, info, warn, error
 #   由每次运行新建会话的 cron 或 timer 任务启动的程序会被拒绝（403 或 404）：
 #   该任务的 agent 不属于线程的会话。
 #
-# The program learns session_key on its own side. Under run_as_user the agent
-# sees CC_SESSION_KEY only when run_as_env lists it.
-# 程序需自行获知 session_key。在 run_as_user 下，只有 run_as_env 列出
-# CC_SESSION_KEY 时 agent 才能看到它。
+# The program learns session_key on its own side, for example from the agent's
+# CC_SESSION_KEY.
+# 程序需自行获知 session_key，例如从 agent 的 CC_SESSION_KEY 读取。
 #
 # A newer card in the same thread replaces every older open card there.
 # 同一线程中较新的卡片会替换该线程中所有较早的未决卡片。
@@ -332,7 +331,6 @@ level = "info" # debug, info, warn, error
 # [[projects]]
 # name = "publishing"
 # run_as_user = "claude"
-# run_as_env = ["CC_SESSION_KEY"]
 # signoff_exec = "/usr/local/bin/gate publish"
 # =============================================================================
 # Streaming Preview / 流式预览
