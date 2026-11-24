@@ -324,12 +324,12 @@ level = "info" # debug, info, warn, error
 #   进程组会被终止；未设置 run_as_user 时，命令退出时也会如此，后台子进程不会继续运行。
 #   cc-connect 停止时，进程组会被终止且不会报告结果，因此发布操作必须是全有或全无。
 #
-# After every outcome the agent gets a turn in the card's session whose text is:
-# 每个结果之后，agent 会在卡片所在会话中收到一轮消息，内容为：
+# After a click the agent gets a turn in the card's session whose text is:
+# 点击之后，agent 会在卡片所在会话中收到一轮消息，内容为：
 #   Signoff <request_id>: <published|refused|cancelled|failed>
-#   Signoff <request_id>: replaced by <newer request_id>
-# plus, on a second line, the command's message when there is one.
-# 若命令返回了 message，则在第二行附上。
+# plus, on a second line, the command's message when there is one. A replaced
+# card brings no turn.
+# 若命令返回了 message，则在第二行附上。被替换的卡片不会带来新的一轮消息。
 #
 # [[projects]]
 # name = "publishing"

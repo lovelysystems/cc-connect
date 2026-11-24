@@ -843,43 +843,8 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.RLock()
-	names := slices.Sorted(maps.Keys(s.engines))
-	engines := make([]*Engine, 0, len(names))
-	for _, name := range names {
-		engines = append(engines, s.engines[name])
-	}
-	s.mu.RUnlock()
-
-	callerUnder := s.signoffCaller
-	if callerUnder == nil {
-		callerUnder = callerUnderAgent
-	}
-	caller := requestCaller(r)
-	live := false
-	var engine *Engine
-	var target signoffTarget
-	for i, e := range engines {
-		if !caller.allows(names[i]) {
-			continue
-		}
-		t, ok := e.signoffTarget(req.SessionKey)
-		if !ok {
-			continue
-		}
-		live = true
-		if callerUnder(r, t.agentPid) {
-			engine, target = e, t
-			break
-		}
-	}
-	if !live {
-		http.Error(w, "no live session for session_key", http.StatusNotFound)
-		return
-	}
-	if engine == nil {
-		slog.Warn("signoff: caller is not under the session's agent", "session_key", req.SessionKey, "request_id", req.RequestID)
-		http.Error(w, "caller is not under the agent of session_key", http.StatusForbidden)
+	engine, target, ok := s.signoffEngine(w, r, req.SessionKey, req.RequestID)
+	if !ok {
 		return
 	}
 	if engine.runAsUser() == "" {
@@ -895,6 +860,79 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiJSON(w, http.StatusOK, map[string]string{"status": "posted"})
+}
+
+// handleSignoffWithdraw takes back a card of session_key that waits for a
+// click. The card is drawn as a replaced one and the agent gets no report.
+func (s *APIServer) handleSignoffWithdraw(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionKey string `json:"session_key"`
+		RequestID  string `json:"request_id"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, signoffBodyLimit))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionKey == "" || req.RequestID == "" {
+		http.Error(w, "session_key and request_id are required", http.StatusBadRequest)
+		return
+	}
+	engine, _, ok := s.signoffEngine(w, r, req.SessionKey, req.RequestID)
+	if !ok {
+		return
+	}
+	if !engine.withdrawSignoff(req.SessionKey, req.RequestID) {
+		http.Error(w, "no open signoff card for request_id", http.StatusNotFound)
+		return
+	}
+	apiJSON(w, http.StatusOK, map[string]string{"status": "withdrawn"})
+}
+
+// signoffEngine finds the engine running the live agent of sessionKey that
+// r's caller runs under, among the projects the caller may act for. ok is
+// false once w holds the answer: 404 with no such live session, 403 when the
+// caller is under none of their agents.
+func (s *APIServer) signoffEngine(w http.ResponseWriter, r *http.Request, sessionKey, requestID string) (engine *Engine, target signoffTarget, ok bool) {
+	s.mu.RLock()
+	names := slices.Sorted(maps.Keys(s.engines))
+	engines := make([]*Engine, 0, len(names))
+	for _, name := range names {
+		engines = append(engines, s.engines[name])
+	}
+	s.mu.RUnlock()
+
+	callerUnder := s.signoffCaller
+	if callerUnder == nil {
+		callerUnder = callerUnderAgent
+	}
+	caller := requestCaller(r)
+	live := false
+	for i, e := range engines {
+		if !caller.allows(names[i]) {
+			continue
+		}
+		t, ok := e.signoffTarget(sessionKey)
+		if !ok {
+			continue
+		}
+		live = true
+		if callerUnder(r, t.agentPid) {
+			return e, t, true
+		}
+	}
+	if !live {
+		http.Error(w, "no live session for session_key", http.StatusNotFound)
+		return nil, target, false
+	}
+	slog.Warn("signoff: caller is not under the session's agent", "session_key", sessionKey, "request_id", requestID)
+	http.Error(w, "caller is not under the agent of session_key", http.StatusForbidden)
+	return nil, target, false
 }
 
 // ── Relay API ──────────────────────────────────────────────────

@@ -272,3 +272,109 @@ func TestSignoffAPIOwnUserPostsForAnyProject(t *testing.T) {
 	}
 	pb.waitFor(t, "card:r1")
 }
+
+// --- withdraw ---
+
+func signoffWithdrawBody(sessionKey, requestID string) *bytes.Reader {
+	return bytes.NewReader([]byte(`{"session_key":"` + sessionKey + `","request_id":"` + requestID + `"}`))
+}
+
+// postedSignoffAPI is scopedSignoffAPI with card r1 open in the thread of
+// project a, whose agent the caller runs under.
+func postedSignoffAPI(t *testing.T, uid int) (api *APIServer, pa *signoffTestPlatform) {
+	t.Helper()
+	api, pa, _ = scopedSignoffAPI(t, uid, 100, "a")
+	if rec := serveAPI(api, http.MethodPost, "/signoff/send", bytes.NewReader(signoffAPIBody(t, nil))); rec.Code != http.StatusOK {
+		t.Fatalf("send: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	pa.waitFor(t, "card:r1")
+	return api, pa
+}
+
+func TestSignoffAPIWithdrawsACardForACallerUnderTheSessionsAgent(t *testing.T) {
+	for name, uid := range map[string]int{"project user": testUIDAgentA, "own user": os.Geteuid(), "root": 0} {
+		t.Run(name, func(t *testing.T) {
+			api, pa := postedSignoffAPI(t, uid)
+			rec := serveAPI(api, http.MethodPost, "/signoff/withdraw", signoffWithdrawBody(signoffTestKey, "r1"))
+			if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"status":"withdrawn"}` {
+				t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+			}
+			pa.waitFor(t, "redraw:r1:replaced:")
+
+			again := serveAPI(api, http.MethodPost, "/signoff/withdraw", signoffWithdrawBody(signoffTestKey, "r1"))
+			if again.Code != http.StatusNotFound {
+				t.Fatalf("second withdraw: status %d, want 404; body %s", again.Code, again.Body.String())
+			}
+		})
+	}
+}
+
+func TestSignoffAPIWithdrawOfAnUnknownCardIsNotFound(t *testing.T) {
+	api, pa := postedSignoffAPI(t, testUIDAgentA)
+	rec := serveAPI(api, http.MethodPost, "/signoff/withdraw", signoffWithdrawBody(signoffTestKey, "r9"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404; body %s", rec.Code, rec.Body.String())
+	}
+	if pa.has("redraw:r1:replaced:") {
+		t.Fatal("card r1 was withdrawn")
+	}
+}
+
+func TestSignoffAPIWithdrawAnswersASessionOfAnotherProjectLikeAMissingOne(t *testing.T) {
+	api, _, pb := scopedSignoffAPI(t, testUIDAgentA, 200, "b")
+	b := api.engines["b"]
+	target, ok := b.signoffTarget(signoffTestKey)
+	if !ok || !b.acceptSignoff(target, signoffTestRequest(signoffTestKey, "r1")) {
+		t.Fatal("could not post a card in project b")
+	}
+	pb.waitFor(t, "card:r1")
+
+	missing := serveAPI(api, http.MethodPost, "/signoff/withdraw", signoffWithdrawBody("test:elsewhere", "r1"))
+	rec := serveAPI(api, http.MethodPost, "/signoff/withdraw", signoffWithdrawBody(signoffTestKey, "r1"))
+	if missing.Code != http.StatusNotFound || rec.Code != missing.Code || rec.Body.String() != missing.Body.String() {
+		t.Fatalf("another project's session: %d %q; missing session: %d %q; want both the 404", rec.Code, rec.Body.String(), missing.Code, missing.Body.String())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if pb.has("redraw:r1:replaced:") {
+		t.Fatal("another project's card was withdrawn")
+	}
+}
+
+func TestSignoffAPIWithdrawRefusesACallerOutsideTheSessionsAgent(t *testing.T) {
+	api, pa := postedSignoffAPI(t, testUIDAgentA)
+	api.signoffCaller = callerUnder(999)
+	rec := serveAPI(api, http.MethodPost, "/signoff/withdraw", signoffWithdrawBody(signoffTestKey, "r1"))
+	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "caller is not under the agent of session_key" {
+		t.Fatalf("status %d, body %s; want 403 from the agent check", rec.Code, rec.Body.String())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if pa.has("redraw:r1:replaced:") {
+		t.Fatal("card r1 was withdrawn")
+	}
+}
+
+func TestSignoffAPIWithdrawRefusesMalformedRequests(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing session_key": `{"request_id":"r1"}`,
+		"missing request_id":  `{"session_key":"` + signoffTestKey + `"}`,
+		"unknown field":       `{"session_key":"` + signoffTestKey + `","request_id":"r1","nonce":"n"}`,
+		"not JSON":            `withdraw r1`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			api, _ := postedSignoffAPI(t, testUIDAgentA)
+			rec := serveAPI(api, http.MethodPost, "/signoff/withdraw", strings.NewReader(body))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400; body %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestSignoffAPIWithdrawIsPostOnly(t *testing.T) {
+	api := &APIServer{engines: map[string]*Engine{}}
+	rec := httptest.NewRecorder()
+	api.handleSignoffWithdraw(rec, httptest.NewRequest(http.MethodGet, "/signoff/withdraw", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status %d, want 405", rec.Code)
+	}
+}

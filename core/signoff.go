@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,13 +18,18 @@ const SignoffValuePrefix = "signoff:"
 
 const signoffCancelSuffix = ":cancel"
 
-// Outcomes of a signoff card, as the agent's report names them.
+// Outcomes of a clicked signoff card, as the agent's report names them.
 const (
 	SignoffPublished = "published"
 	SignoffRefused   = "refused"
 	SignoffCancelled = "cancelled"
-	SignoffReplaced  = "replaced"
 	SignoffFailed    = "failed"
+)
+
+// Logged outcomes of a card that ends without a click.
+const (
+	SignoffReplaced  = "replaced"
+	SignoffWithdrawn = "withdrawn"
 )
 
 // SignoffRequest is the JSON body for POST /signoff/send.
@@ -135,6 +141,9 @@ type signoffs struct {
 	// pending cards wait for the turn holding their session to send its final
 	// reply or let go of the session.
 	pending map[*Session][]*signoffCard
+	// posting cards left pending and wait for their post to start or for the
+	// platform to answer it.
+	posting []*signoffCard
 	// open cards are posted and wait for a click or a newer card.
 	open []*signoffCard
 	// holds are the reservations of report turns that have not started yet,
@@ -158,8 +167,10 @@ type signoffCard struct {
 	// posted is closed once the platform has answered the post; handle is
 	// set before that when the post succeeded.
 	posted chan struct{}
-	handle SignoffCardHandle
-	// resolved is claimed once, by a click or by a newer card.
+	// started is set, under signoffs.mu, when the post begins.
+	started bool
+	handle  SignoffCardHandle
+	// resolved is claimed once, by a click, a newer card or a withdraw.
 	resolved atomic.Bool
 }
 
@@ -253,9 +264,19 @@ func (e *Engine) postSignoffCards(session *Session) {
 	e.signoff.mu.Lock()
 	cards := e.signoff.pending[session]
 	delete(e.signoff.pending, session)
+	e.signoff.posting = append(e.signoff.posting, cards...)
 	e.signoff.mu.Unlock()
 	for _, c := range cards {
+		e.signoff.mu.Lock()
+		c.started = slices.Contains(e.signoff.posting, c)
+		e.signoff.mu.Unlock()
+		if !c.started {
+			continue
+		}
 		e.postSignoffCard(c)
+		e.signoff.mu.Lock()
+		e.signoff.posting = slices.DeleteFunc(e.signoff.posting, func(p *signoffCard) bool { return p == c })
+		e.signoff.mu.Unlock()
 	}
 }
 
@@ -300,9 +321,55 @@ func (e *Engine) postSignoffCard(c *signoffCard) {
 		if err := o.handle.Redraw(e.ctx, SignoffMark{Kind: SignoffMarkReplaced, At: time.Now()}); err != nil {
 			slog.Error("signoff: redraw replaced card failed", "session", o.sessionKey, "request_id", o.req.RequestID, "error", err)
 		}
-		session, granted := e.reserveSignoffSession(o.sessionKey)
-		go e.runSignoffReport(o, session, granted, signoffReport(o.req.RequestID, SignoffReplaced+" by "+c.req.RequestID, ""), nil)
 	}
+}
+
+// withdrawSignoff takes back the card requestID of sessionKey while it waits
+// for a click. A card whose post has not started is never posted; a posted one
+// is drawn as replaced. It returns false when no such card waits.
+func (e *Engine) withdrawSignoff(sessionKey, requestID string) bool {
+	match := func(c *signoffCard) bool { return c.sessionKey == sessionKey && c.req.RequestID == requestID }
+	e.signoff.mu.Lock()
+	for session, cards := range e.signoff.pending {
+		i := slices.IndexFunc(cards, match)
+		if i < 0 {
+			continue
+		}
+		if cards = slices.Delete(cards, i, i+1); len(cards) == 0 {
+			delete(e.signoff.pending, session)
+		} else {
+			e.signoff.pending[session] = cards
+		}
+		e.signoff.mu.Unlock()
+		slog.Info("signoff: outcome", "session", sessionKey, "request_id", requestID, "outcome", SignoffWithdrawn)
+		return true
+	}
+	if i := slices.IndexFunc(e.signoff.posting, match); i >= 0 {
+		c := e.signoff.posting[i]
+		if !c.started {
+			e.signoff.posting = slices.Delete(e.signoff.posting, i, i+1)
+			e.signoff.mu.Unlock()
+			slog.Info("signoff: outcome", "session", sessionKey, "request_id", requestID, "outcome", SignoffWithdrawn)
+			return true
+		}
+		e.signoff.mu.Unlock()
+		<-c.posted
+		e.signoff.mu.Lock()
+	}
+	i := slices.IndexFunc(e.signoff.open, match)
+	if i < 0 || !e.signoff.open[i].resolved.CompareAndSwap(false, true) {
+		e.signoff.mu.Unlock()
+		return false
+	}
+	c := e.signoff.open[i]
+	e.signoff.open = slices.Delete(e.signoff.open, i, i+1)
+	e.signoff.mu.Unlock()
+
+	slog.Info("signoff: outcome", "session", sessionKey, "request_id", requestID, "outcome", SignoffWithdrawn)
+	if err := c.handle.Redraw(e.ctx, SignoffMark{Kind: SignoffMarkReplaced, At: time.Now()}); err != nil {
+		slog.Error("signoff: redraw withdrawn card failed", "session", sessionKey, "request_id", requestID, "error", err)
+	}
+	return true
 }
 
 // signoffClicked handles a button press on c. Only a press carrying one of
