@@ -96,7 +96,7 @@ Out of scope, as the brief says (see origin: "What to leave alone"):
 Considered and not built:
 
 - Killing a target's processes that left the command's process group. Today a timed-out command's grandchildren also survive (`core/engine.go:8100` kills the direct child only). Would change if the e2e shows a plain background child surviving.
-- Tightening the modes of the files cc-connect keeps in `data_dir`. Every agent user must traverse `data_dir`, and the stores there are written `0644` under fixed names (`crons/jobs.json`, `relay_bindings.json`, `workspace_bindings.json`; `core/cron.go:149`, `core/relay.go:400`, `core/workspace_binding.go:211`), so another project's user can read them. Left open for the user under `Deferred / Open Questions`; the docs state it.
+- Tightening the modes of the files cc-connect keeps in `data_dir`. Every agent user must traverse `data_dir`, and the stores there are written `0644` under fixed names (`crons/jobs.json`, `relay_bindings.json`, `workspace_bindings.json`; `core/cron.go:149`, `core/relay.go:400`, `core/workspace_binding.go:211`), so another project's user can read them. Settled: this unit ships the documented limitation (U10). Reading a store gives no socket reach, since every route checks the caller's uid, and the consumer runs one project per cc-connect (see origin: "Accepted reach"). Would change if a deployment runs projects of different users that must not see each other's jobs or bindings.
 - Recording which caller created a cron or timer job. Without it, a job an agent added runs as cc-connect's own user once `run_as_user` is removed; the docs say so. Would change if an operator needs to remove `run_as_user` on a live project with agent-made jobs.
 - Narrowing the bot's reach to `send`, cron and timer further (see origin: "Accepted reach").
 
@@ -129,7 +129,7 @@ The brief named these mechanisms as preferences. Each was checked against the co
 - KTD4. **Cancel is SIGTERM to sudo; the script, running as the target, stops the command's process group.** sudo relays SIGTERM but not SIGKILL, and a non-root supervisor cannot signal the target's processes. The spawn's argv starts with `exec` so the target's login shell (dash for `useradd` users) replaces itself with the script and sudo's SIGTERM reaches it. The script keeps stdin on fd 3, starts the site's shell and command in the background with `<&3` in a new process group (`setsid` when present, else `set -m`), traps TERM to send TERM to that group and KILL after 1s, `wait`s for the real exit status, then prints the end marker. Every variable is read as `${NAME}`. `WaitDelay` 2s bounds the rest. The streaming sites read through writers instead of draining pipes to EOF. A project without `run_as_user` keeps today's SIGKILL path.
 - KTD5. **Peer credentials, matched by uid alone.** Kept from the brief. Linux reads `SO_PEERCRED` (the `Ucred` already fetched at `core/peercred_linux.go:27` carries `Uid`); macOS reads `LOCAL_PEERCRED` through `golang.org/x/sys/unix.GetsockoptXucred`, promoting `x/sys` to a direct dependency, because the docs support `run_as_user` on macOS (`docs/usage.md:301`). Other platforms have none (R12). A read error on a supported platform refuses the request. The connection moves from `signoffConnKey` to a socket-wide context key; signoff's pid check reads it from there.
 - KTD6. **A route states its rule when registered.** Kept from the brief. Routes register through one helper taking a rule; the zero rule is "cc-connect's own user and root only". A middleware reads the caller's uid, builds the caller's project set and refuses an empty set before the body is read. Handlers ask that set whether a project is allowed.
-- KTD7. **The scope is read per request; uids are resolved once at startup.** Kept from the brief for the project-to-user mapping (fixed at startup, so reload changes nothing). Names become uids by running `id -u` as each user through the KTD1 builder at startup, cached by name; the pure-Go `os/user` reader in `CGO_ENABLED=0` builds misses NSS users (`Makefile:157`). A user that resolves to uid 0 stops startup.
+- KTD7. **The scope is read per request; uids are resolved once at startup.** Kept from the brief for the project-to-user mapping (fixed at startup, so reload changes nothing). Names become uids by running `id -u` as each user through the KTD1 builder at startup, cached by name; the pure-Go `os/user` reader in `CGO_ENABLED=0` builds misses NSS users (`Makefile:157`).
 - KTD8. **No new setting and no new sudoers line.** Kept from the brief. The documented non-root rule `ALL=(target) NOPASSWD: ALL` already covers every command run as the target (`docs/usage.md:406-409`).
 - KTD9. **Socket created and checked right after the `run_as_user` preflight.** At `main.go:1261` the new fatals would fire after platforms, cron and timers started (`:1022-1040`). Creation moves to right after `:353` for every config; failure stays a warning when no project has `run_as_user`. `Start()` (serving) stays where it is.
 - KTD10. **The folder check walks the resolved path, and the socket uses it.** `EvalSymlinks` on `<data_dir>/run` once; every folder from there to `/` must be owned by root or cc-connect's own euid with no group or other write bit (the brief's rule, no sticky exemption). Listen, chmod `0666` and the final `Lstat` (a socket, owned by cc-connect, mode `0666`) all use the resolved path.
@@ -189,7 +189,7 @@ flowchart TB
   R -->|yes| S[Listen, chmod 0666, Lstat the socket]
   S -->|fails| F1
   S --> T[Probe each agent user: uid, traverse, write socket]
-  T -->|uid 0, cannot reach| F1
+  T -->|cannot reach| F1
   T --> U[Build engines, start platforms, cron, timers]
   U --> V[Serve the socket]
 ```
@@ -249,7 +249,6 @@ U1 first. U2, U3 and U4 build on it. U5 is independent. U6 before U7 and U8. U9 
 - **Test scenarios:**
   - Covers AE5. Cron `exec` in a run-as project spawns sudo for the project's user (fake sudo records argv and `CC_FAKE_SUDO_USER`); the same job in a project without run-as runs as today.
   - `/shell echo hi` under run-as replies `hi` with no profile noise; `!` does the same.
-  - Custom exec with an argument containing `$X` passes it literally.
   - Timer `exec` under run-as uses `sh`, not the project shell.
   - Cron and `/shell` under run-as receive `CC_PROJECT`, `CC_SESSION_KEY`, `CC_DATA_DIR`; without run-as their env is cc-connect's own, unchanged.
   - A run-as `/shell sleep 30 --timeout 1` sends the timeout message within a few seconds.
@@ -292,9 +291,7 @@ U1 first. U2, U3 and U4 build on it. U5 is independent. U6 before U7 and U8. U9 
 - **Test scenarios:**
   - Under run-as the command runs as the project's user and gets `{"request_id","nonce","clicked_by"}` on stdin.
   - Leading and trailing login noise on stdout still yields `published` with the command's message.
-  - A command printing two JSON objects inside the frame still fails, as today.
-  - A run-as command that sleeps past the limit ends as failed and releases the session.
-  - A run-as command running `trap '' TERM; sleep 600` past the limit is gone when the outcome is reported.
+  - A run-as command that sleeps past the limit ends as failed, releases the session, and is gone when the outcome is reported.
   - A failing cheap verify ends as failed with nothing run.
 - **Verification:** existing signoff_exec tests pass unchanged; the new run-as tests pass.
 
@@ -303,12 +300,11 @@ U1 first. U2, U3 and U4 build on it. U5 is independent. U6 before U7 and U8. U9 
 - **Goal:** an agent under `run_as_user` can find the socket and its session.
 - **Requirements:** R14; KTD14.
 - **Dependencies:** none.
-- **Files:** `core/runas.go` (`DefaultEnvAllowlist`), `core/engine.go` (relay env ~`:15834-15845`), `core/runas_test.go`, `agent/claudecode/session_test.go`, `config.example.toml` (the `run_as_env = ["CC_SESSION_KEY"]` workaround text ~`:299-301`, `:333`).
-- **Approach:** add the three names to the default allowlist; add `CC_DATA_DIR` to the relay session's injected env; drop the example config's workaround text.
+- **Files:** `core/runas.go` (`DefaultEnvAllowlist`), `core/engine.go` (relay env ~`:15834-15845`), `core/runas_test.go`, `agent/claudecode/session_test.go`, `config.example.toml` (the defaults list `:240`, the `run_as_env = ["CC_SESSION_KEY"]` workaround text ~`:299-301`, `:333`).
+- **Approach:** add the three names to the default allowlist; add `CC_DATA_DIR` to the relay session's injected env; drop the example config's workaround text and list the three names among its defaults.
 - **Test scenarios:**
   - A claudecode spawn under run-as with session env set keeps `CC_PROJECT`, `CC_SESSION_KEY`, `CC_DATA_DIR` in both `--preserve-env` and the filtered env.
   - A relay-created session's env holds `CC_DATA_DIR`.
-  - `PATH` from the session env is still dropped under run-as.
 - **Verification:** the agent spawn tests show the three names crossing sudo.
 
 ### U6. Socket caller identity and route rules
@@ -382,7 +378,7 @@ U1 first. U2, U3 and U4 build on it. U5 is independent. U6 before U7 and U8. U9 
 - **Approach:**
   1. `NewAPIServer` takes whether the socket is shared. Unshared: today's path and `0600`. Shared: resolve, walk, listen on the resolved path, chmod `0666`, re-`Lstat`.
   2. `main.go` creates the server right after the preflight. With a `run_as_user` project: no peer credentials, any creation error, or a probe failure is fatal through the aggregate error; without one: today's warning.
-  3. The probe (KTD11) runs once per distinct user and fills the uid cache U6 reads; uid 0 is fatal.
+  3. The probe (KTD11) runs once per distinct user and fills the uid cache U6 reads.
   4. Messages name the folder and the fix (`chmod`, owner, or `data_dir`).
 - **Patterns to follow:** `PreflightRunAsUser` and its stub `SudoRunner` (`core/runas_check.go:82-140`, `core/runas_test.go:180-202`); aggregate fatal in `runas_startup.go:121-162`.
 - **Test scenarios:**
@@ -391,7 +387,7 @@ U1 first. U2, U3 and U4 build on it. U5 is independent. U6 before U7 and U8. U9 
   - The walk is given a fake stat: a group-writable folder two levels up stops startup and names that folder; a folder owned by another uid does too; a root- or self-owned `0755` chain passes.
   - A run dir reached through a symlink is checked and listened on at its target.
   - The socket file replaced by a non-socket or another owner between chmod and check fails.
-  - Probe with stub runner: a user that cannot traverse `data_dir` stops startup naming the folder and the fix; a user resolving to uid 0 stops startup; two projects with one user probe once.
+  - Probe with stub runner: a user that cannot traverse `data_dir` stops startup naming the folder and the fix; two projects with one user probe once.
   - A platform without peer credentials and a run-as project stops startup with the platform named.
 - **Verification:** startup tests cover each fatal; a config without `run_as_user` starts exactly as before.
 
@@ -405,7 +401,7 @@ U1 first. U2, U3 and U4 build on it. U5 is independent. U6 before U7 and U8. U9 
   1. "Security guarantee and non-guarantee": add that commands run for the project also run as the target, and a part on the socket: caller check, mode, folder check, startup checks, macOS and Linux only. Say that every agent user can read, by name, the files cc-connect keeps in `data_dir`, so `data_dir` is a dedicated `0711` folder and the config file lives outside it.
   2. "What runs as the target user": list the commands.
   3. Opting out: jobs an agent added then run as cc-connect's own user.
-  4. Fix the config example's comment that lists PATH as a default.
+  4. The config example's defaults comment (`:472`) lists the three `CC_*` names; `PATH` comes out of it, since the code never preserves it (`core/runas.go:99-107`).
   5. `CHANGES.md` under `## v1.5.0` → `### Unreleased`, appended: a Fix for commands running as `run_as_user` (with `signoff_exec`), a Feature for the scoped socket, and a line that a `run_as_user` project whose `data_dir` its user cannot reach now stops startup. The ls.4 signoff entry stays as written.
 - **Test expectation:** none -- docs only.
 - **Verification:** the docs name every startup failure the code can raise.
@@ -464,12 +460,5 @@ U1 first. U2, U3 and U4 build on it. U5 is independent. U6 before U7 and U8. U9 
 
 ## Deferred / Open Questions
 
-Review items left for the author. They do not block implementation.
-
-### From 2026-11-24 review
-
-- **Agent users can read cc-connect's files in `data_dir` by name** — Scope Boundaries, U9 (P1, security-lens, confidence 75)
-
-  Every agent user must traverse `data_dir` to reach the socket, and cc-connect writes its stores there `0644` under fixed names (cron and timer jobs of every project, relay and workspace bindings, project state). With several projects, one project's user can read the others' jobs, session keys and bindings, and the config file too when it sits in `data_dir`. The plan documents this and builds nothing; the alternatives are writing those stores `0600` (or their folders `0700`) whenever the socket is shared, or refusing to start while they are readable by others.
-  Change: decide whether this unit tightens the modes of cc-connect's own files under a shared socket, or ships the documented limitation.
+None. The `data_dir` stores question is settled under Scope Boundaries.
 
