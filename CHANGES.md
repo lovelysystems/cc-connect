@@ -17,6 +17,20 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+#### Fix
+
+- **core**: with `run_as_user`, run `/shell`, `!`, custom-command, cron, timer and webhook `exec`,
+  `[[hooks]]`, `/diff`, the workspace clone and `signoff_exec` as the target user; the agent
+  keeps `CC_PROJECT`, `CC_SESSION_KEY` and `CC_DATA_DIR` (upstream: pending)
+- **tts**: pass `--` before the text to pico2wave (upstream: pending)
+
+#### Feature
+
+- **core**: the API socket reads each caller's uid; a project's `run_as_user` may act only for
+  its own projects, and with such a project the socket is `0666` (upstream: pending)
+- **core**: a `run_as_user` project stops startup when its user cannot reach the API socket or
+  other users can write the socket's folder (upstream: pending)
+
 ### 2026-11-20 / v1.5.0-ls.4
 
 #### Fix

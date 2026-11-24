@@ -412,7 +412,7 @@ func (e *Engine) resolveSignoffClick(c *signoffCard, session *Session, granted <
 	}
 	outcome, detail := SignoffCancelled, ""
 	if approve {
-		outcome, detail = e.runSignoffExec(signoffExecInput{RequestID: c.req.RequestID, Nonce: c.req.Nonce, ClickedBy: by})
+		outcome, detail = e.runSignoffExec(c.sessionKey, signoffExecInput{RequestID: c.req.RequestID, Nonce: c.req.Nonce, ClickedBy: by})
 	}
 	slog.Info("signoff: outcome", "session", c.sessionKey, "request_id", c.req.RequestID, "outcome", outcome)
 	var turnPlaceholder StreamingCard

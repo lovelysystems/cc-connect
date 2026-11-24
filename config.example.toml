@@ -237,9 +237,9 @@ level = "info" # debug, info, warn, error
 # name = "claude-sandboxed"
 # run_as_user = "partseeker-coder"
 # # Extra env vars to forward across the sudo boundary. The default
-# # allowlist (PATH, LANG, LC_*, TERM) is always included; only list
-# # names that the target user cannot reasonably set in their own shell
-# # profile. Secrets belong in the target user's ~/.claude/settings.json
+# # allowlist (LANG, LC_*, TERM, CC_PROJECT, CC_SESSION_KEY, CC_DATA_DIR)
+# # is always included; only list names that the target user cannot
+# # reasonably set in their own shell profile. Secrets belong in the target user's ~/.claude/settings.json
 # # env block, NOT here.
 # run_as_env = ["PGSSLROOTCERT", "PGSSLMODE"]
 
@@ -248,11 +248,11 @@ level = "info" # debug, info, warn, error
 # 签核卡片（需要 run_as_user；目前仅 Teams）
 # =============================================================================
 #
-# A root-only program running under a session's agent (e.g. started by the
-# agent's shell via sudo) asks for a card with Approve and Cancel in that
-# session's thread. Only a person's click on Approve runs signoff_exec; the
+# A program running under a session's agent as the project's run_as_user
+# (e.g. the agent's own publish command) asks for a card with Approve and
+# Cancel in that session's thread. Only a person's click on Approve runs signoff_exec; the
 # agent can ask for a card but cannot press its buttons.
-# 以 root 运行、位于会话 agent 进程之下的程序（例如由 agent 的 shell 通过 sudo 启动）
+# 以项目的 run_as_user 运行、位于会话 agent 进程之下的程序（例如 agent 自己的发布命令）
 # 请求在该会话的线程中发出带「同意」「取消」按钮的卡片。只有真人点击「同意」才会
 # 运行 signoff_exec；agent 可以请求卡片，但无法点击按钮。
 #
@@ -287,7 +287,10 @@ level = "info" # debug, info, warn, error
 #        callers are refused / 调用方不在该会话的 agent 进程之下（仅 Linux 可校验；
 #        其他系统一律拒绝）。校验需要 agent 报告其进程 id，目前仅 Claude Code 支持，
 #        其他 agent 的调用方一律拒绝
-#   404  no live agent session for session_key / session_key 没有存活的 agent 会话
+#   403  forbidden: the caller is no project's agent (see "Who may use the API
+#        socket" in docs/usage.md) / forbidden：调用方不是任何项目的 agent
+#   404  no live agent session for session_key in the caller's projects /
+#        调用方的项目中 session_key 没有存活的 agent 会话
 #   422  the project has no run_as_user, or its platform cannot show signoff cards
 #        项目未设置 run_as_user，或其平台不支持签核卡片
 #   A program started from a cron or timer job that runs in a new session per run
@@ -295,30 +298,31 @@ level = "info" # debug, info, warn, error
 #   由每次运行新建会话的 cron 或 timer 任务启动的程序会被拒绝（403 或 404）：
 #   该任务的 agent 不属于线程的会话。
 #
-# The program learns session_key on its own side. Under run_as_user the agent
-# sees CC_SESSION_KEY only when run_as_env lists it.
-# 程序需自行获知 session_key。在 run_as_user 下，只有 run_as_env 列出
-# CC_SESSION_KEY 时 agent 才能看到它。
+# The program learns session_key on its own side, for example from the agent's
+# CC_SESSION_KEY.
+# 程序需自行获知 session_key，例如从 agent 的 CC_SESSION_KEY 读取。
 #
 # A newer card in the same thread replaces every older open card there.
 # 同一线程中较新的卡片会替换该线程中所有较早的未决卡片。
 #
-# signoff_exec runs as cc-connect's own user when Approve is clicked, through the
-# project's shell and flag but WITHOUT shell_profile, from "/". Use absolute paths.
-# signoff_exec 在点击「同意」时以 cc-connect 自身的用户运行，使用项目的 shell 和 flag，
-# 但不加载 shell_profile，工作目录为 "/"。请使用绝对路径。
+# signoff_exec runs when Approve is clicked, as the project's run_as_user (as
+# cc-connect's own user when the project has none), through the project's shell
+# and flag but WITHOUT shell_profile, from "/". Use absolute paths.
+# signoff_exec 在点击「同意」时运行：项目设置了 run_as_user 时以该用户运行，否则以
+# cc-connect 自身的用户运行；使用项目的 shell 和 flag，但不加载 shell_profile，
+# 工作目录为 "/"。请使用绝对路径。
 #   stdin:  {"request_id": "r1", "nonce": "<nonce>",
 #            "clicked_by": {"id": "<platform user id, on Teams the Entra object id>",
 #                           "name": "<display name>"}}
 #   stdout: exactly one JSON object {"outcome": "published"|"refused", "message": "<one line, optional>"}
 #   A non-zero exit, any other output, or running past 5 minutes gives the outcome
-#   "failed". When the command exits or reaches the limit, its whole process
-#   group is killed, so no background child keeps running. When cc-connect
-#   stops, the group is killed and no outcome is reported, so its publish must
-#   be all-or-nothing.
-#   非零退出、任何其他输出或运行超过 5 分钟，结果为 "failed"。命令退出或到达时限时，
-#   其整个进程组会被杀死，后台子进程不会继续运行。cc-connect 停止时，进程组会被杀死且
-#   不会报告结果，因此发布操作必须是全有或全无。
+#   "failed". When the command reaches the limit, its whole process group is
+#   stopped; without run_as_user that also happens when it exits, so no
+#   background child keeps running. When cc-connect stops, the group is stopped
+#   and no outcome is reported, so its publish must be all-or-nothing.
+#   非零退出、任何其他输出或运行超过 5 分钟，结果为 "failed"。命令到达时限时，其整个
+#   进程组会被终止；未设置 run_as_user 时，命令退出时也会如此，后台子进程不会继续运行。
+#   cc-connect 停止时，进程组会被终止且不会报告结果，因此发布操作必须是全有或全无。
 #
 # After every outcome the agent gets a turn in the card's session whose text is:
 # 每个结果之后，agent 会在卡片所在会话中收到一轮消息，内容为：
@@ -330,7 +334,6 @@ level = "info" # debug, info, warn, error
 # [[projects]]
 # name = "publishing"
 # run_as_user = "claude"
-# run_as_env = ["CC_SESSION_KEY"]
 # signoff_exec = "/usr/local/bin/gate publish"
 # =============================================================================
 # Streaming Preview / 流式预览

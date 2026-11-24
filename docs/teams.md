@@ -234,10 +234,10 @@ Notes:
 
 ## Signoff cards
 
-A root-only program running under a session's agent can post a card with an
-Approve and a Cancel button into that session's thread through
-`POST /signoff/send` on cc-connect's API socket; only a person's click on Approve
-runs the project's `signoff_exec`. The request, its answers and the
+A program running under a session's agent, as the project's `run_as_user`,
+can post a card with an Approve and a Cancel button into that session's thread
+through `POST /signoff/send` on cc-connect's API socket; only a person's click on
+Approve runs the project's `signoff_exec`. The request, its answers and the
 `signoff_exec` contract are in `config.example.toml` ("Signoff cards"). The
 project needs `run_as_user`.
 

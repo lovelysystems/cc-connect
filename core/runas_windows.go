@@ -62,3 +62,16 @@ func WriteFileAsUser(_ context.Context, _ SpawnOptions, _ string, _ []byte) erro
 
 // ResetVerifyCache is a no-op on Windows: nothing is cached.
 func ResetVerifyCache() {}
+
+// buildProjectCommand on Windows runs the plain shell command in c.dir;
+// run_as_user is not supported here.
+func buildProjectCommand(ctx context.Context, _ SpawnOptions, c projectCommand) (*exec.Cmd, error) {
+	cmd := shellExecCommand(ctx, c.shell, c.flag, c.profile, c.command)
+	cmd.Dir = c.dir
+	return cmd, nil
+}
+
+// ProbeSocketAccess always fails on Windows.
+func ProbeSocketAccess(context.Context, string, string) (int, error) {
+	return 0, errors.New("run_as_user is not supported on Windows")
+}

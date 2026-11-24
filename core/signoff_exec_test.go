@@ -29,7 +29,7 @@ func TestSignoffExecPassesTheClickAndReadsTheOutcome(t *testing.T) {
 	stdin := filepath.Join(dir, "stdin.json")
 	e := newSignoffExecEngine(t, `cat > `+stdin+`; echo '{"outcome":"published","message":"5 changes live"}'`)
 
-	outcome, message := e.runSignoffExec(signoffExecTestInput)
+	outcome, message := e.runSignoffExec("", signoffExecTestInput)
 
 	if outcome != SignoffPublished || message != "5 changes live" {
 		t.Fatalf("outcome, message = %q, %q; want published, 5 changes live", outcome, message)
@@ -46,14 +46,14 @@ func TestSignoffExecPassesTheClickAndReadsTheOutcome(t *testing.T) {
 
 func TestSignoffExecRefusedWithoutMessage(t *testing.T) {
 	e := newSignoffExecEngine(t, `echo '{"outcome":"refused"}'`)
-	if outcome, message := e.runSignoffExec(signoffExecTestInput); outcome != SignoffRefused || message != "" {
+	if outcome, message := e.runSignoffExec("", signoffExecTestInput); outcome != SignoffRefused || message != "" {
 		t.Fatalf("outcome, message = %q, %q; want refused, empty", outcome, message)
 	}
 }
 
 func TestSignoffExecRunsFromRoot(t *testing.T) {
 	e := newSignoffExecEngine(t, `[ "$(pwd)" = / ] && echo '{"outcome":"published"}'`)
-	if outcome, _ := e.runSignoffExec(signoffExecTestInput); outcome != SignoffPublished {
+	if outcome, _ := e.runSignoffExec("", signoffExecTestInput); outcome != SignoffPublished {
 		t.Fatalf("outcome = %q, want published from /", outcome)
 	}
 }
@@ -75,7 +75,7 @@ func TestSignoffExecFailures(t *testing.T) {
 	for name, command := range cases {
 		t.Run(name, func(t *testing.T) {
 			e := newSignoffExecEngine(t, command)
-			if outcome, message := e.runSignoffExec(signoffExecTestInput); outcome != SignoffFailed || message != "" {
+			if outcome, message := e.runSignoffExec("", signoffExecTestInput); outcome != SignoffFailed || message != "" {
 				t.Fatalf("outcome, message = %q, %q; want failed, empty", outcome, message)
 			}
 		})
@@ -84,7 +84,7 @@ func TestSignoffExecFailures(t *testing.T) {
 
 func TestSignoffExecUnsetFails(t *testing.T) {
 	e := newSignoffExecEngine(t, "")
-	if outcome, _ := e.runSignoffExec(signoffExecTestInput); outcome != SignoffFailed {
+	if outcome, _ := e.runSignoffExec("", signoffExecTestInput); outcome != SignoffFailed {
 		t.Fatalf("outcome = %q, want failed", outcome)
 	}
 }
@@ -96,7 +96,7 @@ func TestSignoffExecLimitKillsTheWholeProcessGroup(t *testing.T) {
 	e.signoff.execLimit = 200 * time.Millisecond
 
 	start := time.Now()
-	outcome, _ := e.runSignoffExec(signoffExecTestInput)
+	outcome, _ := e.runSignoffExec("", signoffExecTestInput)
 	if outcome != SignoffFailed {
 		t.Fatalf("outcome = %q, want failed", outcome)
 	}
@@ -114,7 +114,7 @@ func TestSignoffExecFailedExitKillsTheWholeProcessGroup(t *testing.T) {
 	late := filepath.Join(dir, "late")
 	e := newSignoffExecEngine(t, `(sleep 1; touch `+late+`) >/dev/null 2>&1 & exit 1`)
 
-	if outcome, _ := e.runSignoffExec(signoffExecTestInput); outcome != SignoffFailed {
+	if outcome, _ := e.runSignoffExec("", signoffExecTestInput); outcome != SignoffFailed {
 		t.Fatalf("outcome = %q, want failed", outcome)
 	}
 	time.Sleep(1500 * time.Millisecond)
@@ -128,7 +128,7 @@ func TestSignoffExecOutcomeArrivesWhileADescendantHoldsStderr(t *testing.T) {
 
 	done := make(chan [2]string, 1)
 	go func() {
-		outcome, message := e.runSignoffExec(signoffExecTestInput)
+		outcome, message := e.runSignoffExec("", signoffExecTestInput)
 		done <- [2]string{outcome, message}
 	}()
 	select {
@@ -145,7 +145,7 @@ func TestSignoffExecOutcomeCountsWhenTheShellExitedZeroAndADescendantOutlivesThe
 	e := newSignoffExecEngine(t, `sleep 5 & echo '{"outcome":"published","message":"live"}'`)
 	e.signoff.execLimit = 300 * time.Millisecond
 
-	if outcome, message := e.runSignoffExec(signoffExecTestInput); outcome != SignoffPublished || message != "live" {
+	if outcome, message := e.runSignoffExec("", signoffExecTestInput); outcome != SignoffPublished || message != "live" {
 		t.Fatalf("outcome, message = %q, %q; want published, live", outcome, message)
 	}
 }
@@ -156,7 +156,7 @@ func TestSignoffExecSkipsTheShellProfile(t *testing.T) {
 	e := newSignoffExecEngine(t, `echo '{"outcome":"published"}'`)
 	e.SetShell("sh", "-c", "touch "+marker)
 
-	if outcome, _ := e.runSignoffExec(signoffExecTestInput); outcome != SignoffPublished {
+	if outcome, _ := e.runSignoffExec("", signoffExecTestInput); outcome != SignoffPublished {
 		t.Fatalf("outcome = %q, want published", outcome)
 	}
 	if _, err := os.Stat(marker); err == nil {

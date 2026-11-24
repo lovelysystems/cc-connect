@@ -142,6 +142,22 @@ func (rm *RelayManager) GetBinding(chatID string) *RelayBinding {
 	return rm.bindings[chatID]
 }
 
+// boundInChat reports whether project is bound in the chat sessionKey names.
+func (rm *RelayManager) boundInChat(sessionKey, project string) bool {
+	_, chatID, err := parseSessionKeyParts(sessionKey)
+	if err != nil {
+		return false
+	}
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	b := rm.bindings[chatID]
+	if b == nil {
+		return false
+	}
+	_, ok := b.Bots[project]
+	return ok
+}
+
 // Unbind removes the relay binding for a chat.
 func (rm *RelayManager) Unbind(chatID string) {
 	rm.mu.Lock()

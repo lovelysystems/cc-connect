@@ -80,6 +80,10 @@ type HookManager struct {
 	shell       string // shell binary (e.g. "sh", "/bin/zsh")
 	shellFlag   string // shell flag (e.g. "-c", "-Command")
 	shellProfile string // prepended to every command
+	// runAs and commandEnv come from the engine through SetHooks; commands
+	// run as runAs.RunAsUser when it is set, with commandEnv's variables.
+	runAs      SpawnOptions
+	commandEnv func(sessionKey string) []string
 	mu          sync.RWMutex
 	client      *http.Client
 }
@@ -176,11 +180,26 @@ func (hm *HookManager) executeCommand(h *HookConfig, event HookEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := shellExecCommand(ctx, hm.shell, hm.shellFlag, hm.shellProfile, h.Command)
-	cmd.WaitDelay = 2 * time.Second
-	cmd.Env = append(os.Environ(), eventToEnv(event)...)
-
-	output, err := cmd.CombinedOutput()
+	runAs := hm.runAs.IsolationMode()
+	var env []string
+	if runAs && hm.commandEnv != nil {
+		env = hm.commandEnv(event.SessionKey)
+	}
+	env = append(env, eventToEnv(event)...)
+	var output []byte
+	cmd, err := buildProjectCommand(ctx, hm.runAs, projectCommand{
+		shell: hm.shell, flag: hm.shellFlag, profile: hm.shellProfile, command: h.Command, env: env,
+	})
+	if err == nil {
+		if !runAs {
+			cmd.WaitDelay = 2 * time.Second
+			cmd.Env = append(os.Environ(), env...)
+		}
+		output, err = cmd.CombinedOutput()
+		if runAs {
+			output = projectCommandOutput(output)
+		}
+	}
 	if err != nil {
 		slog.Warn("hooks: command failed",
 			"project", hm.project, "event", event.Event,

@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -9,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -454,6 +452,11 @@ type Engine struct {
 	shellFlag    string // shell flag (e.g. "-c", "-Command", "/C")
 	shellProfile string // prepended to every command but signoff_exec (e.g. "source ~/.zshrc;")
 
+	// projectRunAs is the project's run_as_user and run_as_env from config.
+	// Commands cc-connect runs for the project run as that user, and the API
+	// socket scopes that user's requests to the projects it runs.
+	projectRunAs SpawnOptions
+
 	// Multi-workspace mode
 	multiWorkspace               bool
 	baseDir                      string
@@ -870,9 +873,41 @@ func (e *Engine) reapIdleWorkspaces() {
 	}
 }
 
-// SetHooks configures the lifecycle event hook manager.
+// SetHooks configures the lifecycle event hook manager and hands it the
+// project's run_as_user settings.
 func (e *Engine) SetHooks(hm *HookManager) {
+	if hm != nil {
+		hm.runAs = e.commandSpawnOptions()
+		hm.commandEnv = e.commandEnv
+	}
 	e.hooks = hm
+}
+
+// SetRunAs sets the project's run_as_user and run_as_env. Call it before
+// SetHooks, which hands them to the hook manager.
+func (e *Engine) SetRunAs(user string, env []string) {
+	e.projectRunAs = SpawnOptions{RunAsUser: user, EnvAllowlist: append([]string(nil), env...)}
+}
+
+// commandSpawnOptions returns a copy of the spawn options project commands
+// run with.
+func (e *Engine) commandSpawnOptions() SpawnOptions {
+	opts := e.projectRunAs
+	opts.EnvAllowlist = append([]string(nil), opts.EnvAllowlist...)
+	return opts
+}
+
+// commandEnv returns the variables a project command gets under run_as_user
+// so it can call the cc-connect CLI back.
+func (e *Engine) commandEnv(sessionKey string) []string {
+	env := []string{"CC_PROJECT=" + e.name}
+	if e.dataDir != "" {
+		env = append(env, "CC_DATA_DIR="+e.dataDir)
+	}
+	if sessionKey != "" {
+		env = append(env, "CC_SESSION_KEY="+sessionKey)
+	}
+	return env
 }
 
 // SetShell configures the shell binary, flag, and shell profile used for exec.
@@ -1869,7 +1904,8 @@ func (e *Engine) executeTimerShell(p Platform, replyCtx any, job *TimerJob) erro
 			workDir = wd.GetWorkDir()
 		}
 	}
-	if workDir == "" {
+	opts := e.commandSpawnOptions()
+	if workDir == "" && !opts.IsolationMode() {
 		workDir, _ = os.Getwd()
 	}
 
@@ -1883,60 +1919,32 @@ func (e *Engine) executeTimerShell(p Platform, replyCtx any, job *TimerJob) erro
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
 	defer cancel()
 
+	var mu sync.Mutex
+	var buf bytes.Buffer
 	var shellCmd *exec.Cmd
+	var err error
 	if runtime.GOOS == "windows" {
 		shellCmd = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", job.Exec)
+		shellCmd.Dir = workDir
 	} else {
-		shellCmd = exec.CommandContext(ctx, "sh", "-c", job.Exec)
+		shellCmd, err = buildProjectCommand(ctx, opts, projectCommand{
+			shell: "sh", flag: "-c", command: job.Exec, dir: workDir, env: e.commandEnv(job.SessionKey),
+		})
 	}
-	shellCmd.Dir = workDir
-
-	stdout, err := shellCmd.StdoutPipe()
+	var doneCh <-chan struct{}
+	if err == nil {
+		doneCh, _, err = startCommandStreaming(shellCmd, opts.IsolationMode(), &mu, &buf)
+	}
 	if err != nil {
-		return fmt.Errorf("shell: stdout pipe: %w", err)
-	}
-	stderr, err := shellCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("shell: stderr pipe: %w", err)
-	}
-
-	if err := shellCmd.Start(); err != nil {
 		e.send(p, replyCtx, fmt.Sprintf("⏰ ❌ `%s`\nerror: failed to start: %v", cmdLabel, err))
 		return fmt.Errorf("shell: start: %w", err)
 	}
-
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	doneCh := make(chan struct{})
-
-	readPipe := func(r io.Reader) {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
-		for scanner.Scan() {
-			mu.Lock()
-			if buf.Len() > 0 {
-				buf.WriteByte('\n')
-			}
-			buf.WriteString(scanner.Text())
-			mu.Unlock()
-		}
-	}
-	var pipeWg sync.WaitGroup
-	pipeWg.Add(2)
-	go func() { defer pipeWg.Done(); readPipe(stdout) }()
-	go func() { defer pipeWg.Done(); readPipe(stderr) }()
-
-	go func() {
-		pipeWg.Wait()
-		_ = shellCmd.Wait()
-		close(doneCh)
-	}()
 
 	select {
 	case <-doneCh:
 		return e.finishCronShell(p, replyCtx, shellCmd, &mu, &buf, cmdLabel)
 	case <-ctx.Done():
-		killAndWait(shellCmd, doneCh)
+		stopAndWait(shellCmd, opts.IsolationMode(), doneCh)
 		mu.Lock()
 		output := buf.String()
 		mu.Unlock()
@@ -2003,7 +2011,7 @@ func (e *Engine) executeTimerShell(p Platform, replyCtx any, job *TimerJob) erro
 		return e.finishCronShell(p, replyCtx, shellCmd, &mu, &buf, cmdLabel, useUpdate, previewHandle)
 	case <-ctx.Done():
 		close(updateDone)
-		killAndWait(shellCmd, doneCh)
+		stopAndWait(shellCmd, opts.IsolationMode(), doneCh)
 		mu.Lock()
 		output := buf.String()
 		mu.Unlock()
@@ -2047,7 +2055,8 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 			workDir = wd.GetWorkDir()
 		}
 	}
-	if workDir == "" {
+	opts := e.commandSpawnOptions()
+	if workDir == "" && !opts.IsolationMode() {
 		workDir, _ = os.Getwd()
 	}
 
@@ -2061,60 +2070,27 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
 	defer cancel()
 
-	shellCmd := shellExecCommand(ctx, e.shell, e.shellFlag, e.shellProfile, job.Exec)
-	shellCmd.Dir = workDir
-
-	stdout, err := shellCmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("shell: stdout pipe: %w", err)
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	shellCmd, err := buildProjectCommand(ctx, opts, projectCommand{
+		shell: e.shell, flag: e.shellFlag, profile: e.shellProfile, command: job.Exec,
+		dir: workDir, env: e.commandEnv(job.SessionKey),
+	})
+	var doneCh <-chan struct{}
+	if err == nil {
+		doneCh, _, err = startCommandStreaming(shellCmd, opts.IsolationMode(), &mu, &buf)
 	}
-	stderr, err := shellCmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("shell: stderr pipe: %w", err)
-	}
-
-	if err := shellCmd.Start(); err != nil {
 		e.send(p, replyCtx, fmt.Sprintf("⏰ ❌ `%s`\nerror: failed to start: %v", cmdLabel, err))
 		return fmt.Errorf("shell: start: %w", err)
 	}
-
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	doneCh := make(chan struct{})
-
-	readPipe := func(r io.Reader) {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
-		for scanner.Scan() {
-			mu.Lock()
-			if buf.Len() > 0 {
-				buf.WriteByte('\n')
-			}
-			buf.WriteString(scanner.Text())
-			mu.Unlock()
-		}
-	}
-	// Use a WaitGroup so both pipe-reader goroutines drain completely before
-	// doneCh is closed. Without this, shellCmd.Wait() can return (closing the
-	// pipe write-ends) while the scanners still have unread data in the OS
-	// buffer, causing finishCronShell to read a truncated output.
-	var pipeWg sync.WaitGroup
-	pipeWg.Add(2)
-	go func() { defer pipeWg.Done(); readPipe(stdout) }()
-	go func() { defer pipeWg.Done(); readPipe(stderr) }()
-
-	go func() {
-		pipeWg.Wait()
-		_ = shellCmd.Wait()
-		close(doneCh)
-	}()
 
 	// Wait briefly to see if the command finishes quickly
 	select {
 	case <-doneCh:
 		return e.finishCronShell(p, replyCtx, shellCmd, &mu, &buf, cmdLabel)
 	case <-ctx.Done():
-		killAndWait(shellCmd, doneCh)
+		stopAndWait(shellCmd, opts.IsolationMode(), doneCh)
 		mu.Lock()
 		output := buf.String()
 		mu.Unlock()
@@ -2182,7 +2158,7 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 		return e.finishCronShell(p, replyCtx, shellCmd, &mu, &buf, cmdLabel, useUpdate, previewHandle)
 	case <-ctx.Done():
 		close(updateDone)
-		killAndWait(shellCmd, doneCh)
+		stopAndWait(shellCmd, opts.IsolationMode(), doneCh)
 		mu.Lock()
 		output := buf.String()
 		mu.Unlock()
@@ -6815,6 +6791,18 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 		repoName := extractRepoName(target)
 		cloneTo := filepath.Join(e.baseDir, repoName)
 
+		if e.projectRunAs.IsolationMode() {
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsCloneProgress, target))
+			err := e.createWorkspaceAsUser(target, cloneTo, true, msg.SessionKey)
+			if err != nil && !errors.Is(err, errWorkspaceExists) {
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsCloneFailed, err))
+				return false
+			}
+			e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(cloneTo))
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, cloneTo))
+			return true
+		}
+
 		if _, err := os.Stat(cloneTo); err == nil {
 			e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(cloneTo))
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, cloneTo))
@@ -7211,6 +7199,16 @@ func (e *Engine) matchSession(sessions []AgentSessionInfo, manager *SessionManag
 }
 
 func (e *Engine) commandWorkDir(agent Agent, msg *Message) string {
+	if dir := e.configuredCommandWorkDir(agent, msg); dir != "" {
+		return dir
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return normalizeWorkspacePath(cwd)
+	}
+	return ""
+}
+
+func (e *Engine) configuredCommandWorkDir(agent Agent, msg *Message) string {
 	if switcher, ok := agent.(WorkDirSwitcher); ok {
 		if wd := strings.TrimSpace(switcher.GetWorkDir()); wd != "" {
 			return normalizeWorkspacePath(wd)
@@ -7231,9 +7229,6 @@ func (e *Engine) commandWorkDir(agent Agent, msg *Message) string {
 		if dir := strings.TrimSpace(wd.GetWorkDir()); dir != "" {
 			return normalizeWorkspacePath(dir)
 		}
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		return normalizeWorkspacePath(cwd)
 	}
 	return ""
 }
@@ -7884,68 +7879,38 @@ func defaultShellFlag() string {
 // Strategy: start the command, wait 500ms. If it finishes within that window,
 // just send the result directly (no intermediate messages). If it's still running,
 // send a progress message and keep updating until completion.
-func (e *Engine) runShellWithProgress(p Platform, replyCtx any, command string, workDir string, timeout time.Duration, maxOutput int) error {
+func (e *Engine) runShellWithProgress(p Platform, replyCtx any, command string, workDir string, sessionKey string, timeout time.Duration, maxOutput int) error {
 	cmdLabel := truncateStr(command, 60)
 
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
 	defer cancel()
 
-	cmd := shellExecCommand(ctx, e.shell, e.shellFlag, e.shellProfile, command)
-	cmd.Dir = workDir
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
+	opts := e.commandSpawnOptions()
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	cmd, err := buildProjectCommand(ctx, opts, projectCommand{
+		shell: e.shell, flag: e.shellFlag, profile: e.shellProfile, command: command,
+		dir: workDir, env: e.commandEnv(sessionKey),
+	})
+	var doneCh <-chan struct{}
+	var waitErr *error
+	if err == nil {
+		doneCh, waitErr, err = startCommandStreaming(cmd, opts.IsolationMode(), &mu, &buf)
 	}
-	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
 		errMsg := fmt.Sprintf("failed to start command: %v", err)
 		e.reply(p, replyCtx, fmt.Sprintf("❌ `%s`\n```\n%s\n```", cmdLabel, errMsg))
 		return err
 	}
 
-	// Read stdout and stderr concurrently
-	var mu sync.Mutex
-	var buf bytes.Buffer
-	doneCh := make(chan struct{})
-	var cmdWaitErr error
-
-	readPipe := func(r io.Reader) {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
-		for scanner.Scan() {
-			mu.Lock()
-			if buf.Len() > 0 {
-				buf.WriteByte('\n')
-			}
-			buf.WriteString(scanner.Text())
-			mu.Unlock()
-		}
-	}
-
-	go func() {
-		// Pipes must be fully drained before cmd.Wait() per Go API contract.
-		var pipeWg sync.WaitGroup
-		pipeWg.Add(2)
-		go func() { defer pipeWg.Done(); readPipe(stdout) }()
-		go func() { defer pipeWg.Done(); readPipe(stderr) }()
-		pipeWg.Wait()
-		cmdWaitErr = cmd.Wait()
-		close(doneCh)
-	}()
-
 	// Wait a bit to see if the command finishes quickly
 	select {
 	case <-doneCh:
 		// Command finished within the quick window — send result directly
-		return e.finishShellCmd(p, replyCtx, cmd, &mu, &buf, cmdLabel, maxOutput, false, cmdWaitErr)
+		return e.finishShellCmd(p, replyCtx, cmd, &mu, &buf, cmdLabel, maxOutput, false, *waitErr)
 	case <-ctx.Done():
 		// Timeout before even the quick window elapsed (very short timeout)
-		killAndWait(cmd, doneCh)
+		stopAndWait(cmd, opts.IsolationMode(), doneCh)
 		mu.Lock()
 		output := buf.String()
 		mu.Unlock()
@@ -8004,10 +7969,10 @@ func (e *Engine) runShellWithProgress(p Platform, replyCtx any, command string, 
 	select {
 	case <-doneCh:
 		close(updateDone)
-		return e.finishShellCmd(p, replyCtx, cmd, &mu, &buf, cmdLabel, maxOutput, useUpdate, previewHandle, cmdWaitErr)
+		return e.finishShellCmd(p, replyCtx, cmd, &mu, &buf, cmdLabel, maxOutput, useUpdate, previewHandle, *waitErr)
 	case <-ctx.Done():
 		close(updateDone)
-		killAndWait(cmd, doneCh)
+		stopAndWait(cmd, opts.IsolationMode(), doneCh)
 		mu.Lock()
 		output := buf.String()
 		mu.Unlock()
@@ -8097,8 +8062,42 @@ func (e *Engine) formatShellTimeout(cmdLabel, output string, maxOutput int) stri
 	return fmt.Sprintf("⚠️ `%s` (timeout)\n```\n%s\n```", cmdLabel, display)
 }
 
-func killAndWait(cmd *exec.Cmd, doneCh <-chan struct{}) {
-	if cmd.Process != nil {
+// startCommandStreaming starts cmd with each line of its stdout and stderr
+// appended to buf under mu, joined by newlines; framed keeps only the lines
+// inside the run_as_user frame. The returned channel closes once cmd has
+// ended and all of its output is in buf; Wait's result is then in *waitErr.
+func startCommandStreaming(cmd *exec.Cmd, framed bool, mu *sync.Mutex, buf *bytes.Buffer) (<-chan struct{}, *error, error) {
+	emit := func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if buf.Len() > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(line)
+	}
+	stdout := newCommandLineWriter(framed, emit)
+	stderr := newCommandLineWriter(framed, emit)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	doneCh := make(chan struct{})
+	waitErr := new(error)
+	go func() {
+		*waitErr = cmd.Wait()
+		stdout.flush()
+		stderr.flush()
+		close(doneCh)
+	}()
+	return doneCh, waitErr, nil
+}
+
+// stopAndWait stops a command whose context ended and waits for doneCh. A
+// command run as the project's user got TERM from its context, which reaches
+// its whole process group; any other is killed.
+func stopAndWait(cmd *exec.Cmd, runAs bool, doneCh <-chan struct{}) {
+	if !runAs && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
 	<-doneCh
@@ -8143,12 +8142,17 @@ func (e *Engine) cmdShell(p Platform, msg *Message, raw string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
-	workDir := e.commandWorkDir(agent, msg)
-	if workDir == "" {
-		workDir, _ = os.Getwd()
+	var workDir string
+	if e.projectRunAs.IsolationMode() {
+		workDir = e.configuredCommandWorkDir(agent, msg)
+	} else {
+		workDir = e.commandWorkDir(agent, msg)
+		if workDir == "" {
+			workDir, _ = os.Getwd()
+		}
 	}
 
-	go func() { _ = e.runShellWithProgress(p, msg.ReplyCtx, shellCmd, workDir, timeout, 4000) }()
+	go func() { _ = e.runShellWithProgress(p, msg.ReplyCtx, shellCmd, workDir, msg.SessionKey, timeout, 4000) }()
 }
 
 func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
@@ -8176,7 +8180,7 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 			workDir = wd.GetWorkDir()
 		}
 	}
-	if workDir == "" {
+	if workDir == "" && !e.projectRunAs.IsolationMode() {
 		workDir, _ = os.Getwd()
 	}
 
@@ -8185,29 +8189,23 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 		defer cancel()
 
 		// Get current branch name and short commit ID
-		branchCmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
-		branchCmd.Dir = workDir
-		branchOut, _ := branchCmd.Output()
+		branchOut, _ := e.projectOutput(ctx, workDir, msg.SessionKey, nil, "git", "rev-parse", "--abbrev-ref", "HEAD")
 		currentBranch := strings.TrimSpace(string(branchOut))
 		if currentBranch == "" {
 			currentBranch = "unknown"
 		}
 
-		commitCmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", "HEAD")
-		commitCmd.Dir = workDir
-		commitOut, _ := commitCmd.Output()
+		commitOut, _ := e.projectOutput(ctx, workDir, msg.SessionKey, nil, "git", "rev-parse", "--short", "HEAD")
 		commitID := strings.TrimSpace(string(commitOut))
 		if commitID == "" {
 			commitID = "0000000"
 		}
 
-		gitArgs := []string{"diff"}
+		gitArgs := []string{"git", "diff"}
 		if diffTarget != "" {
 			gitArgs = append(gitArgs, "--", diffTarget)
 		}
-		gitCmd := exec.CommandContext(ctx, "git", gitArgs...)
-		gitCmd.Dir = workDir
-		diffOutput, err := gitCmd.Output()
+		diffOutput, err := e.projectOutput(ctx, workDir, msg.SessionKey, nil, gitArgs...)
 
 		if ctx.Err() == context.DeadlineExceeded {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandTimeout), "git diff"))
@@ -8230,7 +8228,7 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 		// Try diff2html + FileSender
 		if fileSender, ok := p.(FileSender); ok {
 			title := fmt.Sprintf("%s vs %s", currentBranch, target)
-			htmlData, err := e.diff2html(ctx, diffOutput, workDir, title)
+			htmlData, err := e.diff2html(ctx, diffOutput, workDir, msg.SessionKey, title)
 			if err == nil {
 				fileName := fmt.Sprintf("%s-%s.html", currentBranch, commitID)
 				if err := e.waitOutgoing(p); err != nil {
@@ -8256,14 +8254,52 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 	}()
 }
 
-func (e *Engine) diff2html(ctx context.Context, diff []byte, workDir, title string) ([]byte, error) {
-	if _, err := exec.LookPath("diff2html"); err != nil {
-		return nil, err
+func (e *Engine) diff2html(ctx context.Context, diff []byte, workDir, sessionKey, title string) ([]byte, error) {
+	if !e.projectRunAs.IsolationMode() {
+		if _, err := exec.LookPath("diff2html"); err != nil {
+			return nil, err
+		}
 	}
-	cmd := exec.CommandContext(ctx, "diff2html", "-i", "stdin", "-o", "stdout", "--title", title)
-	cmd.Dir = workDir
-	cmd.Stdin = bytes.NewReader(diff)
-	return cmd.Output()
+	return e.projectOutput(ctx, workDir, sessionKey, diff, "diff2html", "-i", "stdin", "-o", "stdout", "--title", title)
+}
+
+// projectOutput runs argv in dir for the project, with stdin when it is not
+// nil, and returns its stdout. Under run_as_user it runs as the project's
+// user, and a program missing from that user's PATH gives an error matching
+// exec.ErrNotFound.
+func (e *Engine) projectOutput(ctx context.Context, dir, sessionKey string, stdin []byte, argv ...string) ([]byte, error) {
+	opts := e.commandSpawnOptions()
+	var cmd *exec.Cmd
+	if !opts.IsolationMode() {
+		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.Dir = dir
+	} else {
+		quoted := make([]string, len(argv))
+		for i, a := range argv {
+			quoted[i] = shellQuote(a)
+		}
+		var err error
+		cmd, err = buildProjectCommand(ctx, opts, projectCommand{
+			shell: "/bin/sh", flag: "-c",
+			command: "command -v " + quoted[0] + " >/dev/null || exit 127; exec " + strings.Join(quoted, " "),
+			dir:     dir, env: e.commandEnv(sessionKey),
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	out, err := cmd.Output()
+	if !opts.IsolationMode() {
+		return out, err
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
+		err = fmt.Errorf("%s as %q: %w", argv[0], opts.RunAsUser, exec.ErrNotFound)
+	}
+	return projectCommandOutput(out), err
 }
 
 // dirApply applies /dir mutations (same semantics as cmdDir). sessionKey is used for GetOrCreateActive.
@@ -14666,11 +14702,11 @@ func (e *Engine) executeShellCommand(p Platform, msg *Message, cmd *CustomComman
 			}
 		}
 	}
-	if workDir == "" {
+	if workDir == "" && !e.projectRunAs.IsolationMode() {
 		workDir, _ = os.Getwd()
 	}
 
-	_ = e.runShellWithProgress(p, msg.ReplyCtx, execCmd, workDir, 60*time.Second, 4000)
+	_ = e.runShellWithProgress(p, msg.ReplyCtx, execCmd, workDir, msg.SessionKey, 60*time.Second, 4000)
 }
 
 func (e *Engine) cmdCommands(p Platform, msg *Message, args []string) {
@@ -15836,6 +15872,9 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 			"CC_PROJECT=" + e.name,
 			"CC_SESSION_KEY=" + sourceSessionKey,
 		}
+		if e.dataDir != "" {
+			envVars = append(envVars, "CC_DATA_DIR="+e.dataDir)
+		}
 		if exePath, err := os.Executable(); err == nil {
 			binDir := filepath.Dir(exePath)
 			if curPath := os.Getenv("PATH"); curPath != "" {
@@ -16792,12 +16831,21 @@ func (e *Engine) handleWorkspaceInitFlow(p Platform, msg *Message, channelName s
 
 		var err error
 		var message string
+		runAs := e.projectRunAs.IsolationMode()
 		if e.skipGit {
-			err = os.MkdirAll(flow.cloneTo, 0o755)
+			if runAs {
+				err = e.createWorkspaceAsUser("", flow.cloneTo, false, msg.SessionKey)
+			} else {
+				err = os.MkdirAll(flow.cloneTo, 0o755)
+			}
 			message = fmt.Sprintf("mkdir failed: %v", err)
 		} else {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("Cloning `%s` to `%s`...", flow.repoURL, flow.cloneTo))
-			err = gitClone(flow.repoURL, flow.cloneTo)
+			if runAs {
+				err = e.createWorkspaceAsUser(flow.repoURL, flow.cloneTo, false, msg.SessionKey)
+			} else {
+				err = gitClone(flow.repoURL, flow.cloneTo)
+			}
 			message = fmt.Sprintf("Clone failed: %v\nSend a repo URL to try again.", err)
 		}
 		if err != nil {
@@ -16904,6 +16952,44 @@ func extractRepoName(url string) string {
 		return parts[len(parts)-1]
 	}
 	return "workspace"
+}
+
+// workspaceCloneTimeout bounds a workspace clone run as the project's user.
+var workspaceCloneTimeout = 10 * time.Minute
+
+// errWorkspaceExists reports that a new workspace's folder already exists.
+var errWorkspaceExists = errors.New("workspace folder exists")
+
+// createWorkspaceAsUser creates dest as the project's run_as_user: a clone of
+// repoURL, or an empty folder when repoURL is empty. With checkExists it
+// first gives errWorkspaceExists when dest exists, leaving it as it is.
+func (e *Engine) createWorkspaceAsUser(repoURL, dest string, checkExists bool, sessionKey string) error {
+	ctx, cancel := context.WithTimeout(e.ctx, workspaceCloneTimeout)
+	defer cancel()
+	script := ""
+	if checkExists {
+		script = "if [ -e " + shellQuote(dest) + " ]; then exit 3; fi; "
+	}
+	if repoURL == "" {
+		script += "mkdir -p -- " + shellQuote(dest)
+	} else {
+		script += "git clone " + shellQuote(repoURL) + " " + shellQuote(dest)
+	}
+	cmd, err := buildProjectCommand(ctx, e.commandSpawnOptions(), projectCommand{
+		shell: "/bin/sh", flag: "-c", command: script, env: e.commandEnv(sessionKey),
+	})
+	if err != nil {
+		return err
+	}
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if checkExists && errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+		return errWorkspaceExists
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(projectCommandOutput(output))), err)
+	}
+	return nil
 }
 
 func gitClone(repoURL, dest string) error {

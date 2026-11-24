@@ -335,6 +335,50 @@ a separate Unix user per project.
 **This is not a sandbox in the sense of Linux namespaces, seccomp, or
 container isolation.** It is strictly file-system scoping by uid.
 
+**Commands cc-connect runs for the project run as the target user too**
+(see the list below), so a command the agent can add or change, such as
+a cron `exec` job, never runs with the supervisor's rights.
+
+#### Who may use the API socket
+
+The agent reaches cc-connect through the API socket
+(`<data_dir>/run/api.sock`), for example with `cc-connect send` or
+`cc-connect cron add`. On every request cc-connect reads the caller's
+uid from the socket's peer credentials:
+
+- cc-connect's own user and root may act for every project, as before.
+- Any other user may act only for the projects whose `run_as_user` is
+  that user. Projects that share a `run_as_user` share this scope. A
+  user that is no project's `run_as_user` is refused on every route.
+- For such a user, `/send`, `/cron/*` and `/timer/*` work only for its
+  projects: another project's name is refused, another project's job
+  answers as if it did not exist, and `cron edit` cannot move a job to
+  another project. With no project named, a user with one project gets
+  that project. `/send` with `work_dir` or `cwd` (`cc-connect send
+  --cwd`) is refused. `/relay/send` works only `from` one of its projects
+  that is bound in the chat. `/signoff/send` answers a session of another
+  project as if it did not exist. `/sessions`, `/relay/bind` and
+  `/relay/binding` are refused.
+
+While no project sets `run_as_user`, the socket stays mode `0600`. With
+one, the socket becomes `0666`, after cc-connect checked that every
+folder from the socket's folder up to `/`, symlinks resolved, is owned
+by root or by cc-connect's user and is not writable by group or others.
+The folders on `data_dir` as configured must pass the same check, and
+so must the folder holding each symlink on the way to the socket,
+including a symlink inside another symlink's target.
+cc-connect then checks, as each target user, that the user can enter
+each of those folders and write the socket. Any failure stops startup
+with a message naming the folder and the fix. Peer credentials exist on
+Linux and macOS only; elsewhere a project with `run_as_user` stops
+startup.
+
+Every target user can enter `data_dir`, so each can also read, by name,
+the files cc-connect keeps there (session history with every chat
+message of every project, cron jobs, relay and workspace bindings). Use a dedicated `data_dir` outside any home folder, mode
+`0711`, with every folder above it traversable by others, and keep the
+config file outside it.
+
 ### What runs as the target user
 
 With `run_as_user` set, cc-connect does these as the target user too,
@@ -352,12 +396,20 @@ per-spawn check as the agent:
   `<work_dir>/.cc-connect/attachments`. With `work_dir` unset, that is
   cc-connect's own working directory. The target user must be able to
   create `.cc-connect` there.
+- **Commands.** `/shell` and `!`, custom-command `exec`, cron and timer
+  `exec`, webhook `exec`, `[[hooks]]` commands, `/diff` (its `git`
+  commands and `diff2html`), the workspace clone, and `signoff_exec`.
+  Each gets only the allowlisted environment plus `CC_PROJECT`,
+  `CC_DATA_DIR` and, when there is one, `CC_SESSION_KEY`. It runs in the
+  same folder as before, or in the target's home when no folder is
+  known. Output the target's login shell prints is not shown, and a
+  command that times out is stopped with its child processes.
 
 If sudo or the per-spawn check fails, the action fails and nothing runs
 as the supervisor instead: the hook is skipped and the request goes to
-the chat's permission prompt, the usage readout returns an error, and a
+the chat's permission prompt, the usage readout returns an error, a
 file attachment is skipped with a log line while an image still reaches the
-agent inline. The hook settings are read once
+agent inline, and a command reports the error. The hook settings are read once
 per session: if that read fails, the session runs no hooks and every
 request goes to the chat's permission prompt for the rest of the session.
 
@@ -469,7 +521,8 @@ name = "claude-sandboxed"
 run_as_user = "partseeker-coder"
 
 # Optional: extend the default env var allowlist that crosses the sudo
-# boundary. The defaults (PATH, LANG, LC_*, TERM) are always included.
+# boundary. The defaults (LANG, LC_*, TERM, CC_PROJECT, CC_SESSION_KEY,
+# CC_DATA_DIR) are always included.
 # Only list vars the target user cannot reasonably set in their own
 # shell profile. Secrets belong in the target user's ~/.claude/settings.json
 # env block, NOT here.
@@ -553,7 +606,9 @@ checklist.
 ### Opting out
 
 Remove `run_as_user` from the project entry, or set it to `""`. Legacy
-behavior (spawn as supervisor) returns on the next restart.
+behavior (spawn as supervisor) returns on the next restart. Cron and
+timer jobs the agent added then run as cc-connect's own user, so review
+them first.
 
 ### Failure modes and error messages
 
@@ -569,6 +624,20 @@ behavior (spawn as supervisor) returns on the next restart.
   target user can read another user's secrets. Tighten the offending
   file's permissions (usually `chmod 600 file; chown user:user file`)
   and re-audit.
+- **"run_as_user needs the API socket to read each caller's uid"** — the
+  platform has no peer credentials. Remove `run_as_user` or run on Linux
+  or macOS.
+- **"API socket folder X has mode M, so other users can write it"** or
+  **"API socket folder X is owned by uid N"** — a folder above the socket
+  is not safe. Run `chmod go-w X`, or set `data_dir` to a dedicated
+  folder whose parents only root can write.
+- **"user X cannot enter F, so its agent cannot reach the API socket"** —
+  the target user cannot traverse folder `F`. Set `data_dir` to a
+  dedicated folder outside any home folder, with every folder above it
+  traversable by others (`chmod o+x`).
+- **"user X cannot write the API socket"**, **"API socket S changed after
+  it was opened"**, or **"open the API socket for run_as_user"** — the
+  socket could not be opened or made safe; the message names the cause.
 - **"descendant scan timed out"** — non-fatal. The `work_dir` is large
   enough that the permission walk exceeded its timeout. Run
   `cc-connect doctor user-isolation` manually if you want the full

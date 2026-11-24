@@ -6,12 +6,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -289,7 +293,11 @@ func TestVerifyRunAsUserCheap_CacheHit(t *testing.T) {
 // backslash-escaped, the arguments are joined into one string and that
 // string runs under `sh -c` in the target's HOME with only the preserved
 // variables set. In record mode it runs nothing; in fail mode it refuses
-// every call; in exists mode every write exits with the "exists" code.
+// every call; in exists mode every write exits with the "exists" code. In
+// noisy mode it stays the parent the way sudo does, passes TERM on to the
+// login shell, and prints on stdout and stderr before and after the command;
+// that login shell runs one more command after the given one, so it does not
+// replace itself with it.
 // Quoting mistakes show only when /bin/sh is dash (Linux CI): macOS bash 3.2
 // does not split an expanded "$NAME" in a word that also holds ${...} or "$@".
 const fakeSudoScript = `#!/bin/sh
@@ -338,7 +346,22 @@ done
 IFS=$oldifs
 echo "fake login profile noise"
 cd "$home" || exit 1
-exec env -i "$@" /bin/sh -c "$joined"
+if [ "$mode" != noisy ]; then
+	exec env -i "$@" /bin/sh -c "$joined"
+fi
+echo "fake login profile noise on stderr" >&2
+exec 3<&0
+env -i "$@" /bin/sh -c "$joined; :" <&3 &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM
+while :; do
+	wait "$child"
+	s=$?
+	kill -0 "$child" 2>/dev/null || break
+done
+echo "fake logout noise"
+echo "fake logout noise on stderr" >&2
+exit "$s"
 `
 
 type fakeSudo struct {
@@ -347,8 +370,15 @@ type fakeSudo struct {
 }
 
 // installFakeSudo puts fakeSudoScript first on PATH in the given mode
-// ("exec", "record", "fail" or "exists").
+// ("exec", "record", "fail", "exists" or "noisy").
 func installFakeSudo(t *testing.T, mode string) *fakeSudo {
+	t.Helper()
+	return installFakeSudoWithPath(t, mode, "/usr/bin:/bin")
+}
+
+// installFakeSudoWithPath is installFakeSudo with innerPath as the PATH the
+// command gets.
+func installFakeSudoWithPath(t *testing.T, mode, innerPath string) *fakeSudo {
 	t.Helper()
 	binDir := t.TempDir()
 	f := &fakeSudo{log: filepath.Join(binDir, "sudo.log"), home: t.TempDir()}
@@ -356,7 +386,7 @@ func installFakeSudo(t *testing.T, mode string) *fakeSudo {
 		"@LOG@", shellQuote(f.log),
 		"@MODE@", mode,
 		"@HOME@", shellQuote(f.home),
-		"@PATH@", shellQuote("/usr/bin:/bin"),
+		"@PATH@", shellQuote(innerPath),
 	).Replace(fakeSudoScript)
 	if err := os.WriteFile(filepath.Join(binDir, "sudo"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -638,5 +668,242 @@ func TestSaveFilesToDiskAs_WithoutRunAsUserSkipsSudo(t *testing.T) {
 	}
 	if calls := sudo.calls(t); calls != "" {
 		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
+	}
+}
+
+// runProjectCmd builds c as opts' user, runs it with stdin and returns what
+// each stream printed inside its frame.
+func runProjectCmd(t *testing.T, ctx context.Context, opts SpawnOptions, c projectCommand, stdin string) (stdout, stderr string, err error) {
+	t.Helper()
+	cmd, err := buildProjectCommand(ctx, opts, c)
+	if err != nil {
+		return "", "", err
+	}
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return string(projectCommandOutput(outBuf.Bytes())), string(projectCommandOutput(errBuf.Bytes())), err
+}
+
+func shCommand(command, dir string, env ...string) projectCommand {
+	return projectCommand{shell: "sh", flag: "-c", command: command, dir: dir, env: env}
+}
+
+// waitGone fails the test unless the process whose pid is in pidFile has
+// ended within a few seconds.
+func waitGone(t *testing.T, pidFile string) {
+	t.Helper()
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read pid file: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("pid file %q: %v", data, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("process %d still runs after cancel", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if data, err := os.ReadFile(path); err == nil && len(bytes.TrimSpace(data)) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s was never written", path)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestBuildProjectCommand_WithoutRunAsIsShellExecCommand(t *testing.T) {
+	ctx := context.Background()
+	c := projectCommand{shell: "bash", flag: "-lc", profile: "source ~/.bashrc;", command: "echo $HOME", dir: "/tmp/w", env: []string{"CC_PROJECT=p"}}
+	got, err := buildProjectCommand(ctx, SpawnOptions{}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := shellExecCommand(ctx, "bash", "-lc", "source ~/.bashrc;", "echo $HOME")
+	if !reflect.DeepEqual(got.Args, want.Args) || got.Path != want.Path {
+		t.Fatalf("argv = %q, want %q", got.Args, want.Args)
+	}
+	if got.Dir != "/tmp/w" || got.Env != nil || got.WaitDelay != 0 {
+		t.Fatalf("dir %q env %v waitDelay %v; want /tmp/w, nil, 0", got.Dir, got.Env, got.WaitDelay)
+	}
+}
+
+func TestBuildProjectCommand_RunAsArgvKeepsCommandOutOfArgv(t *testing.T) {
+	installFakeSudo(t, "exec")
+	opts := SpawnOptions{RunAsUser: "target", EnvAllowlist: []string{"PGHOST"}}
+	cmd, err := buildProjectCommand(context.Background(), opts, shCommand("echo secret-word", "/w", "CC_PROJECT=p"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := cmd.Args
+	if filepath.Base(args[0]) != "sudo" || !reflect.DeepEqual(args[1:4], []string{"-n", "-iu", "target"}) {
+		t.Fatalf("argv = %q", args)
+	}
+	preserved := strings.Split(strings.TrimPrefix(args[4], "--preserve-env="), ",")
+	if !slices.IsSorted(preserved) {
+		t.Fatalf("preserve list not sorted: %v", preserved)
+	}
+	for _, name := range []string{"LANG", "PGHOST", "CC_PROJECT", "CC_RUNAS_CMD", "CC_RUNAS_CMD_DIR"} {
+		if !slices.Contains(preserved, name) {
+			t.Errorf("preserve list misses %s: %v", name, preserved)
+		}
+	}
+	if !reflect.DeepEqual(args[5:9], []string{"--", "exec", "/bin/sh", "-c"}) || len(args) != 10 {
+		t.Fatalf("argv tail = %q", args[5:])
+	}
+	if strings.Contains(strings.Join(args, " "), "secret-word") {
+		t.Fatalf("command text in argv: %q", args)
+	}
+	if cmd.Dir != "" {
+		t.Fatalf("Dir = %q, want empty", cmd.Dir)
+	}
+}
+
+func TestBuildProjectCommand_RunAsCommandReachesShellUnexpanded(t *testing.T) {
+	installFakeSudo(t, "exec")
+	stdout, _, err := runProjectCmd(t, context.Background(), SpawnOptions{RunAsUser: "target"},
+		shCommand(`printf '%s\n' '$HOME  and ${PATH} "q"'`, ""), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout != "$HOME  and ${PATH} \"q\"\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestBuildProjectCommand_RunAsDropsLoginNoise(t *testing.T) {
+	installFakeSudo(t, "noisy")
+	opts := SpawnOptions{RunAsUser: "target"}
+	cmd, err := buildProjectCommand(context.Background(), opts, shCommand("echo out; echo err >&2; printf last", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outBuf, errBuf bytes.Buffer
+	var mu sync.Mutex
+	var lines []string
+	add := func(s string) { mu.Lock(); lines = append(lines, s); mu.Unlock() }
+	outLines := newCommandLineWriter(true, func(s string) { add("out:" + s) })
+	errLines := newCommandLineWriter(true, func(s string) { add("err:" + s) })
+	cmd.Stdout = io.MultiWriter(&outBuf, outLines)
+	cmd.Stderr = io.MultiWriter(&errBuf, errLines)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	outLines.flush()
+	errLines.flush()
+	if !strings.Contains(outBuf.String(), "fake logout noise") || !strings.Contains(errBuf.String(), "noise on stderr") {
+		t.Fatalf("fake sudo printed no noise: %q / %q", outBuf.String(), errBuf.String())
+	}
+	if got := string(projectCommandOutput(outBuf.Bytes())); got != "out\nlast" {
+		t.Errorf("stdout = %q", got)
+	}
+	if got := string(projectCommandOutput(errBuf.Bytes())); got != "err\n" {
+		t.Errorf("stderr = %q", got)
+	}
+	slices.Sort(lines)
+	if want := []string{"err:err", "out:last", "out:out"}; !reflect.DeepEqual(lines, want) {
+		t.Errorf("lines = %q, want %q", lines, want)
+	}
+}
+
+func TestBuildProjectCommand_RunAsEnvIsAllowlistOnly(t *testing.T) {
+	installFakeSudo(t, "exec")
+	t.Setenv("CC_TEST_SECRET", "s3cret")
+	t.Setenv("PGHOST", "db")
+	stdout, _, err := runProjectCmd(t, context.Background(),
+		SpawnOptions{RunAsUser: "target", EnvAllowlist: []string{"PGHOST"}},
+		shCommand("env", "", "CC_PROJECT=proj", "CC_SESSION_KEY=sk"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"PGHOST=db", "CC_PROJECT=proj", "CC_SESSION_KEY=sk", "CC_FAKE_SUDO_USER=target"} {
+		if !strings.Contains(stdout, want+"\n") {
+			t.Errorf("env misses %s:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "s3cret") {
+		t.Errorf("secret crossed sudo:\n%s", stdout)
+	}
+}
+
+func TestBuildProjectCommand_FailedSudoCheckRunsNothing(t *testing.T) {
+	sudo := installFakeSudo(t, "fail")
+	_, err := buildProjectCommand(context.Background(), SpawnOptions{RunAsUser: "target"}, shCommand("echo hi", ""))
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if strings.Contains(sudo.calls(t), "/bin/sh") {
+		t.Fatalf("command ran after a failed check: %s", sudo.calls(t))
+	}
+}
+
+func TestBuildProjectCommand_RunAsCancelStopsCommand(t *testing.T) {
+	for _, tc := range []struct{ name, command string }{
+		{"background child", `sleep 61 & echo "${!}" > "$PIDFILE"; wait`},
+		{"ignores TERM", `trap '' TERM; echo "$$" > "$PIDFILE"; sleep 62; sleep 62`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installFakeSudo(t, "noisy")
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cmd, err := buildProjectCommand(ctx, SpawnOptions{RunAsUser: "target"}, shCommand(tc.command, "", "PIDFILE="+pidFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waitForFile(t, pidFile)
+			start := time.Now()
+			cancel()
+			_ = cmd.Wait()
+			if d := time.Since(start); d > cmd.WaitDelay+time.Second {
+				t.Errorf("Wait took %s after cancel", d)
+			}
+			waitGone(t, pidFile)
+		})
+	}
+}
+
+func TestBuildProjectCommand_RunAsStdinAndFolder(t *testing.T) {
+	sudo := installFakeSudo(t, "exec")
+	opts := SpawnOptions{RunAsUser: "target"}
+	dir := filepath.Join(t.TempDir(), "work  dir")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	in := "{\"request_id\":\"r\"}\nline two $X\n"
+	stdout, _, err := runProjectCmd(t, context.Background(), opts, shCommand("pwd -P; cat", dir), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir, _ := filepath.EvalSymlinks(dir)
+	if stdout != wantDir+"\n"+in {
+		t.Fatalf("stdout = %q, want %q", stdout, wantDir+"\n"+in)
+	}
+
+	stdout, _, err = runProjectCmd(t, context.Background(), opts, shCommand("pwd -P", ""), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHome, _ := filepath.EvalSymlinks(sudo.home)
+	if got, _ := filepath.EvalSymlinks(strings.TrimSpace(stdout)); got != wantHome {
+		t.Fatalf("pwd with no folder = %q, want home %q", stdout, wantHome)
 	}
 }

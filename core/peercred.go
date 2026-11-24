@@ -9,15 +9,12 @@ import (
 // maxAncestryDepth caps the walk up a caller's parents.
 const maxAncestryDepth = 64
 
-// signoffConnKey keys the API socket connection of a request in its context.
-type signoffConnKey struct{}
-
 // callerUnderAgent reports whether the process on the other end of r's API
 // socket connection is agentPid or runs under it. It keeps a card from landing
-// in another session's thread by mistake; all agents run as one user and can
-// pass it for one another.
+// in another session's thread by mistake; agents running as one user can pass
+// it for one another.
 func callerUnderAgent(r *http.Request, agentPid int) bool {
-	conn, _ := r.Context().Value(signoffConnKey{}).(net.Conn)
+	conn, _ := r.Context().Value(apiConnKey{}).(net.Conn)
 	if conn == nil {
 		return false
 	}

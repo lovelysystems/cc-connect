@@ -11291,7 +11291,7 @@ func TestRunShellWithProgress_BasicOutput(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
-	err := e.runShellWithProgress(p, "ctx", "echo hello", t.TempDir(), 5*time.Second, 4000)
+	err := e.runShellWithProgress(p, "ctx", "echo hello", t.TempDir(), "", 5*time.Second, 4000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -11320,7 +11320,7 @@ func TestRunShellWithProgress_FailedCommand(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
-	err := e.runShellWithProgress(p, "ctx", "exit 42", t.TempDir(), 5*time.Second, 4000)
+	err := e.runShellWithProgress(p, "ctx", "exit 42", t.TempDir(), "", 5*time.Second, 4000)
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
@@ -11349,7 +11349,7 @@ func TestRunShellWithProgress_Timeout(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
-	err := e.runShellWithProgress(p, "ctx", "sleep 30", t.TempDir(), 200*time.Millisecond, 4000)
+	err := e.runShellWithProgress(p, "ctx", "sleep 30", t.TempDir(), "", 200*time.Millisecond, 4000)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -11382,7 +11382,7 @@ func TestRunShellWithProgress_EmptyOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		cmd = `cmd /c "exit /b 0"`
 	}
-	err := e.runShellWithProgress(p, "ctx", cmd, t.TempDir(), 5*time.Second, 4000)
+	err := e.runShellWithProgress(p, "ctx", cmd, t.TempDir(), "", 5*time.Second, 4000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -11412,7 +11412,7 @@ func TestRunShellWithProgress_StderrOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		cmd = `cmd /c "echo err >&2"`
 	}
-	err := e.runShellWithProgress(p, "ctx", cmd, t.TempDir(), 5*time.Second, 4000)
+	err := e.runShellWithProgress(p, "ctx", cmd, t.TempDir(), "", 5*time.Second, 4000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -11448,7 +11448,7 @@ func TestRunShellWithProgress_LongOutputTruncated(t *testing.T) {
 		cmd = `Write-Host ('x' * 5000)`
 		timeout = 15 * time.Second
 	}
-	err := e.runShellWithProgress(p, "ctx", cmd, t.TempDir(), timeout, 100)
+	err := e.runShellWithProgress(p, "ctx", cmd, t.TempDir(), "", timeout, 100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -11478,7 +11478,7 @@ func TestRunShellWithProgress_NonexistentCommand(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
-	err := e.runShellWithProgress(p, "ctx", "nonexistent_command_xyz_12345", t.TempDir(), 5*time.Second, 4000)
+	err := e.runShellWithProgress(p, "ctx", "nonexistent_command_xyz_12345", t.TempDir(), "", 5*time.Second, 4000)
 	if err == nil {
 		t.Fatal("expected error for nonexistent command")
 	}

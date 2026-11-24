@@ -627,9 +627,11 @@ func (p *PicoTTS) Synthesize(ctx context.Context, text string, opts TTSSynthesis
 	// Build pico2wave command
 	// --lang: language code (zh-CN for Chinese, en-US for English)
 	// --wave: output WAV file path
+	// --: a text that starts with "-" is spoken, never read as an option
 	args := []string{
 		"--lang=" + voice,
 		"--wave=" + tmpPath,
+		"--",
 		text,
 	}
 
