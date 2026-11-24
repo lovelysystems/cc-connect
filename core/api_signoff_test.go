@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,4 +199,75 @@ func TestSignoffAPICallerCheckFailsClosedWithoutASocket(t *testing.T) {
 	if callerUnderAgent(r, 100) {
 		t.Fatal("a request without a socket connection passed the caller check")
 	}
+}
+
+// scopedSignoffAPI serves the API routes for project a, whose agent runs as
+// agent_a with pid 100, and project b, whose agent runs as agent_b with pid
+// 200. It takes every request as sent by uid from under the agent callerPid.
+// Only the projects in live have a live session in signoffTestKey's thread.
+func scopedSignoffAPI(t *testing.T, uid, callerPid int, live ...string) (api *APIServer, pa, pb *signoffTestPlatform) {
+	t.Helper()
+	pa, pb = &signoffTestPlatform{}, &signoffTestPlatform{}
+	a := signoffAPIEngine(t, &signoffTestAgent{runAs: "agent_a"}, pa, 100)
+	a.SetRunAs("agent_a", nil)
+	b := signoffAPIEngine(t, &signoffTestAgent{runAs: "agent_b"}, pb, 200)
+	b.SetRunAs("agent_b", nil)
+	api = &APIServer{
+		engines:       map[string]*Engine{"a": a, "b": b},
+		mux:           http.NewServeMux(),
+		signoffCaller: callerUnder(callerPid),
+		callerUID:     func(*http.Request) (int, error) { return uid, nil },
+	}
+	for name, e := range api.engines {
+		if !slices.Contains(live, name) {
+			delete(e.interactiveStates, signoffTestKey)
+		}
+	}
+	api.SetRunAsUserIDs(map[string]int{"agent_a": testUIDAgentA, "agent_b": testUIDAgentB})
+	for _, rt := range api.routes() {
+		api.handle(rt)
+	}
+	return api, pa, pb
+}
+
+func TestSignoffAPIRefusesASessionOfAnotherProject(t *testing.T) {
+	api, pa, pb := scopedSignoffAPI(t, testUIDAgentA, 200, "b")
+	rec := serveAPI(api, http.MethodPost, "/signoff/send", bytes.NewReader(signoffAPIBody(t, nil)))
+	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != apiForbidden {
+		t.Fatalf("status %d, body %s; want 403 %s", rec.Code, rec.Body.String(), apiForbidden)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if len(pa.entries()) != 0 || len(pb.entries()) != 0 {
+		t.Fatalf("threads got %q and %q", pa.entries(), pb.entries())
+	}
+}
+
+func TestSignoffAPIPostsForAProjectUserUnderItsAgent(t *testing.T) {
+	api, pa, _ := scopedSignoffAPI(t, testUIDAgentA, 100, "a")
+	rec := serveAPI(api, http.MethodPost, "/signoff/send", bytes.NewReader(signoffAPIBody(t, nil)))
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"status":"posted"}` {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	pa.waitFor(t, "card:r1")
+}
+
+func TestSignoffAPIRefusesAProjectUserOutsideItsAgent(t *testing.T) {
+	api, pa, _ := scopedSignoffAPI(t, testUIDAgentA, 999, "a")
+	rec := serveAPI(api, http.MethodPost, "/signoff/send", bytes.NewReader(signoffAPIBody(t, nil)))
+	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "caller is not under the agent of session_key" {
+		t.Fatalf("status %d, body %s; want 403 from the agent check", rec.Code, rec.Body.String())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if len(pa.entries()) != 0 {
+		t.Fatalf("thread got %q", pa.entries())
+	}
+}
+
+func TestSignoffAPIOwnUserPostsForAnyProject(t *testing.T) {
+	api, _, pb := scopedSignoffAPI(t, os.Geteuid(), 200, "b")
+	rec := serveAPI(api, http.MethodPost, "/signoff/send", bytes.NewReader(signoffAPIBody(t, nil)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	pb.waitFor(t, "card:r1")
 }

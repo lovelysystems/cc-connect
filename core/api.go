@@ -835,15 +835,20 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 	if callerUnder == nil {
 		callerUnder = callerUnderAgent
 	}
-	live := false
+	caller := requestCaller(r)
+	live, outside := false, false
 	var engine *Engine
 	var target signoffTarget
-	for _, e := range engines {
+	for i, e := range engines {
 		t, ok := e.signoffTarget(req.SessionKey)
 		if !ok {
 			continue
 		}
 		live = true
+		if !caller.allows(names[i]) {
+			outside = true
+			continue
+		}
 		if callerUnder(r, t.agentPid) {
 			engine, target = e, t
 			break
@@ -851,6 +856,10 @@ func (s *APIServer) handleSignoffSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if !live {
 		http.Error(w, "no live session for session_key", http.StatusNotFound)
+		return
+	}
+	if engine == nil && outside {
+		http.Error(w, apiForbidden, http.StatusForbidden)
 		return
 	}
 	if engine == nil {
