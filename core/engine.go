@@ -7208,8 +7208,6 @@ func (e *Engine) commandWorkDir(agent Agent, msg *Message) string {
 	return ""
 }
 
-// configuredCommandWorkDir is commandWorkDir without the fallback to
-// cc-connect's own working directory.
 func (e *Engine) configuredCommandWorkDir(agent Agent, msg *Message) string {
 	if switcher, ok := agent.(WorkDirSwitcher); ok {
 		if wd := strings.TrimSpace(switcher.GetWorkDir()); wd != "" {

@@ -95,7 +95,6 @@ func NewAPIServer(dataDir string, shared bool) (*APIServer, error) {
 	} else {
 		sockPath = filepath.Join(sockDir, "api.sock")
 
-		// Remove stale socket
 		_ = os.Remove(sockPath)
 
 		var err error

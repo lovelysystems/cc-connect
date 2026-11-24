@@ -269,8 +269,9 @@ const (
 // The command keeps the script's stdin through fd 3 and runs in a process
 // group of its own (setsid, else job control). On TERM the script sends TERM
 // to that group, then KILL a second later, so a command that ignores TERM or
-// left children behind still stops, and it closes the frame before it exits. The script itself is what sudo relays
-// TERM to, since the spawn starts with exec.
+// left children behind still stops, and it closes the frame before it exits.
+// The script itself is what sudo relays TERM to, since the spawn starts with
+// exec.
 func projectCommandScript(pwsh bool) string {
 	run := `"${` + projectCmdShellEnv + `}" `
 	if pwsh {
