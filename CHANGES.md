@@ -17,6 +17,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+### 2026-11-26 / v1.5.0-ls.6
+
 #### Feature
 
 - **core**: `[log] transcript = true` logs every user message and reply in full and every
