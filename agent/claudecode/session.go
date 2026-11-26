@@ -40,6 +40,10 @@ type claudeSession struct {
 	dontAsk         atomic.Bool
 	workDir         string
 	ctx             context.Context
+
+	// questionCallIDs holds AskUserQuestion calls, which emit no tool-use
+	// event, so their results can still be named. Used by the read loop only.
+	questionCallIDs map[string]bool
 	cancel          context.CancelFunc
 	done            chan struct{}
 	alive           atomic.Bool
@@ -716,10 +720,17 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 		case "tool_use":
 			toolName, _ := item["name"].(string)
 			if toolName == "AskUserQuestion" {
+				if id, _ := item["id"].(string); id != "" {
+					if cs.questionCallIDs == nil {
+						cs.questionCallIDs = map[string]bool{}
+					}
+					cs.questionCallIDs[id] = true
+				}
 				continue
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
-			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
+			id, _ := item["id"].(string)
+			evt := core.Event{Type: core.EventToolUse, ToolCallID: id, ToolName: toolName, ToolInput: inputSummary}
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():
@@ -783,14 +794,22 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 				slog.Debug("claudeSession: tool error", "content", result)
 			}
 			success := !isError
-			code := 0
+			var exitCode *int
 			if isError {
-				code = 1
+				exitCode = parseExitCode(result)
+			}
+			toolID, _ := item["tool_use_id"].(string)
+			var toolName string
+			if cs.questionCallIDs[toolID] {
+				toolName = "AskUserQuestion"
+				delete(cs.questionCallIDs, toolID)
 			}
 			evt := core.Event{
 				Type:         core.EventToolResult,
+				ToolName:     toolName,
+				ToolCallID:   toolID,
 				ToolResult:   truncateStr(strings.TrimSpace(result), 500),
-				ToolExitCode: &code,
+				ToolExitCode: exitCode,
 				ToolSuccess:  &success,
 			}
 			select {
@@ -800,6 +819,21 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 			}
 		}
 	}
+}
+
+// parseExitCode reads the "Exit code N" line Claude Code puts at the start of a
+// failed Bash result; other tools report no exit code.
+func parseExitCode(result string) *int {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(result), "Exit code ")
+	if !ok {
+		return nil
+	}
+	digits, _, _ := strings.Cut(rest, "\n")
+	code, err := strconv.Atoi(strings.TrimSpace(digits))
+	if err != nil {
+		return nil
+	}
+	return &code
 }
 
 func (cs *claudeSession) handleResult(raw map[string]any) {

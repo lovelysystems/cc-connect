@@ -60,6 +60,11 @@
 
 [log]
 level = "info" # debug, info, warn, error
+# Transcript log: every user message and reply in full, and every tool call
+# (redacted input, outcome, duration), written to the same output whatever the
+# level. Chat text lands in your logs — turn it on only where that is allowed.
+# A change to transcript takes effect after a restart.
+# transcript = false
 
 # =============================================================================
 # Global Providers / 全局服务商

@@ -449,6 +449,8 @@ type Engine struct {
 	showWorkdirIndicator bool
 	replyFooterEnabled   bool
 
+	transcript *slog.Logger
+
 	// When true, /list etc. only show sessions tracked by cc-connect,
 	// hiding sessions created by direct CLI usage in the same work_dir.
 	// Default false = show all sessions.
@@ -1115,6 +1117,12 @@ func (e *Engine) SetShowWorkdirIndicator(show bool) {
 // no-ops.
 func (e *Engine) SetReplyFooterEnabled(show bool) {
 	e.replyFooterEnabled = show
+}
+
+// SetTranscriptLogger turns on the transcript log: user messages and replies in
+// full, plus tool calls, written through l whatever the log level. Nil turns it off.
+func (e *Engine) SetTranscriptLogger(l *slog.Logger) {
+	e.transcript = l
 }
 
 // SetFilterExternalSessions controls whether /list, /switch, /delete, etc.
@@ -2948,6 +2956,8 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			"content", previewText(msg.Content, 500),
 		)
 	}
+
+	e.transcriptUser(msg)
 
 	e.hooks.Emit(HookEvent{
 		Event:      HookEventMessageReceived,
@@ -4918,6 +4928,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var partialText string
 	triggerAutoCompress := false
 	pendingSend := sendDone
+	turnLog := e.newTranscriptTurn(state, session, sessionKey)
+	defer turnLog.flush()
 
 	// stopTyping tracks the current turn's typing indicator so it can be
 	// stopped when a queued message starts a new turn.
@@ -5250,6 +5262,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 		case EventToolUse:
+			turnLog.toolUse(event)
 			toolCount++
 			if hasRichCard {
 				// When tool messages are suppressed, skip card updates on tool events.
@@ -5394,6 +5407,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 		case EventToolResult:
+			turnLog.toolResult(event)
 			if e.display.ToolMessages {
 				result := strings.TrimSpace(event.ToolResult)
 				if result == "" {
@@ -5799,6 +5813,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// decision; only the outbound platform text gets rewritten/suppressed.
 			session.AddHistory("assistant", baseResponse)
 			sessions.Save()
+			turnLog.flush()
 
 			isSilent := isSilentReply(baseResponse)
 			if !isSilent {
@@ -5813,6 +5828,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 			if !isSilent {
+				turnLog.reply(baseResponse)
 				e.hooks.Emit(HookEvent{
 					Event:      HookEventMessageSent,
 					SessionKey: sessionKey,
@@ -6335,6 +6351,7 @@ channelClosed:
 			fullResponse = stripped
 		}
 
+		turnLog.reply(fullResponse)
 		e.hooks.Emit(HookEvent{
 			Event:      HookEventMessageSent,
 			SessionKey: sessionKey,

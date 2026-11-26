@@ -3582,3 +3582,26 @@ func TestValidateSessionMaxAgeDays(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_LogTranscript(t *testing.T) {
+	tests := []struct {
+		name           string
+		logSection     string
+		wantTranscript bool
+		wantLevel      string
+	}{
+		{name: "unset", logSection: "", wantTranscript: false, wantLevel: "info"},
+		{name: "on with warn level", logSection: "[log]\nlevel = \"warn\"\ntranscript = true\n", wantTranscript: true, wantLevel: "warn"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Load(writeConfigFixture(t, tt.logSection+baseConfigTOML))
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if cfg.Log.Transcript != tt.wantTranscript || cfg.Log.Level != tt.wantLevel {
+				t.Fatalf("log = %+v, want transcript %v level %q", cfg.Log, tt.wantTranscript, tt.wantLevel)
+			}
+		})
+	}
+}
