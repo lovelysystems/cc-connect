@@ -429,6 +429,11 @@ type Engine struct {
 	baseWorkDir                  string
 	projectState                 *ProjectStateStore
 
+	// sessionMaxAgeNanos is session_max_age_days as a duration; 0 disables
+	// session expiry.
+	sessionMaxAgeNanos atomic.Int64
+	sessionExpiryOnce  sync.Once
+
 	// Auto-compress settings
 	autoCompressEnabled   bool
 	autoCompressMaxTokens int
@@ -951,6 +956,120 @@ func (e *Engine) SetResetOnIdle(d time.Duration) {
 		return
 	}
 	e.resetOnIdle = d
+}
+
+// SetSessionMaxAge configures session expiry: sessions older than d are
+// deleted with their history, and attachments older than d are removed. A zero
+// or negative duration disables it.
+func (e *Engine) SetSessionMaxAge(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	e.sessionMaxAgeNanos.Store(int64(d))
+}
+
+func (e *Engine) sessionMaxAge() time.Duration {
+	return time.Duration(e.sessionMaxAgeNanos.Load())
+}
+
+// sessionExpiryInterval is how often expired sessions are swept.
+var sessionExpiryInterval = time.Hour
+
+// runSessionExpiry sweeps expired sessions at start-up and then on every
+// interval until the engine stops. A sweep while expiry is disabled does
+// nothing, so the setting can be turned on by a config reload.
+func (e *Engine) runSessionExpiry() {
+	e.sweepExpiredSessions()
+	ticker := time.NewTicker(sessionExpiryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-ticker.C:
+			e.sweepExpiredSessions()
+		}
+	}
+}
+
+// sweepExpiredSessions deletes every session older than the max age and the
+// attachments older than it. A session that is busy with a turn is skipped and
+// caught by the next sweep; the live agent process of an expired active
+// session is closed before the session is deleted.
+func (e *Engine) sweepExpiredSessions() {
+	maxAge := e.sessionMaxAge()
+	if maxAge <= 0 {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+
+	var ids []string
+	var locked []*Session
+	skipped := 0
+	for _, c := range e.sessions.SessionsCreatedBefore(cutoff) {
+		if !c.Session.TryLock() {
+			skipped++
+			continue
+		}
+		if c.Key != "" && e.sessions.ActiveSessionID(c.Key) == c.Session.ID {
+			e.cleanupInteractiveState(c.Key)
+		}
+		ids = append(ids, c.Session.ID)
+		locked = append(locked, c.Session)
+	}
+	sessions, messages := e.sessions.ExpireSessions(ids)
+	for _, s := range locked {
+		s.UnlockWithoutUpdate()
+	}
+
+	workDir := ""
+	if wd, ok := e.agent.(interface{ GetWorkDir() string }); ok {
+		workDir = wd.GetWorkDir()
+	}
+	var opts SpawnOptions
+	if ru, ok := e.agent.(interface{ GetRunAsUser() string }); ok {
+		opts.RunAsUser = ru.GetRunAsUser()
+	}
+	files, err := RemoveAttachmentsOlderThan(e.ctx, opts, workDir, cutoff)
+
+	// One line per sweep, at Warn with the error when attachment cleanup
+	// failed, so an alert on this line also catches a cleanup that keeps failing.
+	level := slog.LevelInfo
+	attrs := []any{
+		"project", e.name,
+		"max_age", maxAge,
+		"sessions_deleted", sessions,
+		"messages_deleted", messages,
+		"attachments_deleted", files,
+		"sessions_busy_skipped", skipped,
+	}
+	if err != nil {
+		level = slog.LevelWarn
+		attrs = append(attrs, "attachments_error", err.Error())
+	}
+	slog.Log(context.Background(), level, "session expiry: sweep done", attrs...)
+}
+
+// maybeExpireSessionOnTurn replaces a session older than the max age before
+// a turn runs on it, so a message that reached the session just before a
+// sweep never continues the expired conversation.
+func (e *Engine) maybeExpireSessionOnTurn(msg *Message, sessions *SessionManager, interactiveKey string, session *Session) *Session {
+	maxAge := e.sessionMaxAge()
+	if maxAge <= 0 || session == nil || time.Since(session.GetCreatedAt()) < maxAge {
+		return nil
+	}
+	slog.Info("session expiry: replacing expired session",
+		"session_key", msg.SessionKey, "session_id", session.ID, "age", time.Since(session.GetCreatedAt()))
+
+	e.cleanupInteractiveState(interactiveKey)
+	newSession := sessions.NewSession(msg.SessionKey, "")
+	sessions.ExpireSessions([]string{session.ID})
+	session.UnlockWithoutUpdate()
+	if !newSession.TryLock() {
+		slog.Error("failed to lock new session after expiry", "session_key", msg.SessionKey, "new_session", newSession.ID)
+		return nil
+	}
+	return newSession
 }
 
 // SetAgentSessionIdleTimeout 配置单轮正常结束后的 live agent 空闲关闭时间。
@@ -2347,6 +2466,7 @@ func (e *Engine) Start() error {
 	}
 
 	e.startObserver()
+	e.sessionExpiryOnce.Do(func() { go e.runSessionExpiry() })
 	return nil
 }
 
@@ -3058,6 +3178,9 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	}
 
 sessionLocked:
+	if replaced := e.maybeExpireSessionOnTurn(msg, sessions, interactiveKey, session); replaced != nil {
+		session = replaced
+	}
 	if rotated := e.maybeAutoResetSessionOnIdle(p, msg, sessions, interactiveKey, session); rotated != nil {
 		session = rotated
 	}

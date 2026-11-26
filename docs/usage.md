@@ -64,6 +64,27 @@ The next normal message after a long idle period starts in a fresh session autom
 
 To restore the previous behavior of always continuing, set `reset_on_idle_mins = 0`.
 
+### Session expiry
+
+To keep chat data no longer than a retention period, cc-connect can delete old sessions:
+
+```toml
+[[projects]]
+name = "demo"
+session_max_age_days = 90   # unset (default): sessions are kept forever
+```
+
+A session older than `session_max_age_days` (counted from its creation) is deleted with its whole
+history, its custom name, and the user and chat names kept for its chat once that chat has no
+session left. Downloaded attachments in the work dir's `.cc-connect/attachments/` older than the
+same age are deleted too; with `run_as_user`, as that user, like they were written. The sweep runs at start-up and then every hour, and logs one
+`session expiry: sweep done` line with the counts (at Warn level with `attachments_error` when the
+attachment cleanup failed).
+
+A session busy with a turn is skipped and deleted by the next sweep. The next message in an
+expired chat starts a fresh session. The agent's own data (e.g. Claude Code transcripts) is not
+touched. Not supported in multi-workspace mode.
+
 ### Model switch preserves history
 
 `/model` preserves the current session — the agent resumes the conversation with the new model (no extra token cost). Model switching affects the shared agent instance — if multiple platforms use the same project, the model change applies to all of them.

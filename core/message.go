@@ -183,7 +183,7 @@ func SaveFilesToDiskAs(ctx context.Context, opts SpawnOptions, workDir, messageI
 		absWorkDir = workDir
 		slog.Warn("SaveFilesToDisk: filepath.Abs failed, using raw workDir", "workDir", workDir, "error", err)
 	}
-	attachDir := filepath.Join(absWorkDir, ".cc-connect", "attachments")
+	attachDir := attachmentsDir(absWorkDir)
 	scoped := false
 	if messageID != "" {
 		safeMid := sanitizeAttachmentFileName(messageID)
@@ -344,6 +344,75 @@ func writeAtomicNoOverwrite(dir, name string, data []byte) bool {
 		slog.Warn("SaveFilesToDisk: tempfile remove failed after successful link", "tmp", tmpName, "error", err)
 	}
 	return true
+}
+
+// attachmentsDir is where inbound attachments of a work dir are saved.
+func attachmentsDir(workDir string) string {
+	return filepath.Join(workDir, ".cc-connect", "attachments")
+}
+
+// RemoveAttachmentsOlderThan deletes the attachment files under workDir last
+// modified before cutoff, then the per-message directories they leave empty,
+// and returns how many files it deleted. When opts sets RunAsUser the deletion
+// runs as that user, like SaveFilesToDiskAs writes, so the supervisor opens
+// nothing under workDir. Symlinks and other non-regular entries are left alone.
+// A file that cannot be deleted does not stop the others; the first such error
+// is returned.
+func RemoveAttachmentsOlderThan(ctx context.Context, opts SpawnOptions, workDir string, cutoff time.Time) (int, error) {
+	absWorkDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return 0, fmt.Errorf("attachments: resolve work dir: %w", err)
+	}
+	root := attachmentsDir(absWorkDir)
+	if opts.IsolationMode() {
+		return RemoveOldFilesAsUser(ctx, opts, root, time.Since(cutoff))
+	}
+
+	removed := 0
+	var firstErr error
+	keep := func(err error) {
+		if firstErr == nil && !errors.Is(err, fs.ErrNotExist) {
+			firstErr = err
+		}
+	}
+	var dirs []string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			keep(err)
+			return nil
+		}
+		if d.IsDir() {
+			if path != root {
+				dirs = append(dirs, path)
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			keep(err)
+			return nil
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.Remove(path); err != nil {
+				keep(err)
+				return nil
+			}
+			removed++
+		}
+		return nil
+	})
+	// Deepest first, so a parent emptied by its children goes too; a
+	// non-empty directory fails to remove and stays.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		_ = os.Remove(dirs[i])
+	}
+	if firstErr != nil {
+		return removed, fmt.Errorf("attachments: sweep %s: %w", root, firstErr)
+	}
+	return removed, nil
 }
 
 // sanitizeAttachmentFileName reduces a user-supplied attachment filename to a

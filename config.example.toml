@@ -201,6 +201,15 @@ level = "info" # debug, info, warn, error
 # [[projects]]
 # agent_session_idle_timeout_mins = 30
 
+# Delete sessions, with their history, once they are older than this many days,
+# and downloaded attachments older than that. Swept at start-up and hourly.
+# Unset (default) keeps sessions forever; a set value must be >= 1. Not supported
+# in multi-workspace mode.
+# 会话创建超过指定天数后，连同历史记录一起删除；同样删除超过该天数的已下载附件。
+# 启动时及每小时清理一次。未设置（默认）表示永久保留；设置值必须 >= 1。不支持多工作区模式。
+# [[projects]]
+# session_max_age_days = 90
+
 # =============================================================================
 # OS-user isolation via run_as_user (Linux/macOS only)
 # 通过 run_as_user 实现 OS 用户隔离（仅限 Linux/macOS）

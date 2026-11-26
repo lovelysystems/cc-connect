@@ -48,6 +48,15 @@ var globalAPIServer *core.APIServer
 // previous behavior of always continuing the prior session.
 const defaultResetOnIdleMins = 0
 
+// sessionMaxAge converts a project's session_max_age_days to a duration; unset
+// returns 0, which disables session expiry.
+func sessionMaxAge(days *int) time.Duration {
+	if days == nil || *days <= 0 {
+		return 0
+	}
+	return time.Duration(*days) * 24 * time.Hour
+}
+
 // resolveResetOnIdle returns the configured reset-on-idle duration for a
 // project, applying defaultResetOnIdleMins when the field is unset. The second
 // return value indicates whether the default was applied, so the caller can
@@ -708,6 +717,7 @@ func main() {
 		}
 		resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 		engine.SetResetOnIdle(resetIdle)
+		engine.SetSessionMaxAge(sessionMaxAge(proj.SessionMaxAgeDays))
 		if defaulted {
 			slog.Info("project: reset_on_idle_mins not set, applying default — set reset_on_idle_mins = 0 to opt out, see docs/usage.md",
 				"project", proj.Name, "default_minutes", defaultResetOnIdleMins)
@@ -1791,6 +1801,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	}
 	resetIdle, defaulted := resolveResetOnIdle(proj.ResetOnIdleMins)
 	engine.SetResetOnIdle(resetIdle)
+	engine.SetSessionMaxAge(sessionMaxAge(proj.SessionMaxAgeDays))
 	if defaulted {
 		slog.Info("project: reset_on_idle_mins not set, applying default — set reset_on_idle_mins = 0 to opt out, see docs/usage.md",
 			"project", proj.Name, "default_minutes", defaultResetOnIdleMins)
