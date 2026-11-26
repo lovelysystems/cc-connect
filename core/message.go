@@ -352,23 +352,34 @@ func attachmentsDir(workDir string) string {
 }
 
 // RemoveAttachmentsOlderThan deletes the attachment files under workDir last
-// modified before cutoff, then the per-message directories they leave empty.
-// Symlinks and other non-regular entries are left alone. It returns how many
-// files it deleted.
-func RemoveAttachmentsOlderThan(workDir string, cutoff time.Time) (int, error) {
+// modified before cutoff, then the per-message directories they leave empty,
+// and returns how many files it deleted. When opts sets RunAsUser the deletion
+// runs as that user, like SaveFilesToDiskAs writes, so the supervisor opens
+// nothing under workDir. Symlinks and other non-regular entries are left alone.
+// A file that cannot be deleted does not stop the others; the first such error
+// is returned.
+func RemoveAttachmentsOlderThan(ctx context.Context, opts SpawnOptions, workDir string, cutoff time.Time) (int, error) {
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("attachments: resolve work dir: %w", err)
 	}
 	root := attachmentsDir(absWorkDir)
+	if opts.IsolationMode() {
+		return RemoveOldFilesAsUser(ctx, opts, root, time.Since(cutoff))
+	}
+
 	removed := 0
+	var firstErr error
+	keep := func(err error) {
+		if firstErr == nil && !errors.Is(err, fs.ErrNotExist) {
+			firstErr = err
+		}
+	}
 	var dirs []string
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) && path == root {
-				return filepath.SkipDir
-			}
-			return err
+			keep(err)
+			return nil
 		}
 		if d.IsDir() {
 			if path != root {
@@ -381,11 +392,13 @@ func RemoveAttachmentsOlderThan(workDir string, cutoff time.Time) (int, error) {
 		}
 		info, err := d.Info()
 		if err != nil {
-			return err
+			keep(err)
+			return nil
 		}
 		if info.ModTime().Before(cutoff) {
 			if err := os.Remove(path); err != nil {
-				return err
+				keep(err)
+				return nil
 			}
 			removed++
 		}
@@ -396,7 +409,10 @@ func RemoveAttachmentsOlderThan(workDir string, cutoff time.Time) (int, error) {
 	for i := len(dirs) - 1; i >= 0; i-- {
 		_ = os.Remove(dirs[i])
 	}
-	return removed, err
+	if firstErr != nil {
+		return removed, fmt.Errorf("attachments: sweep %s: %w", root, firstErr)
+	}
+	return removed, nil
 }
 
 // sanitizeAttachmentFileName reduces a user-supplied attachment filename to a

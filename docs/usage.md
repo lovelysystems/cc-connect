@@ -77,7 +77,7 @@ session_max_age_days = 90   # unset (default): sessions are kept forever
 A session older than `session_max_age_days` (counted from its creation) is deleted with its whole
 history, its custom name, and the user and chat names kept for its chat once that chat has no
 session left. Downloaded attachments in the work dir's `.cc-connect/attachments/` older than the
-same age are deleted too. The sweep runs at start-up and then every hour, and logs one
+same age are deleted too; with `run_as_user`, as that user, like they were written. The sweep runs at start-up and then every hour, and logs one
 `session expiry: sweep done` line with the counts.
 
 A session busy with a turn is skipped and deleted by the next sweep. The next message in an

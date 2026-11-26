@@ -1026,7 +1026,11 @@ func (e *Engine) sweepExpiredSessions() {
 	if wd, ok := e.agent.(interface{ GetWorkDir() string }); ok {
 		workDir = wd.GetWorkDir()
 	}
-	files, err := RemoveAttachmentsOlderThan(workDir, cutoff)
+	var opts SpawnOptions
+	if ru, ok := e.agent.(interface{ GetRunAsUser() string }); ok {
+		opts.RunAsUser = ru.GetRunAsUser()
+	}
+	files, err := RemoveAttachmentsOlderThan(e.ctx, opts, workDir, cutoff)
 	if err != nil {
 		slog.Warn("session expiry: attachment cleanup failed", "project", e.name, "error", err)
 	}

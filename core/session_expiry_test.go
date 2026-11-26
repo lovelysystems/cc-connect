@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,7 +235,7 @@ func TestRemoveAttachmentsOlderThan_DeletesOldFilesAndEmptiedDirs(t *testing.T) 
 	write(filepath.Join(mixedDir, "b.pdf"), oldTime)
 	write(filepath.Join(mixedDir, "c.pdf"), time.Now().Add(-24*time.Hour))
 
-	removed, err := RemoveAttachmentsOlderThan(workDir, time.Now().Add(-90*24*time.Hour))
+	removed, err := RemoveAttachmentsOlderThan(context.Background(), SpawnOptions{}, workDir, time.Now().Add(-90*24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,9 +254,102 @@ func TestRemoveAttachmentsOlderThan_DeletesOldFilesAndEmptiedDirs(t *testing.T) 
 }
 
 func TestRemoveAttachmentsOlderThan_NoAttachmentsDirIsNotAnError(t *testing.T) {
-	removed, err := RemoveAttachmentsOlderThan(t.TempDir(), time.Now())
+	removed, err := RemoveAttachmentsOlderThan(context.Background(), SpawnOptions{}, t.TempDir(), time.Now())
 	if err != nil || removed != 0 {
 		t.Fatalf("RemoveAttachmentsOlderThan = (%d, %v), want (0, nil)", removed, err)
+	}
+}
+
+func writeAged(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Now().Add(-age)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoveAttachmentsOlderThan_RunAsUserDeletesThroughSudo(t *testing.T) {
+	sudo := installFakeSudo(t, "exec")
+	workDir := t.TempDir()
+	root := attachmentsDir(workDir)
+	writeAged(t, filepath.Join(root, "msg-old", "a.pdf"), 91*24*time.Hour)
+	writeAged(t, filepath.Join(root, "msg-new", "b.pdf"), 24*time.Hour)
+
+	removed, err := RemoveAttachmentsOlderThan(context.Background(), SpawnOptions{RunAsUser: "target"}, workDir, time.Now().Add(-90*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, err := os.Stat(filepath.Join(root, "msg-old")); !os.IsNotExist(err) {
+		t.Fatal("old attachment or its emptied directory was kept")
+	}
+	if _, err := os.Stat(filepath.Join(root, "msg-new", "b.pdf")); err != nil {
+		t.Fatal("young attachment was deleted")
+	}
+	if !strings.Contains(sudo.calls(t), "-n -iu target --preserve-env=") || !strings.Contains(sudo.calls(t), runAsSweepDirEnv) {
+		t.Fatalf("cleanup did not go through sudo -n -iu target; sudo log:\n%s", sudo.calls(t))
+	}
+}
+
+func TestRemoveAttachmentsOlderThan_RunAsUserMissingDirIsNotAnError(t *testing.T) {
+	installFakeSudo(t, "exec")
+	removed, err := RemoveAttachmentsOlderThan(context.Background(), SpawnOptions{RunAsUser: "target"}, t.TempDir(), time.Now())
+	if err != nil || removed != 0 {
+		t.Fatalf("RemoveAttachmentsOlderThan = (%d, %v), want (0, nil)", removed, err)
+	}
+}
+
+func TestRemoveAttachmentsOlderThan_ContinuesPastUndeletableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can delete from a read-only directory")
+	}
+	workDir := t.TempDir()
+	root := attachmentsDir(workDir)
+	locked := filepath.Join(root, "a-locked")
+	writeAged(t, filepath.Join(locked, "stuck.pdf"), 91*24*time.Hour)
+	writeAged(t, filepath.Join(root, "b-free", "gone.pdf"), 91*24*time.Hour)
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	removed, err := RemoveAttachmentsOlderThan(context.Background(), SpawnOptions{}, workDir, time.Now().Add(-90*24*time.Hour))
+	if err == nil {
+		t.Fatal("undeletable file reported no error")
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1 (the file after the undeletable one)", removed)
+	}
+	if _, err := os.Stat(filepath.Join(root, "b-free", "gone.pdf")); !os.IsNotExist(err) {
+		t.Fatal("sweep stopped at the undeletable file")
+	}
+}
+
+func TestRemoveAttachmentsOlderThan_LeavesSymlinkTargetsAlone(t *testing.T) {
+	workDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	writeAged(t, outside, 91*24*time.Hour)
+	root := attachmentsDir(workDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link.pdf")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RemoveAttachmentsOlderThan(context.Background(), SpawnOptions{}, workDir, time.Now().Add(-90*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatal("file outside the attachments tree was deleted through a symlink")
 	}
 }
 

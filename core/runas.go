@@ -248,6 +248,64 @@ func WriteFileAsUser(ctx context.Context, opts SpawnOptions, path string, data [
 	return nil
 }
 
+// Environment variables that carry RemoveOldFilesAsUser's arguments across sudo.
+const (
+	runAsSweepDirEnv  = "CC_RUNAS_SWEEP_DIR"
+	runAsSweepMinsEnv = "CC_RUNAS_SWEEP_MINS"
+)
+
+// removeOldFilesAsUserScript deletes the regular files under the directory
+// last modified more than the given minutes ago, printing each one it deleted,
+// then the directories that leaves empty. find follows no symlinks. One line,
+// "${NAME}" only, for the same sudo -i reason as writeAsUserScript.
+var removeOldFilesAsUserScript = `[ -d "${` + runAsSweepDirEnv + `}" ] || exit 0; ` +
+	`find "${` + runAsSweepDirEnv + `}" -mindepth 1 -type f -mmin +"${` + runAsSweepMinsEnv + `}" -delete -print; ` +
+	`rc=$?; find "${` + runAsSweepDirEnv + `}" -mindepth 1 -type d -empty -delete; exit $rc`
+
+// RemoveOldFilesAsUser deletes, as opts.RunAsUser, the regular files under dir
+// last modified more than age ago and the directories that leaves empty, and
+// returns how many files it deleted. A missing dir is not an error. The
+// supervisor itself opens nothing under dir, so a symlink planted in it reaches
+// only what the target user can already delete.
+func RemoveOldFilesAsUser(ctx context.Context, opts SpawnOptions, dir string, age time.Duration) (int, error) {
+	if !opts.IsolationMode() {
+		return 0, errors.New("RemoveOldFilesAsUser: run_as_user is not set")
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return 0, fmt.Errorf("remove old files as %q: %w", opts.RunAsUser, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	if err := VerifyRunAsUserCheap(ctx, ExecSudoRunner{}, opts.RunAsUser); err != nil {
+		return 0, fmt.Errorf("remove old files as %q refused: %w", opts.RunAsUser, err)
+	}
+	opts.WorkDir = ""
+	opts.EnvAllowlist = append(append([]string(nil), opts.EnvAllowlist...), runAsSweepDirEnv, runAsSweepMinsEnv)
+	cmd := BuildSpawnCommand(ctx, opts, "/bin/sh", "-c", removeOldFilesAsUserScript)
+	cmd.Env = FilterEnvForSpawn(MergeEnv(os.Environ(), []string{
+		runAsSweepDirEnv + "=" + absDir,
+		runAsSweepMinsEnv + "=" + fmt.Sprint(int64(age/time.Minute)),
+	}), opts)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	// find prints each deleted path; a login shell may print lines of its own.
+	removed := 0
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if strings.HasPrefix(line, absDir+string(filepath.Separator)) {
+			removed++
+		}
+	}
+	if runErr != nil {
+		return removed, fmt.Errorf("remove old files in %s as %q: %w: %s", absDir, opts.RunAsUser, runErr, strings.TrimSpace(stderr.String()))
+	}
+	return removed, nil
+}
+
 // FilterEnvForSpawn strips env down to the merged allowlist when
 // opts.IsolationMode() is true. Belt-and-braces with sudo's own
 // --preserve-env, but having cc-connect's spawn argv be the single
