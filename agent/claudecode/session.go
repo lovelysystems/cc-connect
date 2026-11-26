@@ -40,6 +40,10 @@ type claudeSession struct {
 	dontAsk         atomic.Bool
 	workDir         string
 	ctx             context.Context
+
+	// questionCallIDs holds AskUserQuestion calls, which emit no tool-use
+	// event, so their results can still be named. Used by the read loop only.
+	questionCallIDs map[string]bool
 	cancel          context.CancelFunc
 	done            chan struct{}
 	alive           atomic.Bool
@@ -715,6 +719,12 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 		case "tool_use":
 			toolName, _ := item["name"].(string)
 			if toolName == "AskUserQuestion" {
+				if id, _ := item["id"].(string); id != "" {
+					if cs.questionCallIDs == nil {
+						cs.questionCallIDs = map[string]bool{}
+					}
+					cs.questionCallIDs[id] = true
+				}
 				continue
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
@@ -788,8 +798,14 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 				exitCode = parseExitCode(result)
 			}
 			toolID, _ := item["tool_use_id"].(string)
+			var toolName string
+			if cs.questionCallIDs[toolID] {
+				toolName = "AskUserQuestion"
+				delete(cs.questionCallIDs, toolID)
+			}
 			evt := core.Event{
 				Type:         core.EventToolResult,
+				ToolName:     toolName,
 				ToolCallID:   toolID,
 				ToolResult:   truncateStr(strings.TrimSpace(result), 500),
 				ToolExitCode: exitCode,

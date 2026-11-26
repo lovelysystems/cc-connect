@@ -1117,3 +1117,36 @@ func TestSend_WithoutRunAsUserWritesDirectly(t *testing.T) {
 		t.Fatalf("sudo ran without run_as_user:\n%s", calls)
 	}
 }
+
+func TestAskUserQuestionResultCarriesToolName(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{events: make(chan core.Event, 4), ctx: ctx}
+	cs.alive.Store(true)
+
+	cs.handleAssistant(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "tool_use", "id": "toolu_q", "name": "AskUserQuestion", "input": map[string]any{}},
+			},
+		},
+	})
+	cs.handleUser(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "toolu_q", "content": "answered"},
+			},
+		},
+	})
+
+	select {
+	case evt := <-cs.events:
+		if evt.Type != core.EventToolResult || evt.ToolName != "AskUserQuestion" || evt.ToolCallID != "toolu_q" {
+			t.Fatalf("event = %+v, want AskUserQuestion result for toolu_q", evt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for EventToolResult")
+	}
+}

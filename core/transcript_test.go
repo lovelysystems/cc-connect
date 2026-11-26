@@ -335,3 +335,50 @@ func TestTranscript_MultiWorkspaceKeepsPlatformKey(t *testing.T) {
 		}
 	}
 }
+
+func TestTranscript_ProviderCredentialsHidden(t *testing.T) {
+	tests := []struct {
+		name    string
+		pending bool
+		content string
+		want    string
+	}{
+		{name: "provider add command", content: "/provider add relay sk-live-abc123", want: "/provider [redacted]"},
+		{name: "abbreviated provider command", content: "/pro add relay sk-live-abc123", want: "/pro [redacted]"},
+		{name: "reply to the API key prompt", pending: true, content: "sk-live-abc123", want: "[redacted]"},
+		{name: "ordinary message", content: "sk-live-abc123 is not a key here", want: "sk-live-abc123 is not a key here"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := NewEngine("proj", &stubAgent{}, []Platform{&stubPlatformEngine{n: "test"}}, "", LangEnglish)
+			buf := &bytes.Buffer{}
+			e.SetTranscriptLogger(slog.New(slog.NewJSONHandler(buf, nil)))
+			key := "test:chat:u1"
+			if tt.pending {
+				e.interactiveStates[key] = &interactiveState{pendingProviderAdd: &pendingProviderAddState{phase: "preset"}}
+			}
+			e.transcriptUser(&Message{SessionKey: key, Content: tt.content})
+			if got := onlyRecord(t, transcriptRecords(t, buf, "user"))["content"]; got != tt.want {
+				t.Errorf("content = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTranscript_ReplyRecordOmitsFooter(t *testing.T) {
+	agent := &stubReplyFooterAgent{stubModelModeAgent: stubModelModeAgent{model: "m-1"}, workDir: t.TempDir()}
+	h := newTranscriptHarness(t, DisplayCfg{})
+	h.e.agent = agent
+	h.state.agent = agent
+	h.e.SetReplyFooterEnabled(true)
+	h.run(Event{Type: EventResult, Content: "the answer", Done: true})
+
+	rec := onlyRecord(t, h.records("reply"))
+	sent := h.p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[len(sent)-1], "m-1") {
+		t.Fatalf("delivered message has no footer: %v", sent)
+	}
+	if rec["content"] != "the answer" {
+		t.Errorf("reply record = %q, want the reply without its footer", rec["content"])
+	}
+}

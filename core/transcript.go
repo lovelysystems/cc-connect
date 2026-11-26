@@ -14,7 +14,25 @@ func (e *Engine) transcriptUser(msg *Message) {
 	if e.transcript == nil {
 		return
 	}
-	writeTranscript(e.transcript, "user", e.name, msg.SessionKey, slog.String("content", msg.Content))
+	writeTranscript(e.transcript, "user", e.name, msg.SessionKey, slog.String("content", e.userTranscriptContent(msg)))
+}
+
+// userTranscriptContent hides the messages that carry a provider API key: the
+// /provider command and the reply to its API key prompt.
+func (e *Engine) userTranscriptContent(msg *Message) string {
+	content := strings.TrimSpace(msg.Content)
+	if strings.HasPrefix(content, "/") {
+		parts := splitCommandArgs(content)
+		cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+		if len(parts) > 1 && matchPrefix(cmd, builtinCommands) == "provider" {
+			return parts[0] + " [redacted]"
+		}
+		return msg.Content
+	}
+	if e.getPendingProviderAdd(msg.SessionKey) != nil {
+		return "[redacted]"
+	}
+	return msg.Content
 }
 
 func writeTranscript(logger *slog.Logger, kind, project, sessionKey string, attrs ...slog.Attr) {
