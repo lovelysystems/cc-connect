@@ -17,6 +17,12 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+#### Feature
+
+- **core**: `session_max_age_days` deletes sessions older than the given age with their history,
+  names and leftover user metadata, and downloaded attachments older than it, swept hourly
+  (upstream: pending)
+
 ### 2026-11-20 / v1.5.0-ls.4
 
 #### Fix

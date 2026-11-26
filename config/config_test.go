@@ -3546,3 +3546,39 @@ func TestLoad_SignoffExec(t *testing.T) {
 		t.Fatalf("signoff_exec = %q, want /usr/local/bin/gate publish", got)
 	}
 }
+
+func TestValidateSessionMaxAgeDays(t *testing.T) {
+	zero, negative, ninety := 0, -1, 90
+	tests := []struct {
+		name    string
+		days    *int
+		mode    string
+		wantErr string
+	}{
+		{name: "unset is valid", days: nil},
+		{name: "positive is valid", days: &ninety},
+		{name: "zero is rejected", days: &zero, wantErr: "projects[0].session_max_age_days must be >= 1"},
+		{name: "negative is rejected", days: &negative, wantErr: "projects[0].session_max_age_days must be >= 1"},
+		{name: "multi-workspace is rejected", days: &ninety, mode: "multi-workspace", wantErr: "session_max_age_days is not supported in multi-workspace mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Projects: []ProjectConfig{validProject("demo")}}
+			cfg.Projects[0].SessionMaxAgeDays = tt.days
+			if tt.mode != "" {
+				cfg.Projects[0].Mode = tt.mode
+				cfg.Projects[0].BaseDir = t.TempDir()
+			}
+			err := cfg.validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validate() = %v, want contains %q", err, tt.wantErr)
+			}
+		})
+	}
+}

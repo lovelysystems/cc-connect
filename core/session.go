@@ -255,6 +255,12 @@ func (s *Session) GetLastUserActivity() time.Time {
 	return s.LastUserActivity
 }
 
+func (s *Session) GetCreatedAt() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.CreatedAt
+}
+
 func (s *Session) GetUpdatedAt() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1040,6 +1046,77 @@ func (sm *SessionManager) PruneDuplicateSessions(mergeHistory bool) PruneResult 
 	}
 
 	return result
+}
+
+// ExpiryCandidate is a session old enough to expire, with the user key that
+// owns it ("" when no key lists it).
+type ExpiryCandidate struct {
+	Key     string
+	Session *Session
+}
+
+// SessionsCreatedBefore returns every session created before cutoff.
+func (sm *SessionManager) SessionsCreatedBefore(cutoff time.Time) []ExpiryCandidate {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	keyOf := make(map[string]string, len(sm.sessions))
+	for key, ids := range sm.userSessions {
+		for _, id := range ids {
+			keyOf[id] = key
+		}
+	}
+	var out []ExpiryCandidate
+	for id, s := range sm.sessions {
+		if s.GetCreatedAt().Before(cutoff) {
+			out = append(out, ExpiryCandidate{Key: keyOf[id], Session: s})
+		}
+	}
+	return out
+}
+
+// ExpireSessions deletes the given sessions with their history and custom
+// names, and drops the user metadata of every key left without a session, so
+// nothing of an expired conversation stays on disk. It saves once and returns
+// how many sessions and history entries it removed.
+func (sm *SessionManager) ExpireSessions(ids []string) (sessions, messages int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	touched := make(map[string]struct{})
+	for _, id := range ids {
+		s, ok := sm.sessions[id]
+		if !ok {
+			continue
+		}
+		s.mu.Lock()
+		messages += len(s.History)
+		agentIDs := append([]string{s.AgentSessionID}, s.PastAgentSessionIDs...)
+		s.mu.Unlock()
+		for _, agentID := range agentIDs {
+			if agentID != "" {
+				delete(sm.sessionNames, agentID)
+			}
+		}
+		for key, sids := range sm.userSessions {
+			for _, sid := range sids {
+				if sid == id {
+					touched[key] = struct{}{}
+				}
+			}
+		}
+		sm.deleteByIDLocked(id)
+		sessions++
+	}
+	for key := range touched {
+		if len(sm.userSessions[key]) == 0 {
+			delete(sm.userSessions, key)
+			delete(sm.activeSession, key)
+			delete(sm.userMeta, key)
+		}
+	}
+	if sessions > 0 {
+		sm.saveLocked()
+	}
+	return sessions, messages
 }
 
 // PruneEmptySessions removes sessions with no history entries. Returns count of removed.

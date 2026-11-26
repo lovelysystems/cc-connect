@@ -498,6 +498,10 @@ type ProjectConfig struct {
 	// the current session has been inactive for the specified number of minutes.
 	// 0 or nil disables the behavior.
 	ResetOnIdleMins *int `toml:"reset_on_idle_mins,omitempty"`
+	// SessionMaxAgeDays deletes every session, with its history, once it is
+	// older than this many days, and downloaded attachments older than that.
+	// Unset disables it; a set value must be >= 1.
+	SessionMaxAgeDays *int `toml:"session_max_age_days,omitempty"`
 	// AgentSessionIdleTimeoutMins 在指定分钟数后关闭空闲的 live agent 进程，
 	// 同时保留已保存的 session ID，便于下一条消息继续恢复。0 或 nil 表示禁用。
 	AgentSessionIdleTimeoutMins *int `toml:"agent_session_idle_timeout_mins,omitempty"`
@@ -1073,6 +1077,14 @@ func (c *Config) validateInternal(permissive bool) error {
 		}
 		if proj.ResetOnIdleMins != nil && *proj.ResetOnIdleMins < 0 {
 			return fmt.Errorf("config: %s.reset_on_idle_mins must be >= 0", prefix)
+		}
+		if proj.SessionMaxAgeDays != nil {
+			if *proj.SessionMaxAgeDays < 1 {
+				return fmt.Errorf("config: %s.session_max_age_days must be >= 1", prefix)
+			}
+			if proj.Mode == "multi-workspace" {
+				return fmt.Errorf("config: %s.session_max_age_days is not supported in multi-workspace mode", prefix)
+			}
 		}
 		if proj.AgentSessionIdleTimeoutMins != nil && *proj.AgentSessionIdleTimeoutMins < 0 {
 			return fmt.Errorf("config: %s.agent_session_idle_timeout_mins must be >= 0", prefix)
