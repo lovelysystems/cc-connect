@@ -17,6 +17,14 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+#### Feature
+
+- **core**: `[log] transcript = true` logs every user message and reply in full and every
+  tool call with its redacted input, outcome and duration; debug lines no longer carry chat
+  text (upstream: pending)
+- **core**: `RedactToolText` masks secrets in free-form tool text
+  (backport: chenhg5/cc-connect#2160)
+
 ### 2026-11-26 / v1.5.0-ls.5
 
 #### Feature

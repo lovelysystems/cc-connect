@@ -354,6 +354,7 @@ func main() {
 	}
 
 	setupLogger(cfg.Log.Level, logWriter)
+	transcriptLogger := newTranscriptLogger(cfg.Log.Transcript, logWriter)
 
 	// run_as_user preflight + isolation audit. MUST run before any engine
 	// or agent is constructed. If any project fails, abort startup
@@ -438,6 +439,7 @@ func main() {
 		}
 		engine.SetShowWorkdirIndicator(showWorkdir)
 		engine.SetReplyFooterEnabled(showFooter)
+		engine.SetTranscriptLogger(transcriptLogger)
 		engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
 		engine.SetFilterExternalSessions(proj.FilterExternalSessions != nil && *proj.FilterExternalSessions)
 		engine.SetBaseWorkDir(workDir)
@@ -1731,6 +1733,19 @@ func setupLogger(level string, w io.Writer) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
 		Level: logLevel,
 	})))
+}
+
+// newTranscriptLogger returns the logger for transcript records, or nil when
+// the transcript is off. It writes next to the operational log at a fixed level
+// so log.level never filters it.
+func newTranscriptLogger(on bool, w io.Writer) *slog.Logger {
+	if !on {
+		return nil
+	}
+	if w == nil {
+		w = os.Stdout
+	}
+	return slog.New(slog.NewTextHandler(w, nil))
 }
 
 // reloadConfig re-reads config.toml and applies hot-reloadable settings

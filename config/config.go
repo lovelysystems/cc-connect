@@ -632,7 +632,8 @@ type CommandConfig struct {
 }
 
 type LogConfig struct {
-	Level string `toml:"level"`
+	Level      string `toml:"level"`
+	Transcript bool   `toml:"transcript"` // log user messages, replies and tool calls in full
 }
 
 // load parses, env-resolves, and wires providers in the config file but does
