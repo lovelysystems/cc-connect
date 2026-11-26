@@ -24,6 +24,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
   text (upstream: pending)
 - **core**: `RedactToolText` masks secrets in free-form tool text
   (backport: chenhg5/cc-connect#2160)
+- **claudecode**: tool events carry the call ID; tool results report only real exit codes
+  (upstream: pending)
 
 ### 2026-11-26 / v1.5.0-ls.5
 

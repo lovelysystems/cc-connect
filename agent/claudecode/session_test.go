@@ -635,13 +635,15 @@ func makeFiller(n int) string {
 // Cases covered:
 //  - string content (plain text result)
 //  - array content (Anthropic SDK multi-block: [{type:"text", text:"..."}])
-//  - is_error=true (exit code 1, success=false)
+//  - is_error=true (success=false, no exit code)
+//  - is_error=true with an "Exit code N" line (exit code N)
 func TestHandleUserEmitsToolResult(t *testing.T) {
 	cases := []struct {
 		name        string
 		raw         map[string]any
 		wantResult  string
-		wantCode    int
+		wantID      string
+		wantCode    *int
 		wantSuccess bool
 	}{
 		{
@@ -660,7 +662,7 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 				},
 			},
 			wantResult:  "command output here",
-			wantCode:    0,
+			wantID:      "toolu_abc",
 			wantSuccess: true,
 		},
 		{
@@ -682,7 +684,7 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 				},
 			},
 			wantResult:  "line one\nline two",
-			wantCode:    0,
+			wantID:      "toolu_def",
 			wantSuccess: true,
 		},
 		{
@@ -701,7 +703,27 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 				},
 			},
 			wantResult:  "boom",
-			wantCode:    1,
+			wantID:      "toolu_err",
+			wantSuccess: false,
+		},
+		{
+			name: "bash error with exit code",
+			raw: map[string]any{
+				"type": "user",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{
+							"type":        "tool_result",
+							"tool_use_id": "toolu_git",
+							"is_error":    true,
+							"content":     "Exit code 128\nfatal: not a git repository",
+						},
+					},
+				},
+			},
+			wantResult:  "Exit code 128\nfatal: not a git repository",
+			wantID:      "toolu_git",
+			wantCode:    intPtr(128),
 			wantSuccess: false,
 		},
 	}
@@ -727,12 +749,14 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 				if evt.ToolResult != tc.wantResult {
 					t.Errorf("ToolResult = %q, want %q", evt.ToolResult, tc.wantResult)
 				}
-				if evt.ToolExitCode == nil || *evt.ToolExitCode != tc.wantCode {
-					got := -1
-					if evt.ToolExitCode != nil {
-						got = *evt.ToolExitCode
-					}
-					t.Errorf("ToolExitCode = %d, want %d", got, tc.wantCode)
+				if evt.ToolCallID != tc.wantID {
+					t.Errorf("ToolCallID = %q, want %q", evt.ToolCallID, tc.wantID)
+				}
+				switch {
+				case tc.wantCode == nil && evt.ToolExitCode != nil:
+					t.Errorf("ToolExitCode = %d, want none", *evt.ToolExitCode)
+				case tc.wantCode != nil && (evt.ToolExitCode == nil || *evt.ToolExitCode != *tc.wantCode):
+					t.Errorf("ToolExitCode = %v, want %d", evt.ToolExitCode, *tc.wantCode)
 				}
 				if evt.ToolSuccess == nil || *evt.ToolSuccess != tc.wantSuccess {
 					got := false
@@ -745,6 +769,33 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 				t.Fatal("timeout waiting for EventToolResult — handleUser dropped the tool_result")
 			}
 		})
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
+func TestHandleAssistantEmitsToolCallID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{events: make(chan core.Event, 4), ctx: ctx}
+	cs.alive.Store(true)
+
+	cs.handleAssistant(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "tool_use", "id": "toolu_abc", "name": "Bash", "input": map[string]any{"command": "pwd"}},
+			},
+		},
+	})
+
+	select {
+	case evt := <-cs.events:
+		if evt.Type != core.EventToolUse || evt.ToolCallID != "toolu_abc" || evt.ToolInput != "pwd" {
+			t.Fatalf("event = %+v, want tool use toolu_abc running pwd", evt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for EventToolUse")
 	}
 }
 

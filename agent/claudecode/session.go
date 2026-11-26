@@ -573,7 +573,6 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 	}
 
 	eventType, _ := raw["type"].(string)
-	slog.Debug("claudeSession: event", "type", eventType)
 
 	switch eventType {
 	case "system":
@@ -719,7 +718,8 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 				continue
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
-			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
+			id, _ := item["id"].(string)
+			evt := core.Event{Type: core.EventToolUse, ToolCallID: id, ToolName: toolName, ToolInput: inputSummary}
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():
@@ -783,14 +783,16 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 				slog.Debug("claudeSession: tool error", "content", result)
 			}
 			success := !isError
-			code := 0
+			var exitCode *int
 			if isError {
-				code = 1
+				exitCode = parseExitCode(result)
 			}
+			toolID, _ := item["tool_use_id"].(string)
 			evt := core.Event{
 				Type:         core.EventToolResult,
+				ToolCallID:   toolID,
 				ToolResult:   truncateStr(strings.TrimSpace(result), 500),
-				ToolExitCode: &code,
+				ToolExitCode: exitCode,
 				ToolSuccess:  &success,
 			}
 			select {
@@ -800,6 +802,21 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 			}
 		}
 	}
+}
+
+// parseExitCode reads the "Exit code N" line Claude Code puts at the start of a
+// failed Bash result; other tools report no exit code.
+func parseExitCode(result string) *int {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(result), "Exit code ")
+	if !ok {
+		return nil
+	}
+	digits, _, _ := strings.Cut(rest, "\n")
+	code, err := strconv.Atoi(strings.TrimSpace(digits))
+	if err != nil {
+		return nil
+	}
+	return &code
 }
 
 func (cs *claudeSession) handleResult(raw map[string]any) {
