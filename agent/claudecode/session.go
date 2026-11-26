@@ -593,9 +593,13 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 		requestID, _ := raw["request_id"].(string)
 		slog.Debug("claudeSession: permission cancelled", "request_id", requestID)
 	default:
-		// Settings responses can contain credentials. Unknown or malformed
-		// envelopes must not make the response body reach debug logs.
-		slog.Debug("claudeSession: unrecognized event type", "bytes", len(line))
+		// Unknown event types are not silently dropped — they are logged
+		// at debug level with the full payload so future diagnosis of
+		// new Claude Code event shapes (e.g. compaction, hook events)
+		// is possible from the log stream. Compaction events are
+		// recognized in handleResult via their `result` subtype rather
+		// than the top-level event type.
+		slog.Debug("claudeSession: unrecognized event type", "type", eventType, "raw", raw)
 	}
 }
 

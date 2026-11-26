@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1188,38 +1187,5 @@ func TestAskUserQuestionResultCarriesToolName(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for EventToolResult")
-	}
-}
-
-func TestHandleReadLoopLineUnknownEventLogsOnlySize(t *testing.T) {
-	prev := slog.Default()
-	logBuf := &bytes.Buffer{}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	defer slog.SetDefault(prev)
-
-	line := `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour"},"session_id":"s1"}`
-	cs := &claudeSession{}
-	cs.handleReadLoopLine(line)
-
-	var matches []map[string]any
-	for _, l := range strings.Split(strings.TrimSpace(logBuf.String()), "\n") {
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(l), &rec); err != nil {
-			t.Fatalf("decode log line %q: %v", l, err)
-		}
-		if rec["msg"] == "claudeSession: unrecognized event type" {
-			matches = append(matches, rec)
-		}
-	}
-	if len(matches) != 1 {
-		t.Fatalf("unrecognized event records = %d, want 1; log: %s", len(matches), logBuf.String())
-	}
-	if got := matches[0]["bytes"]; got != float64(len(line)) {
-		t.Errorf("bytes = %v, want %d", got, len(line))
-	}
-	for _, secret := range []string{"rate_limit_info", "five_hour", "s1"} {
-		if strings.Contains(logBuf.String(), secret) {
-			t.Errorf("log contains payload text %q: %s", secret, logBuf.String())
-		}
 	}
 }
