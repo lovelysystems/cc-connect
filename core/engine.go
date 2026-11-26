@@ -38,26 +38,6 @@ const defaultMaxQueuedMessages = 5 // default cap for queued messages per sessio
 // platform does not block startup logging indefinitely.
 const defaultPendingRestartTimeout = 10 * time.Second
 
-// previewText truncates s to maxRunes runes for safe inclusion in debug logs.
-// Truncation uses runes (not bytes) so multi-byte characters render cleanly.
-// Newlines are replaced with literal "\n" to keep each log entry on one line.
-func previewText(s string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	r := []rune(s)
-	truncated := false
-	if len(r) > maxRunes {
-		r = r[:maxRunes]
-		truncated = true
-	}
-	out := strings.ReplaceAll(string(r), "\n", "\\n")
-	if truncated {
-		out += "...(truncated)"
-	}
-	return out
-}
-
 const (
 	defaultThinkingMaxLen = 300
 	defaultToolMaxLen     = 500
@@ -448,6 +428,8 @@ type Engine struct {
 	showContextIndicator bool
 	showWorkdirIndicator bool
 	replyFooterEnabled   bool
+
+	transcript *slog.Logger
 
 	// When true, /list etc. only show sessions tracked by cc-connect,
 	// hiding sessions created by direct CLI usage in the same work_dir.
@@ -1115,6 +1097,12 @@ func (e *Engine) SetShowWorkdirIndicator(show bool) {
 // no-ops.
 func (e *Engine) SetReplyFooterEnabled(show bool) {
 	e.replyFooterEnabled = show
+}
+
+// SetTranscriptLogger turns on the transcript log: user messages and replies in
+// full, plus tool calls, written through l whatever the log level. Nil turns it off.
+func (e *Engine) SetTranscriptLogger(l *slog.Logger) {
+	e.transcript = l
 }
 
 // SetFilterExternalSessions controls whether /list, /switch, /delete, etc.
@@ -2939,15 +2927,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		"content_len", len(msg.Content),
 		"has_images", len(msg.Images) > 0, "has_audio", msg.Audio != nil, "has_files", len(msg.Files) > 0,
 	)
-	// DEBUG: full message content for in-depth debugging (release-gate testing).
-	// Gated behind DEBUG level so production INFO logs don't leak user text.
-	if slog.Default().Enabled(e.ctx, slog.LevelDebug) {
-		slog.Debug("message content",
-			"platform", msg.Platform, "msg_id", msg.MessageID,
-			"session", msg.SessionKey, "user", msg.UserName,
-			"content", previewText(msg.Content, 500),
-		)
-	}
+	e.transcriptUser(msg)
 
 	e.hooks.Emit(HookEvent{
 		Event:      HookEventMessageReceived,
@@ -4918,6 +4898,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var partialText string
 	triggerAutoCompress := false
 	pendingSend := sendDone
+	turnLog := e.newTranscriptTurn(state, session, sessionKey)
+	defer turnLog.flush()
 
 	// stopTyping tracks the current turn's typing indicator so it can be
 	// stopped when a queued message starts a new turn.
@@ -5250,6 +5232,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 		case EventToolUse:
+			turnLog.toolUse(event)
 			toolCount++
 			if hasRichCard {
 				// When tool messages are suppressed, skip card updates on tool events.
@@ -5394,6 +5377,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 		case EventToolResult:
+			turnLog.toolResult(event)
 			if e.display.ToolMessages {
 				result := strings.TrimSpace(event.ToolResult)
 				if result == "" {
@@ -5799,6 +5783,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// decision; only the outbound platform text gets rewritten/suppressed.
 			session.AddHistory("assistant", baseResponse)
 			sessions.Save()
+			turnLog.flush()
 
 			isSilent := isSilentReply(baseResponse)
 			if !isSilent {
@@ -5813,6 +5798,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 			if !isSilent {
+				turnLog.reply(baseResponse)
 				e.hooks.Emit(HookEvent{
 					Event:      HookEventMessageSent,
 					SessionKey: sessionKey,
@@ -5865,15 +5851,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				"output_tokens", event.OutputTokens,
 				"silent", isSilent,
 			)
-			// DEBUG: full assistant response for in-depth debugging.
-			if slog.Default().Enabled(e.ctx, slog.LevelDebug) {
-				slog.Debug("turn response",
-					"session", session.ID,
-					"agent_session", session.GetAgentSessionID(),
-					"history_len", session.HistoryLen(),
-					"response", previewText(fullResponse, 500),
-				)
-			}
 
 			e.noteUserTurnCompleted(state)
 
@@ -6335,6 +6312,7 @@ channelClosed:
 			fullResponse = stripped
 		}
 
+		turnLog.reply(fullResponse)
 		e.hooks.Emit(HookEvent{
 			Event:      HookEventMessageSent,
 			SessionKey: sessionKey,
@@ -7905,11 +7883,7 @@ func appendReplyFooter(content, footer string) string {
 		return content
 	}
 	content = strings.TrimRight(content, "\n")
-	last30 := content
-	if len(last30) > 30 {
-		last30 = last30[len(last30)-30:]
-	}
-	slog.Debug("appendReplyFooter", "content_len", len(content), "footer", footer, "content_last30", last30)
+	slog.Debug("appendReplyFooter", "content_len", len(content), "footer", footer)
 	if content == "" {
 		return "*" + footer + "*"
 	}
