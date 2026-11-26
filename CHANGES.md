@@ -17,6 +17,8 @@ entry that graduated upstream at the re-base keeps its final marker there.
 
 ### Unreleased
 
+### 2026-11-26 / v1.5.0-ls.5
+
 #### Feature
 
 - **core**: `session_max_age_days` deletes sessions older than the given age with their history,
