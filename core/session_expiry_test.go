@@ -1,7 +1,9 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -350,6 +352,35 @@ func TestRemoveAttachmentsOlderThan_LeavesSymlinkTargetsAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(outside); err != nil {
 		t.Fatal("file outside the attachments tree was deleted through a symlink")
+	}
+}
+
+func TestSweepExpiredSessions_ReportsAttachmentFailureOnTheSweepLine(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can delete from a read-only directory")
+	}
+	e, _, dir := newExpiryEngine(t, "unused")
+	locked := filepath.Join(attachmentsDir(dir), "msg-locked")
+	writeAged(t, filepath.Join(locked, "stuck.pdf"), 91*24*time.Hour)
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	e.sweepExpiredSessions()
+
+	var line string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, "session expiry: sweep done") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "attachments_error=") {
+		t.Fatalf("sweep line = %q, want level WARN with attachments_error", line)
 	}
 }
 

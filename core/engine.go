@@ -1031,17 +1031,23 @@ func (e *Engine) sweepExpiredSessions() {
 		opts.RunAsUser = ru.GetRunAsUser()
 	}
 	files, err := RemoveAttachmentsOlderThan(e.ctx, opts, workDir, cutoff)
-	if err != nil {
-		slog.Warn("session expiry: attachment cleanup failed", "project", e.name, "error", err)
-	}
 
-	slog.Info("session expiry: sweep done",
+	// One line per sweep, at Warn with the error when attachment cleanup
+	// failed, so an alert on this line also catches a cleanup that keeps failing.
+	level := slog.LevelInfo
+	attrs := []any{
 		"project", e.name,
 		"max_age", maxAge,
 		"sessions_deleted", sessions,
 		"messages_deleted", messages,
 		"attachments_deleted", files,
-		"sessions_busy_skipped", skipped)
+		"sessions_busy_skipped", skipped,
+	}
+	if err != nil {
+		level = slog.LevelWarn
+		attrs = append(attrs, "attachments_error", err.Error())
+	}
+	slog.Log(context.Background(), level, "session expiry: sweep done", attrs...)
 }
 
 // maybeExpireSessionOnTurn replaces a session older than the max age before
