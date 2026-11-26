@@ -8,23 +8,24 @@ import (
 	"unicode/utf8"
 )
 
-// transcriptTextMax caps tool input and error excerpts in transcript records.
 const transcriptTextMax = 300
 
 func (e *Engine) transcriptUser(msg *Message) {
 	if e.transcript == nil {
 		return
 	}
-	e.transcript.LogAttrs(context.Background(), slog.LevelInfo, "transcript",
-		slog.String("kind", "user"),
-		slog.String("project", e.name),
-		slog.String("session_key", msg.SessionKey),
-		slog.String("content", msg.Content),
-	)
+	writeTranscript(e.transcript, "user", e.name, msg.SessionKey, slog.String("content", msg.Content))
 }
 
-// transcriptTurn writes the reply and tool records of one turn loop. With a nil
-// logger it writes nothing.
+func writeTranscript(logger *slog.Logger, kind, project, sessionKey string, attrs ...slog.Attr) {
+	base := []slog.Attr{
+		slog.String("kind", kind),
+		slog.String("project", project),
+		slog.String("session_key", sessionKey),
+	}
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "transcript", append(base, attrs...)...)
+}
+
 type transcriptTurn struct {
 	logger     *slog.Logger
 	project    string
@@ -54,19 +55,14 @@ func (e *Engine) newTranscriptTurn(state *interactiveState, session *Session, se
 }
 
 func (t *transcriptTurn) write(kind string, attrs ...slog.Attr) {
-	base := []slog.Attr{
-		slog.String("kind", kind),
-		slog.String("project", t.project),
-		slog.String("session_key", t.sessionKey),
-		slog.String("session", t.session.ID),
-	}
+	turn := []slog.Attr{slog.String("session", t.session.ID)}
 	if id := t.session.GetAgentSessionID(); id != "" {
-		base = append(base, slog.String("agent_session", id))
+		turn = append(turn, slog.String("agent_session", id))
 	}
 	if t.workspace != "" {
-		base = append(base, slog.String("workspace", t.workspace))
+		turn = append(turn, slog.String("workspace", t.workspace))
 	}
-	t.logger.LogAttrs(context.Background(), slog.LevelInfo, "transcript", append(base, attrs...)...)
+	writeTranscript(t.logger, kind, t.project, t.sessionKey, append(turn, attrs...)...)
 }
 
 func (t *transcriptTurn) reply(content string) {
@@ -146,7 +142,6 @@ func (t *transcriptTurn) match(ev Event) int {
 	return found
 }
 
-// flush records calls that got no result before the turn ended.
 func (t *transcriptTurn) flush() {
 	if t.logger == nil {
 		return
