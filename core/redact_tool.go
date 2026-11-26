@@ -9,7 +9,9 @@ import (
 var (
 	toolSecretAssignment = regexp.MustCompile(`(?i)(\b[\w-]*(?:token|secret|password|api[_-]?key|authorization|cookie|credential|bearer|session[_-]?id|access[_-]?key)[\w-]*\s*=\s*)("(?:[^"\\]|\\.)*"|'[^']*'|[^\s"'` + "`" + `&]+)`)
 	toolSecretJSON       = regexp.MustCompile(`(?i)("[^"\\]*(?:token|secret|password|api[_-]?key|authorization|cookie|credential|bearer|session[_-]?id|access[_-]?key)[^"\\]*"\s*:\s*)"(?:[^"\\]|\\.)*"`)
-	toolSecretHeader     = regexp.MustCompile(`(?i)(Authorization\s*:\s*(?:Bearer|Basic|Token)\s+)("(?:[^"\\]|\\.)*"|'[^']*'|[^\s'"` + "`" + `]+)`)
+	toolSecretHeader     = regexp.MustCompile(`(?i)((?:^|[\s"'{,(])(?:[\w-]*(?:token|secret|password|api[_-]?key|credential|cookie)[\w-]*|(?:[\w-]*[_-])?auth(?:orization|entication)?(?:[_-][\w-]*)?):[ \t]*(?:(?:Bearer|Basic|Token)\s+)?)("(?:[^"\\]|\\.)*"|'[^']*'|[^\r\n'"` + "`" + `]+)`)
+	toolCurlUser         = regexp.MustCompile(`(\bcurl\b[^\n;|&]*?\s)(-u|--user)(\s+)("[^"]*"|'[^']*'|[^\s"']+)`)
+	toolURLQuerySecret   = regexp.MustCompile(`(?i)([?&](?:key|sig|signature)=)[^&\s"'#` + "`" + `]+`)
 	toolSecretFlag       = regexp.MustCompile(`(?i)(--[\w-]*(?:token|secret|password|api[_-]?key|credential)[\w-]*\s+)("(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+)`)
 	toolURLCredentials   = regexp.MustCompile(`(https?://)[^/\s@]+@`)
 )
@@ -46,7 +48,7 @@ func redactToolValue(value any) any {
 	switch value := value.(type) {
 	case map[string]any:
 		for key, field := range value {
-			if _, isString := field.(string); isString && toolSecretName.MatchString(key) {
+			if toolSecretName.MatchString(key) {
 				value[key] = "[redacted]"
 			} else {
 				value[key] = redactToolValue(field)
@@ -68,7 +70,30 @@ func redactToolValue(value any) any {
 func redactPlainToolText(text string) string {
 	text = toolSecretJSON.ReplaceAllString(text, `${1}"[redacted]"`)
 	text = toolSecretHeader.ReplaceAllString(text, `${1}[redacted]`)
+	text = toolCurlUser.ReplaceAllStringFunc(text, redactCurlUser)
+	text = toolURLQuerySecret.ReplaceAllString(text, `${1}[redacted]`)
 	text = toolSecretAssignment.ReplaceAllString(text, `${1}[redacted]`)
 	text = toolSecretFlag.ReplaceAllString(text, `${1}[redacted]`)
 	return toolURLCredentials.ReplaceAllString(text, `${1}[redacted]@`)
+}
+
+// redactCurlUser keeps the user name of a curl `-u user:pass` argument and
+// masks the password. With an empty password the user part holds the API key,
+// so the user part is masked.
+func redactCurlUser(match string) string {
+	m := toolCurlUser.FindStringSubmatch(match)
+	value := m[4]
+	opening, closing := "", ""
+	if value[0] == '"' || value[0] == '\'' {
+		opening, closing = value[:1], value[:1]
+		value = strings.Trim(value, value[:1])
+	}
+	user, pass, ok := strings.Cut(value, ":")
+	if !ok {
+		return match
+	}
+	if pass == "" {
+		return m[1] + m[2] + m[3] + opening + "[redacted]:" + closing
+	}
+	return m[1] + m[2] + m[3] + opening + user + ":[redacted]" + closing
 }

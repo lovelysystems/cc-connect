@@ -23,7 +23,7 @@ entry that graduated upstream at the re-base keeps its final marker there.
   tool call with its redacted input, outcome and duration; debug lines no longer carry chat
   text (upstream: pending)
 - **core**: `RedactToolText` masks secrets in free-form tool text
-  (backport: chenhg5/cc-connect#2160)
+  (backport: chenhg5/cc-connect#2160, with downstream additions)
 - **claudecode**: tool events carry the call ID; tool results report only real exit codes
   (upstream: pending)
 

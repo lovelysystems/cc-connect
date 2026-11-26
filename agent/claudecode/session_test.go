@@ -726,6 +726,45 @@ func TestHandleUserEmitsToolResult(t *testing.T) {
 			wantCode:    intPtr(128),
 			wantSuccess: false,
 		},
+		{
+			name: "bash error with non-numeric exit code",
+			raw: map[string]any{
+				"type": "user",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{
+							"type":        "tool_result",
+							"tool_use_id": "toolu_abc_code",
+							"is_error":    true,
+							"content":     "Exit code abc\nsomething failed",
+						},
+					},
+				},
+			},
+			wantResult:  "Exit code abc\nsomething failed",
+			wantID:      "toolu_abc_code",
+			wantSuccess: false,
+		},
+		{
+			name: "bash error with exit code and no output",
+			raw: map[string]any{
+				"type": "user",
+				"message": map[string]any{
+					"content": []any{
+						map[string]any{
+							"type":        "tool_result",
+							"tool_use_id": "toolu_bare",
+							"is_error":    true,
+							"content":     "Exit code 2",
+						},
+					},
+				},
+			},
+			wantResult:  "Exit code 2",
+			wantID:      "toolu_bare",
+			wantCode:    intPtr(2),
+			wantSuccess: false,
+		},
 	}
 
 	for _, tc := range cases {
