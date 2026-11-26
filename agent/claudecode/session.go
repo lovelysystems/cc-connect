@@ -577,6 +577,7 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 	}
 
 	eventType, _ := raw["type"].(string)
+	slog.Debug("claudeSession: event", "type", eventType)
 
 	switch eventType {
 	case "system":

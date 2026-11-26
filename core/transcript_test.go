@@ -103,7 +103,7 @@ func TestTranscript_UserRecordHoldsInboundMessageVerbatim(t *testing.T) {
 	}
 }
 
-func TestTranscript_SwitchOffLogsNoChatTextAtDebug(t *testing.T) {
+func TestTranscript_SwitchOffWritesNoRecords(t *testing.T) {
 	prev := slog.Default()
 	logBuf := &bytes.Buffer{}
 	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -112,17 +112,16 @@ func TestTranscript_SwitchOffLogsNoChatTextAtDebug(t *testing.T) {
 	agent := &stubReplyFooterAgent{stubModelModeAgent: stubModelModeAgent{model: "m-1"}, workDir: t.TempDir()}
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("proj", agent, []Platform{p}, "", LangEnglish)
-	e.SetReplyFooterEnabled(true)
 	e.SetDisplayConfig(DisplayCfg{ToolMaxLen: 500})
 
-	e.handleMessage(p, &Message{SessionKey: "test:chat:u1", Platform: "test", UserID: "u1", Content: "/status USERMARKER", ReplyCtx: "ctx"})
+	e.handleMessage(p, &Message{SessionKey: "test:chat:u1", Platform: "test", UserID: "u1", Content: "/status", ReplyCtx: "ctx"})
 
 	key := "test:chat:u1"
 	agentSession := newControllableSession("agent-1")
 	agentSession.events = make(chan Event, 32)
 	state := &interactiveState{agentSession: agentSession, platform: p, replyCtx: "ctx", agent: agent}
 	e.interactiveStates[key] = state
-	reply := "REPLYMARKER " + strings.Repeat("x", 2000) + " REPLYEND"
+	reply := "done"
 	ok := true
 	for _, id := range []string{"a", "b", "c"} {
 		agentSession.events <- Event{Type: EventToolUse, ToolCallID: id, ToolName: "Bash", ToolInput: "echo " + id}
@@ -132,13 +131,10 @@ func TestTranscript_SwitchOffLogsNoChatTextAtDebug(t *testing.T) {
 	agentSession.events <- Event{Type: EventResult, Content: reply, Done: true}
 	e.processInteractiveEvents(state, e.sessions.GetOrCreateActive(key), e.sessions, key, "m1", time.Now(), nil, nil, "ctx")
 
-	logs := logBuf.String()
-	for _, marker := range []string{"USERMARKER", "REPLYMARKER", "REPLYEND", "msg=transcript"} {
-		if strings.Contains(logs, marker) {
-			t.Errorf("log contains %q with the switch off", marker)
-		}
+	if strings.Contains(logBuf.String(), "msg=transcript") {
+		t.Error("log contains a transcript record with the switch off")
 	}
-	if sent := p.getSent(); len(sent) == 0 || !strings.Contains(sent[len(sent)-1], "REPLYEND") {
+	if sent := p.getSent(); len(sent) == 0 || !strings.Contains(sent[len(sent)-1], reply) {
 		t.Fatalf("reply was not delivered: %v", sent)
 	}
 }

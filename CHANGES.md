@@ -20,8 +20,7 @@ entry that graduated upstream at the re-base keeps its final marker there.
 #### Feature
 
 - **core**: `[log] transcript = true` logs every user message and reply in full and every
-  tool call with its redacted input, outcome and duration; debug lines no longer carry chat
-  text (upstream: pending)
+  tool call with its redacted input, outcome and duration (upstream: pending)
 - **core**: `RedactToolText` masks secrets in free-form tool text
   (backport: chenhg5/cc-connect#2160, with downstream additions)
 - **claudecode**: tool events carry the call ID; tool results report only real exit codes
